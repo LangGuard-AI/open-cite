@@ -63,7 +63,29 @@ pip install -e .
 
 ## Usage
 
-### Databricks Plugin (Default)
+### Web GUI
+
+OpenCITE includes a web-based GUI for easy discovery and visualization:
+
+```bash
+# Start the GUI server
+python -m open_cite.gui.app
+
+# Access at http://localhost:5000
+```
+
+**Features:**
+- **Visual plugin configuration**: Select and configure plugins with a simple UI
+- **Real-time discovery**: See assets appear automatically as traces arrive (3-second polling)
+- **OpenTelemetry integration**: Built-in OTLP receiver with ngrok support for remote traces
+- **Export functionality**: Download discovered assets as JSON directly from the browser
+- **Multi-plugin support**: Enable Databricks, Google Cloud, OpenTelemetry, and MCP plugins simultaneously
+
+The GUI automatically stops any running discovery when you refresh the page, ensuring a clean state on each load.
+
+### Python API
+
+#### Databricks Plugin (Default)
 
 ```python
 from open_cite import OpenCiteClient
@@ -116,7 +138,7 @@ for model in models:
     print(f"Model: {model['name']} - Used by {len(model['tools'])} tools")
 ```
 
-For detailed OpenTelemetry plugin documentation, see [docs/OPENTELEMETRY_PLUGIN.md](docs/OPENTELEMETRY_PLUGIN.md).
+For detailed OpenTelemetry plugin documentation, see [docs/plugins/OPENTELEMETRY_PLUGIN.md](docs/pluginsOPENTELEMETRY_PLUGIN.md).
 
 ### MCP Plugin
 
@@ -139,7 +161,7 @@ status = client.verify_mcp_discovery()
 print(f"Discovered {status['servers_discovered']} MCP servers")
 ```
 
-For detailed MCP plugin documentation, see [docs/MCP_PLUGIN.md](docs/MCP_PLUGIN.md).
+For detailed MCP plugin documentation, see [docs/plugins/MCP_PLUGIN.md](docs/plugins/MCP_PLUGIN.md).
 
 ### Google Cloud Plugin
 
@@ -174,7 +196,7 @@ status = client.verify_gcp_connection()
 print(f"Connected to project: {status['project_id']}")
 ```
 
-For detailed Google Cloud plugin documentation, see [docs/GOOGLE_CLOUD_PLUGIN.md](docs/GOOGLE_CLOUD_PLUGIN.md).
+For detailed Google Cloud plugin documentation, see [docs/plugins/GOOGLE_CLOUD_PLUGIN.md](docs/plugins/GOOGLE_CLOUD_PLUGIN.md).
 
 ### Exporting to JSON
 
@@ -194,18 +216,9 @@ client.export_to_json(filepath="discoveries.json")
 
 For schema documentation, see [docs/SCHEMA_DOCUMENTATION.md](docs/SCHEMA_DOCUMENTATION.md).
 
-## Testing
-
-Open Cite includes comprehensive integration tests for all plugins. See [tests/TESTING_QUICKSTART.md](tests/TESTING_QUICKSTART.md) for details on:
-- Running the test suite
-- Setting up test environments
-- GCP test data automation
-- CI/CD integration
-
 ## Documentation
 
 - **[docs/](docs/)** - Plugin documentation and implementation guides
-- **[tests/](tests/)** - Test suite documentation and setup guides
 
 ## Project Structure
 
@@ -218,12 +231,11 @@ open-cite/
 │   │   ├── google_cloud.py # Google Cloud/Vertex AI plugin
 │   │   ├── opentelemetry.py # OpenTelemetry plugin
 │   │   └── mcp.py          # MCP plugin
+│   ├── gui/                # Web GUI application
+│   │   ├── app.py          # Flask server
+│   │   ├── templates/      # HTML templates
+│   │   └── static/         # Static assets
 │   └── schema.py           # Export schema definitions
-├── tests/                  # Integration tests and test utilities
-│   ├── integration/        # Integration test suite
-│   ├── setup_gcp_test_data.py    # GCP test data automation
-│   ├── cleanup_gcp_test_data.py  # GCP resource cleanup
-│   └── *.md                # Test documentation
 ├── docs/                   # Documentation
 └── README.md               # This file
 ```
@@ -234,9 +246,5 @@ Contributions are welcome! The plugin architecture makes it easy to add support 
 
 1. Create a new plugin in `src/open_cite/plugins/`
 2. Implement the discovery interface
-3. Add integration tests in `tests/integration/`
-4. Update the client to expose your plugin's methods
+3. Update the client to expose your plugin's methods
 
-## License
-
-[Add your license information here]
