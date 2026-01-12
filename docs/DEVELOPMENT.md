@@ -1,0 +1,402 @@
+# OpenCITE GUI Development Guide
+
+## Quick Start
+
+```bash
+# Simple way - use the dev script
+./run_dev.sh
+
+# Or manually
+source venv/bin/activate
+opencite gui --debug
+```
+
+Open browser to: **http://127.0.0.1:5000**
+
+## Development Mode Features
+
+### Auto-Reload
+Flask automatically restarts when you save code changes:
+- Edit `src/open_cite/gui/app.py` → Flask restarts
+- Edit `src/open_cite/gui/templates/index.html` → Just refresh browser
+
+### Detailed Error Pages
+Debug mode shows full stack traces in the browser when errors occur:
+- Exception details
+- Local variables
+- Code context
+
+### Verbose Logging
+See detailed logs in terminal:
+```
+2025-12-11 13:15:23 [INFO] Started OpenTelemetry plugin on localhost:4318
+2025-12-11 13:15:23 [DEBUG] Trace ingested: trace_id=abc123...
+```
+
+## Project Structure
+
+```
+src/open_cite/gui/
+├── app.py              # Flask backend
+│   ├── REST API endpoints
+│   ├── Plugin management
+│   ├── State management
+│   └── Discovery orchestration
+│
+└── templates/
+    └── index.html      # Frontend UI
+        ├── HTML structure
+        ├── CSS styling
+        └── JavaScript logic
+```
+
+## Common Development Tasks
+
+### 1. Add a New Plugin
+
+**Step 1: Update plugin list in `app.py`**
+
+```python
+@app.route('/api/plugins', methods=['GET'])
+def list_available_plugins():
+    plugins = {
+        # ... existing plugins ...
+        "your_plugin": {
+            "name": "Your Plugin",
+            "description": "What your plugin does",
+            "required_fields": {
+                "api_key": {
+                    "label": "API Key",
+                    "default": "",
+                    "required": True,
+                    "type": "password"
+                }
+            },
+            "env_vars": ["YOUR_PLUGIN_API_KEY"]
+        }
+    }
+    return jsonify(plugins)
+```
+
+**Step 2: Add configuration handling**
+
+```python
+@app.route('/api/plugins/configure', methods=['POST'])
+def configure_plugins():
+    # ... existing code ...
+
+    elif plugin_name == 'your_plugin':
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("Your plugin requires api_key")
+
+        client.register_your_plugin(api_key=api_key)
+        logger.info("Registered Your Plugin")
+```
+
+**Step 3: Add asset listing**
+
+```python
+@app.route('/api/assets', methods=['GET'])
+def get_assets():
+    # ... existing code ...
+
+    if "your_plugin" in discovery_status["plugins_enabled"]:
+        if asset_type in ['all', 'your_assets']:
+            try:
+                assets["your_assets"] = client.list_your_assets()
+            except Exception as e:
+                logger.warning(f"Could not list your assets: {e}")
+```
+
+**Step 4: Add UI rendering in `index.html`**
+
+```javascript
+// Add tab
+<button class="tab" onclick="switchTab('your_plugin')">Your Plugin</button>
+
+// Add rendering function
+function renderYourPlugin() {
+    if (!assets.your_assets || assets.your_assets.length === 0) return '';
+
+    let html = '<div class="asset-grid">';
+    assets.your_assets.forEach(asset => {
+        html += `
+            <div class="asset-card">
+                <div class="asset-title">🔌 ${asset.name}</div>
+                <div class="asset-meta">Type: ${asset.type}</div>
+            </div>
+        `;
+    });
+    html += '</div>';
+    return html;
+}
+```
+
+### 3. Debug Issues
+
+**Backend debugging (Python):**
+```python
+# Add debug prints in app.py
+logger.debug(f"Current state: {discovery_status}")
+
+# Or use Python debugger
+import pdb; pdb.set_trace()  # Breakpoint
+```
+
+**Frontend debugging (JavaScript):**
+```javascript
+// Add console logs
+console.log('Assets:', assets);
+
+// Use debugger statement
+debugger;  // Browser will pause here
+
+// Inspect network requests
+// Open DevTools (F12) → Network tab
+```
+
+**Check Flask logs:**
+```bash
+# Terminal shows:
+127.0.0.1 - - [11/Dec/2025 13:15:25] "GET /api/assets HTTP/1.1" 200 -
+```
+
+## Testing During Development
+
+### Manual Testing
+
+1. **Start GUI in debug mode**
+   ```bash
+   opencite gui --debug
+   ```
+
+2. **Configure test plugin** (e.g., OpenTelemetry)
+   - Check "OpenTelemetry" box
+   - Use defaults: host=localhost, port=4318
+   - Click "Start Discovery"
+
+3. **Send test trace**
+   ```bash
+   # In another terminal
+   curl -X POST http://localhost:4318/v1/traces \
+     -H "Content-Type: application/json" \
+     -d '{
+       "resourceSpans": [{
+         "resource": {
+           "attributes": [
+             {"key": "service.name", "value": {"stringValue": "test-tool"}}
+           ]
+         },
+         "scopeSpans": [{
+           "scope": {"name": "openai"},
+           "spans": [{
+             "traceId": "abc123def456",
+             "spanId": "123456",
+             "name": "chat.completions",
+             "attributes": [
+               {"key": "gen_ai.request.model", "value": {"stringValue": "openai/gpt-4"}},
+               {"key": "gen_ai.system", "value": {"stringValue": "openrouter"}}
+             ]
+           }]
+         }]
+       }]
+     }'
+   ```
+
+4. **Verify in GUI**
+   - Should see "test-tool" appear in Tools tab
+   - Should see "openai/gpt-4" appear in Models tab
+   - Stats should update
+
+### Automated Testing
+
+Run integration tests while GUI is running:
+```bash
+# In another terminal
+source venv/bin/activate
+pytest tests/integration/ -v
+```
+
+## Common Issues
+
+### Port Already in Use
+```bash
+# Find process using port 5000
+lsof -i :5000
+
+# Kill it
+kill -9 <PID>
+
+# Or use different port
+opencite gui --debug --port 8080
+```
+
+### Changes Not Appearing
+- **Backend changes**: Wait for Flask to restart (watch terminal)
+- **Frontend changes**: Hard refresh browser (Ctrl+Shift+R)
+- **CSS not updating**: Clear browser cache
+
+### Auto-Reload Not Working
+```bash
+# Make sure debug mode is enabled
+opencite gui --debug  # ← Must have --debug flag
+
+# Check terminal for "Restarting with stat" message
+```
+
+### Plugin Configuration Fails
+- Check browser console (F12) for error details
+- Check Flask terminal for backend errors
+- Verify credentials are correct
+- Test plugin manually first:
+  ```python
+  from open_cite.client import OpenCiteClient
+  client = OpenCiteClient()
+  client.register_databricks_plugin(host="...", token="...")
+  ```
+
+## Development Workflow Example
+
+```bash
+# 1. Start development server
+./run_dev.sh
+
+# 2. Open browser
+# → http://127.0.0.1:5000
+
+# 3. Make code changes
+# Edit src/open_cite/gui/app.py or templates/index.html
+
+# 4. See changes
+# - Backend: Flask auto-restarts
+# - Frontend: Refresh browser
+
+# 5. Test
+# - Manual testing in browser
+# - Check terminal logs
+# - Use browser DevTools
+
+# 6. Stop server
+# Ctrl+C in terminal
+```
+
+## Hot Reload Demo
+
+**Try this:**
+
+1. Start GUI: `opencite gui --debug`
+2. Open browser to http://127.0.0.1:5000
+3. Edit `src/open_cite/gui/templates/index.html`
+4. Change line 13:
+   ```html
+   <!-- Before -->
+   <h1>🔍 OpenCITE</h1>
+
+   <!-- After -->
+   <h1>🔍 OpenCITE [DEV MODE]</h1>
+   ```
+5. Save file
+6. Refresh browser (F5)
+7. See "[DEV MODE]" appear!
+
+## Performance Tips
+
+### Reduce Auto-Refresh Frequency
+In `index.html`, change refresh interval:
+```javascript
+// Default: 2 seconds
+refreshInterval = setInterval(refreshAssets, 2000);
+
+// For development: 5 seconds (less network traffic)
+refreshInterval = setInterval(refreshAssets, 5000);
+```
+
+### Disable Auto-Refresh
+Comment out the auto-refresh:
+```javascript
+// refreshInterval = setInterval(refreshAssets, 2000);
+
+// Add manual refresh button instead
+<button onclick="refreshAssets()">Refresh</button>
+```
+
+### Limit Plugin Output
+For development, start with just one plugin:
+```python
+# In app.py, limit asset count
+assets["tools"] = client.list_otel_tools()[:10]  # Only first 10
+```
+
+## Environment Variables
+
+Set these for development:
+
+```bash
+export FLASK_ENV=development
+export FLASK_DEBUG=1
+
+# Plugin credentials (optional)
+export DATABRICKS_HOST="https://..."
+export DATABRICKS_TOKEN="dapi..."
+export GCP_PROJECT_ID="your-project"
+```
+
+## IDE Setup
+
+### VS Code
+
+**Install extensions:**
+- Python
+- Flask Snippets
+- Prettier (for HTML/CSS/JS)
+
+**Debug configuration** (`.vscode/launch.json`):
+```json
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "OpenCITE GUI",
+            "type": "python",
+            "request": "launch",
+            "module": "open_cite.gui.app",
+            "env": {
+                "FLASK_DEBUG": "1"
+            }
+        }
+    ]
+}
+```
+
+### PyCharm
+
+1. Right-click `src/open_cite/gui/app.py`
+2. Select "Run 'app'"
+3. Add `--debug` to run configuration
+
+## Git Workflow
+
+```bash
+# Create feature branch
+git checkout -b feature/gui-improvement
+
+# Make changes
+# ... edit files ...
+
+# Test changes
+opencite gui --debug
+
+# Commit
+git add src/open_cite/gui/
+git commit -m "Add new feature to GUI"
+
+# Push
+git push origin feature/gui-improvement
+```
+
+## Resources
+
+- [Flask Documentation](https://flask.palletsprojects.com/)
+- [Flask Debug Mode](https://flask.palletsprojects.com/en/latest/debugging/)
+- [Browser DevTools Guide](https://developer.chrome.com/docs/devtools/)

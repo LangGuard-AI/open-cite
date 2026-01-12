@@ -1,0 +1,1251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenCITE - AI Discovery & Cataloging</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 16px rgba(0,0,0,0.1);
+        }
+
+        h1 {
+            color: #333;
+            font-size: 2.5em;
+        }
+
+        h1 img {
+            height: 128px;
+            vertical-align: middle;
+        }
+
+        .subtitle {
+            color: #666;
+            font-size: 1.1em;
+        }
+
+        .main-grid {
+            display: grid;
+            grid-template-columns: 350px 1fr;
+            gap: 20px;
+        }
+
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 8px 16px rgba(0,0,0,0.1);
+        }
+
+        .card h2 {
+            color: #333;
+            font-size: 1.4em;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .status-indicator.running {
+            background: #10b981;
+            box-shadow: 0 0 8px #10b981;
+        }
+
+        .status-indicator.stopped {
+            background: #ef4444;
+        }
+
+        .status-indicator.loading {
+            background: #f59e0b;
+            box-shadow: 0 0 8px #f59e0b;
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.5;
+            }
+        }
+
+        .progress-container {
+            margin-top: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .progress-item {
+            padding: 8px 12px;
+            margin-bottom: 6px;
+            border-radius: 6px;
+            font-size: 0.85em;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .progress-item.success {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .progress-item.in_progress {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .progress-item.error {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+        .progress-icon {
+            flex-shrink: 0;
+        }
+
+        .spinner {
+            width: 14px;
+            height: 14px;
+            border: 2px solid #92400e;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .plugin-item {
+            background: #f9fafb;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .plugin-item:hover {
+            border-color: #667eea;
+            background: #f3f4f6;
+        }
+
+        .plugin-item.selected {
+            border-color: #667eea;
+            background: #eef2ff;
+        }
+
+        .plugin-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+
+        .plugin-checkbox {
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+        }
+
+        .plugin-name {
+            font-weight: 600;
+            color: #333;
+            font-size: 1.1em;
+        }
+
+        .plugin-description {
+            color: #666;
+            font-size: 0.9em;
+            margin-top: 4px;
+        }
+
+        .plugin-config {
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid #e5e7eb;
+            display: none;
+        }
+
+        .plugin-item.selected .plugin-config {
+            display: block;
+        }
+
+        .form-group {
+            margin-bottom: 12px;
+        }
+
+        .form-group label {
+            display: block;
+            color: #555;
+            font-size: 0.9em;
+            margin-bottom: 4px;
+            font-weight: 500;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            font-size: 0.9em;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            width: 100%;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-secondary {
+            background: #6b7280;
+            color: white;
+            margin-top: 8px;
+        }
+
+        .btn-secondary:hover {
+            background: #4b5563;
+        }
+
+        .btn-export {
+            background: #10b981;
+            color: white;
+            margin-top: 8px;
+        }
+
+        .btn-export:hover {
+            background: #059669;
+        }
+
+        .content-area {
+            min-height: 600px;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+            border-bottom: 2px solid #e5e7eb;
+        }
+
+        .tab {
+            padding: 12px 20px;
+            background: none;
+            border: none;
+            color: #6b7280;
+            font-weight: 600;
+            cursor: pointer;
+            border-bottom: 3px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .tab:hover {
+            color: #667eea;
+        }
+
+        .tab.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+        }
+
+        .btn-export-inline {
+            margin-left: auto;
+            margin-bottom: 4px;
+            padding: 8px 16px;
+            background: #10b981;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+
+        .btn-export-inline:hover {
+            background: #059669;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .asset-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 16px;
+        }
+
+        .asset-card {
+            background: #f9fafb;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 16px;
+            transition: all 0.2s;
+        }
+
+        .asset-card:hover {
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            transform: translateY(-2px);
+        }
+
+        .asset-title {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 8px;
+            font-size: 1.1em;
+        }
+
+        .asset-meta {
+            color: #666;
+            font-size: 0.9em;
+            margin-bottom: 4px;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            font-weight: 600;
+            margin-right: 4px;
+            margin-top: 4px;
+        }
+
+        .badge-blue {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+
+        .badge-green {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .badge-purple {
+            background: #ede9fe;
+            color: #5b21b6;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #6b7280;
+        }
+
+        .empty-state-icon {
+            font-size: 4em;
+            margin-bottom: 16px;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 16px;
+            border-radius: 8px;
+            text-align: center;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 16px rgba(102, 126, 234, 0.4);
+        }
+
+        .stat-number {
+            font-size: 2em;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+
+        .stat-label {
+            font-size: 0.9em;
+            opacity: 0.9;
+        }
+
+        .error-message {
+            background: #fee2e2;
+            border: 1px solid #fecaca;
+            color: #991b1b;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 16px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #6b7280;
+        }
+
+        .spinner {
+            border: 3px solid #f3f4f6;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 16px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1><img src="static/OpenCiteBear.png"/> OpenCITE</h1>
+            <p class="subtitle"><b>Open C</b>atalog of <b>I</b>ntelligent <b>T</b>ools in the <b>E</b>nterprise</p>
+        </div>
+
+        <div class="main-grid">
+            <!-- Sidebar -->
+            <div class="sidebar">
+                <!-- Status Card -->
+                <div class="card">
+                    <h2>
+                        <span class="status-indicator" id="statusIndicator"></span>
+                        Discovery Status
+                    </h2>
+                    <div id="statusText" style="color: #666; margin-bottom: 12px;">Not running</div>
+                    <div id="pluginsActive" style="color: #666; font-size: 0.9em;"></div>
+                    <div id="progressContainer" class="progress-container" style="display: none;"></div>
+                </div>
+
+                <!-- Plugin Configuration -->
+                <div class="card">
+                    <h2>Configure Plugins</h2>
+                    <div id="errorMessage" class="error-message" style="display: none;"></div>
+
+                    <div id="pluginsList"></div>
+
+                    <button class="btn btn-primary" id="startBtn" onclick="startDiscovery()">
+                        Start Discovery
+                    </button>
+                    <button class="btn btn-secondary" id="stopBtn" onclick="stopDiscovery()" style="display: none;">
+                        Stop Discovery
+                    </button>
+                </div>
+            </div>
+
+            <!-- Main Content -->
+            <div class="content-area">
+                <div class="card">
+                    <div class="stats" id="statsContainer" style="display: none;"></div>
+
+                    <div class="tabs">
+                        <button class="tab active" onclick="switchTab('all')">All Assets</button>
+                        <button class="tab" onclick="switchTab('tools')">Tools</button>
+                        <button class="tab" onclick="switchTab('models')">Models</button>
+                        <button class="tab" onclick="switchTab('mcp')">MCP</button>
+                        <button class="tab" onclick="switchTab('data_assets')">Data Assets</button>
+                        <button class="btn-export-inline" id="exportBtnInline" onclick="exportData()" style="display: none;" title="Download Discovered Assets in JSON">
+                            📥 Download JSON
+                        </button>
+                    </div>
+
+                    <div id="assetsContainer">
+                        <div class="empty-state">
+                            <div class="empty-state-icon">📦</div>
+                            <h3>No assets discovered yet</h3>
+                            <p>Configure and start plugins to begin discovery</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let plugins = {};
+        let assets = {};
+        let currentTab = 'all';
+        let refreshInterval = null;
+
+        // Load available plugins on page load
+        async function loadPlugins() {
+            try {
+                const response = await fetch('/api/plugins');
+                plugins = await response.json();
+                renderPlugins();
+            } catch (error) {
+                console.error('Error loading plugins:', error);
+            }
+        }
+
+        function renderPlugins() {
+            const container = document.getElementById('pluginsList');
+            container.innerHTML = '';
+
+            // Render plugins dynamically - OpenTelemetry first, then MCP as sub-option, then all others
+            const pluginKeys = Object.keys(plugins);
+
+            // Define preferred order (plugins not in this list will be added at the end)
+            const preferredOrder = ['opentelemetry', 'mcp', 'databricks', 'google_cloud', 'openrouter'];
+
+            // Create final order: preferred plugins first, then any additional ones
+            const pluginOrder = [
+                ...preferredOrder.filter(key => pluginKeys.includes(key)),
+                ...pluginKeys.filter(key => !preferredOrder.includes(key))
+            ];
+
+            pluginOrder.forEach(key => {
+                if (!plugins[key]) return;
+
+                const plugin = plugins[key];
+                const div = document.createElement('div');
+                div.className = 'plugin-item';
+                div.id = `plugin-${key}`;
+
+                // Make entire card clickable to toggle checkbox
+                div.onclick = function(e) {
+                    // Don't toggle if clicking on input fields or the checkbox itself
+                    if (e.target.tagName === 'INPUT') {
+                        return;
+                    }
+                    const checkbox = document.getElementById(`check-${key}`);
+                    checkbox.checked = !checkbox.checked;
+                    togglePlugin(key);
+                };
+
+                // MCP is indented as sub-option of OpenTelemetry
+                if (key === 'mcp') {
+                    div.style.marginLeft = '20px';
+                    div.style.borderLeft = '3px solid #667eea';
+                    div.style.paddingLeft = '12px';
+                    div.style.display = 'none'; // Hidden by default, shown when OpenTelemetry is checked
+                }
+
+                let configFields = '';
+                if (plugin.required_fields && Object.keys(plugin.required_fields).length > 0) {
+                    Object.entries(plugin.required_fields).forEach(([fieldKey, field]) => {
+                        const inputType = field.type || 'text';
+
+                        // For checkbox "auto_start" on plugins with trace_endpoints, add onchange handler
+                        const onchangeHandler = (plugin.trace_endpoints && fieldKey === 'auto_start')
+                            ? `onchange="toggleTraceEndpoints('${key}', this.checked)"`
+                            : '';
+
+                        configFields += `
+                            <div class="form-group">
+                                <label>${field.label}${field.required ? ' *' : ''}</label>
+                                <input
+                                    type="${inputType}"
+                                    id="${key}-${fieldKey}"
+                                    placeholder="${field.default}"
+                                    ${field.required ? 'required' : ''}
+                                    ${inputType === 'checkbox' ? '' : 'onfocus="this.value=\'\'"'}
+                                    ${onchangeHandler}
+                                >
+                            </div>
+                        `;
+                    });
+                }
+
+                div.innerHTML = `
+                    <div class="plugin-header">
+                        <input type="checkbox" class="plugin-checkbox" id="check-${key}"
+                            onchange="togglePlugin('${key}')">
+                        <div>
+                            <div class="plugin-name">${plugin.name}</div>
+                            <div class="plugin-description">${plugin.description}</div>
+                        </div>
+                    </div>
+                    ${(configFields) ? `<div class="plugin-config">${configFields}</div>` : ''}
+                `;
+
+                container.appendChild(div);
+            });
+        }
+
+        function togglePlugin(pluginKey) {
+            console.log(`togglePlugin called for: ${pluginKey}`);
+            const checkbox = document.getElementById(`check-${pluginKey}`);
+            const item = document.getElementById(`plugin-${pluginKey}`);
+
+            if (checkbox.checked) {
+                console.log(`Checkbox checked for ${pluginKey}`);
+                item.classList.add('selected');
+                // Show trace endpoints if this plugin has them
+                toggleTraceEndpoints(pluginKey, true);
+
+                // If OpenTelemetry is checked, show MCP plugin
+                if (pluginKey === 'opentelemetry') {
+                    const mcpPlugin = document.getElementById('plugin-mcp');
+                    if (mcpPlugin) {
+                        mcpPlugin.style.display = 'block';
+                    }
+                }
+            } else {
+                console.log(`Checkbox unchecked for ${pluginKey}`);
+                item.classList.remove('selected');
+                // Hide trace endpoints
+                toggleTraceEndpoints(pluginKey, false);
+
+                // If OpenTelemetry is unchecked, hide and uncheck MCP plugin
+                if (pluginKey === 'opentelemetry') {
+                    const mcpPlugin = document.getElementById('plugin-mcp');
+                    if (mcpPlugin) {
+                        mcpPlugin.style.display = 'none';
+                        // Also uncheck MCP if it was checked
+                        const mcpCheckbox = document.getElementById('check-mcp');
+                        if (mcpCheckbox && mcpCheckbox.checked) {
+                            mcpCheckbox.checked = false;
+                            mcpPlugin.classList.remove('selected');
+                        }
+                    }
+                }
+            }
+        }
+
+        function toggleTraceEndpoints(pluginKey, isChecked) {
+            console.log(`toggleTraceEndpoints called for ${pluginKey}, isChecked: ${isChecked}`);
+            const endpointsDiv = document.getElementById(`${pluginKey}-endpoints`);
+            console.log(`Found endpointsDiv:`, endpointsDiv);
+            if (endpointsDiv) {
+                endpointsDiv.style.display = isChecked ? 'block' : 'none';
+                console.log(`Set display to: ${isChecked ? 'block' : 'none'}`);
+            } else {
+                console.log(`No endpoints div found for ${pluginKey}`);
+            }
+        }
+
+        async function startDiscovery() {
+            const selectedPlugins = [];
+            hideError();
+
+            // Collect selected plugins and their configuration
+            Object.keys(plugins).forEach(key => {
+                const checkbox = document.getElementById(`check-${key}`);
+                if (checkbox && checkbox.checked) {
+                    const config = {};
+                    const fields = plugins[key].required_fields || {};
+
+                    Object.keys(fields).forEach(fieldKey => {
+                        const input = document.getElementById(`${key}-${fieldKey}`);
+                        if (input) {
+                            // Handle checkbox inputs
+                            if (input.type === 'checkbox') {
+                                config[fieldKey] = input.checked ? 'true' : 'false';
+                            } else {
+                                // Only send value if non-empty, otherwise don't include it
+                                // This allows backend to fall back to environment variables
+                                const value = input.value.trim();
+                                if (value) {
+                                    config[fieldKey] = value;
+                                }
+                            }
+                        }
+                    });
+
+                    selectedPlugins.push({
+                        name: key,
+                        config: config
+                    });
+                }
+            });
+
+            if (selectedPlugins.length === 0) {
+                showError('Please select at least one plugin');
+                return;
+            }
+
+            try {
+                // Show loading state
+                const startBtn = document.getElementById('startBtn');
+                startBtn.disabled = true;
+                startBtn.textContent = 'Initializing...';
+
+                // Start polling status immediately to show progress
+                const statusPollInterval = setInterval(updateStatus, 500);
+
+                const response = await fetch('/api/plugins/configure', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({plugins: selectedPlugins})
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    clearInterval(statusPollInterval);
+                    throw new Error(error.error);
+                }
+
+                // Wait a bit for final status update
+                await new Promise(resolve => setTimeout(resolve, 500));
+                clearInterval(statusPollInterval);
+
+                // Update UI to show running state
+                startBtn.style.display = 'none';
+                document.getElementById('stopBtn').style.display = 'block';
+                document.getElementById('exportBtnInline').style.display = 'block';
+
+                // Update status one more time
+                await updateStatus();
+
+                // Call assets immediately
+                refreshAssets();
+
+                // Start auto-refresh polling every 3 seconds for real-time OTLP discoveries
+                if (refreshInterval) {
+                    clearInterval(refreshInterval);
+                }
+                refreshInterval = setInterval(() => {
+                    console.log('[Auto-refresh] Fetching latest assets...');
+                    refreshAssets();
+                }, 3000);
+
+            } catch (error) {
+                console.error('Error starting discovery:', error);
+                showError(error.message || 'Failed to start discovery');
+                document.getElementById('startBtn').disabled = false;
+                document.getElementById('startBtn').textContent = 'Start Discovery';
+            }
+        }
+
+        async function stopDiscovery() {
+            try {
+                await fetch('/api/stop', {method: 'POST'});
+
+                // Stop auto-refresh polling
+                if (refreshInterval) {
+                    clearInterval(refreshInterval);
+                    refreshInterval = null;
+                    console.log('[Auto-refresh] Stopped polling');
+                }
+
+                document.getElementById('startBtn').style.display = 'block';
+                document.getElementById('startBtn').disabled = false;
+                document.getElementById('startBtn').textContent = 'Start Discovery';
+                document.getElementById('stopBtn').style.display = 'none';
+                document.getElementById('exportBtnInline').style.display = 'none';
+
+                // Clear progress display
+                document.getElementById('progressContainer').style.display = 'none';
+                document.getElementById('progressContainer').innerHTML = '';
+
+                hideError();
+                updateStatus();
+            } catch (error) {
+                console.error('Error stopping discovery:', error);
+            }
+        }
+
+        async function refreshAssets() {
+            try {
+                console.log('[RefreshAssets] Fetching from /api/assets...');
+                const response = await fetch('/api/assets');
+                const data = await response.json();
+
+                console.log('[RefreshAssets] Received data:', data);
+
+                if (data.assets) {
+                    assets = data.assets;
+                    console.log('[RefreshAssets] Updated assets:', {
+                        tools: assets.tools?.length || 0,
+                        models: assets.models?.length || 0,
+                        mcp_servers: assets.mcp_servers?.length || 0
+                    });
+                    renderStats(data.totals);
+                    renderAssets();
+                }
+
+                await updateStatus();
+
+                // After assets are loaded, show "Start Discovery" button again (if not polling)
+                if (!refreshInterval) {
+                    document.getElementById('startBtn').style.display = 'block';
+                    document.getElementById('startBtn').disabled = false;
+                    document.getElementById('startBtn').textContent = 'Start Discovery';
+                    document.getElementById('stopBtn').style.display = 'none';
+                }
+            } catch (error) {
+                console.error('Error refreshing assets:', error);
+            }
+        }
+
+        function showError(message) {
+            const errorMsg = document.getElementById('errorMessage');
+            errorMsg.textContent = message;
+            errorMsg.style.display = 'block';
+        }
+
+        function hideError() {
+            const errorMsg = document.getElementById('errorMessage');
+            errorMsg.style.display = 'none';
+        }
+
+        async function updateStatus() {
+            try {
+                const response = await fetch('/api/status');
+                const status = await response.json();
+
+                const indicator = document.getElementById('statusIndicator');
+                const statusText = document.getElementById('statusText');
+                const pluginsActive = document.getElementById('pluginsActive');
+                const progressContainer = document.getElementById('progressContainer');
+
+                // Update status indicator and text
+                if (status.running) {
+                    // Check if still initializing (has in_progress items)
+                    const hasInProgress = status.progress && status.progress.some(p => p.status === 'in_progress');
+                    console.log('updateStatus: hasInProgress =', hasInProgress, 'progress items =', status.progress);
+
+                    if (hasInProgress) {
+                        indicator.className = 'status-indicator loading';
+                    } else {
+                        indicator.className = 'status-indicator running';
+                    }
+
+                    statusText.textContent = status.current_status || 'Running';
+                    pluginsActive.textContent = `Active plugins: ${status.plugins_enabled.join(', ')}`;
+                } else {
+                    indicator.className = 'status-indicator stopped';
+                    statusText.textContent = status.current_status || 'Stopped';
+                    pluginsActive.textContent = '';
+                }
+
+                // Update progress display
+                if (status.progress && status.progress.length > 0) {
+                    progressContainer.style.display = 'block';
+                    progressContainer.innerHTML = status.progress.map(p => {
+                        let icon = '';
+                        if (p.status === 'success') {
+                            icon = '✓';
+                        } else if (p.status === 'error') {
+                            icon = '✗';
+                        } else if (p.status === 'in_progress') {
+                            icon = '<div class="spinner"></div>';
+                        }
+
+                        return `
+                            <div class="progress-item ${p.status}">
+                                <span class="progress-icon">${icon}</span>
+                                <span>${p.message}</span>
+                            </div>
+                        `;
+                    }).join('');
+                } else {
+                    progressContainer.style.display = 'none';
+                }
+
+                // Display errors if any
+                if (status.error) {
+                    showError(status.error);
+                }
+            } catch (error) {
+                console.error('Error updating status:', error);
+            }
+        }
+
+        function renderStats(totals) {
+            const container = document.getElementById('statsContainer');
+            container.style.display = 'grid';
+
+            // Combine OpenTelemetry and GCP models count
+            const totalModels = (totals.models || 0) + (totals.gcp_models || 0) + (totals.gcp_endpoints || 0);
+
+            const stats = [
+                {label: 'Tools', value: totals.tools || 0, show: true, tab: 'tools'},
+                {label: 'Models', value: totalModels, show: true, tab: 'models'},
+                {label: 'MCP Servers', value: totals.mcp_servers || 0, show: true, tab: 'mcp'},
+                {label: 'Data Assets', value: totals.data_assets || 0, show: totals.data_assets > 0, tab: 'data_assets'}
+            ];
+
+            container.innerHTML = stats
+                .filter(s => s.show)
+                .map(s => `
+                    <div class="stat-card" style="cursor: pointer;" onclick="switchTab('${s.tab}')">
+                        <div class="stat-number">${s.value}</div>
+                        <div class="stat-label">${s.label}</div>
+                    </div>
+                `).join('');
+        }
+
+        function renderAssets() {
+            const container = document.getElementById('assetsContainer');
+            let html = '';
+
+            if (currentTab === 'all') {
+                html = renderAllAssets();
+            } else if (currentTab === 'tools') {
+                html = renderTools();
+            } else if (currentTab === 'models') {
+                html = renderModels();
+            } else if (currentTab === 'mcp') {
+                html = renderMCP();
+            } else if (currentTab === 'data_assets') {
+                html = renderDataAssets();
+            }
+
+            container.innerHTML = html || `
+                <div class="empty-state">
+                    <div class="empty-state-icon">📭</div>
+                    <h3>No ${currentTab === 'data_assets' ? 'data assets' : currentTab} found</h3>
+                    <p>Assets will appear here as they are discovered</p>
+                </div>
+            `;
+        }
+
+        function renderAllAssets() {
+            console.log('renderAllAssets called, assets:', assets);
+            let html = '<div class="asset-grid">';
+            let count = 0;
+
+            // Tools
+            (assets.tools || []).forEach(tool => {
+                count++;
+                const source = tool.metadata?.source || '';
+                html += `
+                    <div class="asset-card">
+                        <div class="asset-title">🔧 ${tool.name}</div>
+                        <div class="asset-meta">Type: ${tool.type}</div>
+                        ${source ? `<div class="asset-meta">Source: ${source}</div>` : ''}
+                        <div class="asset-meta">Models: ${tool.models ? tool.models.length : 0}</div>
+                        <span class="badge badge-blue">Tool</span>
+                    </div>
+                `;
+            });
+
+            // Models (OpenTelemetry)
+            (assets.models || []).forEach(model => {
+                count++;
+                html += `
+                    <div class="asset-card">
+                        <div class="asset-title">🤖 ${model.name}</div>
+                        <div class="asset-meta">Provider: ${model.provider}</div>
+                        <div class="asset-meta">Tools using: ${model.tools ? model.tools.length : 0}</div>
+                        <span class="badge badge-green">Model</span>
+                    </div>
+                `;
+            });
+
+            // GCP Models
+            (assets.gcp_models || []).forEach(model => {
+                count++;
+                html += `
+                    <div class="asset-card">
+                        <div class="asset-title">🤖 ${model.display_name || model.name}</div>
+                        <div class="asset-meta">Provider: Vertex AI</div>
+                        <span class="badge badge-green">Model</span>
+                    </div>
+                `;
+            });
+
+            // GCP Endpoints
+            (assets.gcp_endpoints || []).forEach(endpoint => {
+                count++;
+                html += `
+                    <div class="asset-card">
+                        <div class="asset-title">🔗 ${endpoint.display_name || endpoint.name}</div>
+                        <div class="asset-meta">Type: Endpoint</div>
+                        <span class="badge badge-purple">Endpoint</span>
+                    </div>
+                `;
+            });
+
+            // MCP Servers
+            (assets.mcp_servers || []).forEach(server => {
+                count++;
+                html += `
+                    <div class="asset-card">
+                        <div class="asset-title">🌐 ${server.name}</div>
+                        <div class="asset-meta">Transport: ${server.transport || 'unknown'}</div>
+                        <div class="asset-meta">Tools: ${server.tools_count || 0}</div>
+                        <span class="badge badge-purple">MCP Server</span>
+                    </div>
+                `;
+            });
+
+            // Data Assets (Databricks)
+            (assets.data_assets || []).forEach(asset => {
+                count++;
+                const icon = asset.type === 'catalog' ? '📚' :
+                             asset.type === 'schema' ? '📁' :
+                             asset.type === 'table' ? '📊' : '📦';
+                html += `
+                    <div class="asset-card">
+                        <div class="asset-title">${icon} ${asset.name}</div>
+                        <div class="asset-meta">Type: ${asset.type}</div>
+                        ${asset.owner ? `<div class="asset-meta">Owner: ${asset.owner}</div>` : ''}
+                        <span class="badge badge-green">Data Asset</span>
+                    </div>
+                `;
+            });
+
+            html += '</div>';
+
+            console.log('renderAllAssets complete, count:', count, 'html length:', html.length);
+
+            // Return empty string if no assets, so empty state shows
+            if (count === 0) {
+                return '';
+            }
+
+            return html;
+        }
+
+        function renderTools() {
+            if (!assets.tools || assets.tools.length === 0) return '';
+
+            let html = '<div class="asset-grid">';
+            assets.tools.forEach(tool => {
+                const source = tool.metadata?.source || '';
+                html += `
+                    <div class="asset-card">
+                        <div class="asset-title">🔧 ${tool.name}</div>
+                        <div class="asset-meta">Type: ${tool.type}</div>
+                        <div class="asset-meta">Discovery: ${tool.discovery_source}</div>
+                        ${source ? `<div class="asset-meta">Source: ${source}</div>` : ''}
+                        <div class="asset-meta">Models: ${tool.models ? tool.models.join(', ') : 'none'}</div>
+                    </div>
+                `;
+            });
+            html += '</div>';
+            return html;
+        }
+
+        function renderModels() {
+            const hasOtelModels = assets.models && assets.models.length > 0;
+            const hasGcpModels = assets.gcp_models && assets.gcp_models.length > 0;
+
+            if (!hasOtelModels && !hasGcpModels) return '';
+
+            let html = '<div class="asset-grid">';
+
+            // OpenTelemetry models
+            (assets.models || []).forEach(model => {
+                html += `
+                    <div class="asset-card">
+                        <div class="asset-title">🤖 ${model.name}</div>
+                        <div class="asset-meta">Provider: ${model.provider}</div>
+                        <div class="asset-meta">Usage: ${model.usage_count || 0} calls</div>
+                        <div class="asset-meta">Tools: ${model.tools ? model.tools.join(', ') : 'none'}</div>
+                        <span class="badge badge-blue">OpenTelemetry</span>
+                    </div>
+                `;
+            });
+
+            // GCP Vertex AI models
+            (assets.gcp_models || []).forEach(model => {
+                html += `
+                    <div class="asset-card">
+                        <div class="asset-title">🤖 ${model.display_name || model.name}</div>
+                        <div class="asset-meta">ID: ${model.name}</div>
+                        ${model.model_version_id ? `<div class="asset-meta">Version: ${model.model_version_id}</div>` : ''}
+                        <span class="badge badge-green">Vertex AI</span>
+                    </div>
+                `;
+            });
+
+            // GCP endpoints (model deployments)
+            (assets.gcp_endpoints || []).forEach(endpoint => {
+                html += `
+                    <div class="asset-card">
+                        <div class="asset-title">🔗 ${endpoint.display_name || endpoint.name}</div>
+                        <div class="asset-meta">Endpoint ID: ${endpoint.name}</div>
+                        ${endpoint.deployed_model_id ? `<div class="asset-meta">Model: ${endpoint.deployed_model_id}</div>` : ''}
+                        <span class="badge badge-purple">Endpoint</span>
+                    </div>
+                `;
+            });
+
+            html += '</div>';
+            return html;
+        }
+
+        function renderMCP() {
+            let html = '<div class="asset-grid">';
+
+            (assets.mcp_servers || []).forEach(server => {
+                html += `
+                    <div class="asset-card">
+                        <div class="asset-title">🌐 ${server.name}</div>
+                        <div class="asset-meta">Transport: ${server.transport}</div>
+                        <div class="asset-meta">Tools: ${server.tools_count || 0}</div>
+                        <div class="asset-meta">Resources: ${server.resources_count || 0}</div>
+                        <span class="badge badge-purple">Server</span>
+                    </div>
+                `;
+            });
+
+            (assets.mcp_tools || []).forEach(tool => {
+                html += `
+                    <div class="asset-card">
+                        <div class="asset-title">🛠️ ${tool.name}</div>
+                        <div class="asset-meta">Server: ${tool.server_id}</div>
+                        <div class="asset-meta">Calls: ${tool.usage?.call_count || 0}</div>
+                        <span class="badge badge-blue">Tool</span>
+                    </div>
+                `;
+            });
+
+            html += '</div>';
+            return html || '';
+        }
+
+        function renderDataAssets() {
+            if (!assets.data_assets || assets.data_assets.length === 0) return '';
+
+            let html = '<div class="asset-grid">';
+            assets.data_assets.forEach(asset => {
+                const icon = asset.type === 'catalog' ? '📚' :
+                             asset.type === 'schema' ? '📁' :
+                             asset.type === 'table' ? '📊' : '📦';
+                html += `
+                    <div class="asset-card">
+                        <div class="asset-title">${icon} ${asset.name}</div>
+                        <div class="asset-meta">Type: ${asset.type}</div>
+                        ${asset.owner ? `<div class="asset-meta">Owner: ${asset.owner}</div>` : ''}
+                        ${asset.metadata?.ai_experiments ?
+                            `<div class="asset-meta">AI Experiments: ${asset.metadata.ai_experiments.length}</div>` : ''}
+                        <span class="badge badge-green">${asset.type}</span>
+                        ${asset.metadata?.ai_discovery_method ?
+                            `<span class="badge badge-purple">${asset.metadata.ai_discovery_method}</span>` : ''}
+                    </div>
+                `;
+            });
+            html += '</div>';
+            return html;
+        }
+
+
+        function switchTab(tab) {
+            currentTab = tab;
+
+            // Update tab buttons
+            document.querySelectorAll('.tab').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.classList.add('active');
+
+            renderAssets();
+        }
+
+        async function exportData() {
+            try {
+                const response = await fetch('/api/status');
+                const status = await response.json();
+
+                const exportResponse = await fetch('/api/export', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({plugins: status.plugins_enabled})
+                });
+
+                const data = await exportResponse.json();
+
+                // Download as JSON file
+                const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `opencite-export-${new Date().toISOString()}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+            } catch (error) {
+                console.error('Error exporting data:', error);
+                alert('Export failed: ' + error.message);
+            }
+        }
+
+        // Initialize
+        async function initialize() {
+            loadPlugins();
+
+            // Check if discovery is already running and stop it
+            try {
+                const response = await fetch('/api/status');
+                const status = await response.json();
+
+                if (status.running) {
+                    console.log('[Init] Discovery already running, stopping it...');
+                    await fetch('/api/stop', {method: 'POST'});
+                    console.log('[Init] Stopped existing discovery session');
+                }
+            } catch (error) {
+                console.error('[Init] Error checking/stopping discovery:', error);
+            }
+
+            updateStatus();
+        }
+
+        initialize();
+    </script>
+</body>
+</html>
