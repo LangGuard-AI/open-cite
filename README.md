@@ -138,7 +138,7 @@ for model in models:
     print(f"Model: {model['name']} - Used by {len(model['tools'])} tools")
 ```
 
-For detailed OpenTelemetry plugin documentation, see [docs/plugins/OPENTELEMETRY_PLUGIN.md](docs/pluginsOPENTELEMETRY_PLUGIN.md).
+For detailed OpenTelemetry plugin documentation, see [docs/plugins/OPENTELEMETRY_PLUGIN.md](docs/plugins/OPENTELEMETRY_PLUGIN.md).
 
 ### MCP Plugin
 
