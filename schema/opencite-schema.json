@@ -1,0 +1,1019 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://opencite.org/schemas/v1/opencite.json",
+  "title": "OpenCITE Discovery Schema",
+  "description": "Schema for storing discovered AI tools, models, and data assets from OpenCITE plugins",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Schema version",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "examples": ["1.0.0"]
+    },
+    "metadata": {
+      "$ref": "#/definitions/Metadata"
+    },
+    "tools": {
+      "type": "array",
+      "description": "Discovered AI tools and applications",
+      "items": {
+        "$ref": "#/definitions/Tool"
+      }
+    },
+    "models": {
+      "type": "array",
+      "description": "Discovered AI models",
+      "items": {
+        "$ref": "#/definitions/Model"
+      }
+    },
+    "data_assets": {
+      "type": "array",
+      "description": "Discovered data assets (catalogs, tables, etc.)",
+      "items": {
+        "$ref": "#/definitions/DataAsset"
+      }
+    },
+    "traces": {
+      "type": "array",
+      "description": "Collected traces from various sources",
+      "items": {
+        "$ref": "#/definitions/Trace"
+      }
+    },
+    "mcp_servers": {
+      "type": "array",
+      "description": "Discovered MCP (Model Context Protocol) servers",
+      "items": {
+        "$ref": "#/definitions/MCPServer"
+      }
+    },
+    "mcp_tools": {
+      "type": "array",
+      "description": "Tools provided by MCP servers",
+      "items": {
+        "$ref": "#/definitions/MCPTool"
+      }
+    },
+    "mcp_resources": {
+      "type": "array",
+      "description": "Resources provided by MCP servers",
+      "items": {
+        "$ref": "#/definitions/MCPResource"
+      }
+    }
+  },
+  "required": ["version", "metadata"],
+  "definitions": {
+    "Metadata": {
+      "type": "object",
+      "description": "Metadata about the discovery session",
+      "properties": {
+        "generated_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When this data was generated"
+        },
+        "generated_by": {
+          "type": "string",
+          "description": "Plugin or tool that generated this data",
+          "examples": ["opentelemetry", "databricks", "opencite-client"]
+        },
+        "discovery_window": {
+          "$ref": "#/definitions/TimeWindow"
+        },
+        "plugins": {
+          "type": "array",
+          "description": "Plugins that contributed to this discovery",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "config": {
+                "type": "object"
+              }
+            },
+            "required": ["name"]
+          }
+        },
+        "statistics": {
+          "$ref": "#/definitions/Statistics"
+        }
+      },
+      "required": ["generated_at", "generated_by"]
+    },
+    "Tool": {
+      "type": "object",
+      "description": "An AI tool or application",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the tool",
+          "examples": ["tool-12345", "customer-service-bot"]
+        },
+        "name": {
+          "type": "string",
+          "description": "Name of the tool",
+          "examples": ["customer-service-bot", "code-assistant"]
+        },
+        "type": {
+          "type": "string",
+          "enum": ["application", "service", "library", "agent", "chatbot", "unknown"],
+          "description": "Type of tool"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of the tool"
+        },
+        "discovery_source": {
+          "type": "string",
+          "enum": ["opentelemetry", "databricks", "manual"],
+          "description": "How this tool was discovered"
+        },
+        "models_used": {
+          "type": "array",
+          "description": "Models used by this tool",
+          "items": {
+            "type": "object",
+            "properties": {
+              "model_id": {
+                "type": "string",
+                "description": "Reference to a model ID"
+              },
+              "usage_count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "first_seen": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "last_seen": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": ["model_id"]
+          }
+        },
+        "provider": {
+          "type": "string",
+          "description": "LLM provider/gateway used",
+          "examples": ["openrouter", "openai", "anthropic", "azure", "bedrock"]
+        },
+        "metadata": {
+          "type": "object",
+          "description": "Additional metadata about the tool",
+          "properties": {
+            "owner": {
+              "type": "string"
+            },
+            "team": {
+              "type": "string"
+            },
+            "environment": {
+              "type": "string",
+              "enum": ["production", "staging", "development", "test"]
+            },
+            "version": {
+              "type": "string"
+            },
+            "repository": {
+              "type": "string",
+              "format": "uri"
+            },
+            "documentation": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        },
+        "endpoints": {
+          "type": "array",
+          "description": "API endpoints or URLs associated with this tool",
+          "items": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string",
+                "format": "uri"
+              },
+              "type": {
+                "type": "string",
+                "enum": ["api", "webhook", "grpc", "http"]
+              }
+            }
+          }
+        },
+        "trace_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of traces collected for this tool"
+        },
+        "traces": {
+          "type": "array",
+          "description": "References to trace IDs",
+          "items": {
+            "type": "string"
+          }
+        },
+        "first_seen": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When this tool was first discovered"
+        },
+        "last_seen": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When this tool was last observed"
+        },
+        "tags": {
+          "type": "array",
+          "description": "User-defined tags",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["id", "name", "discovery_source"]
+    },
+    "Model": {
+      "type": "object",
+      "description": "An AI model",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the model",
+          "examples": ["openai/gpt-4", "anthropic/claude-3-opus"]
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name of the model"
+        },
+        "provider": {
+          "type": "string",
+          "description": "Model provider",
+          "examples": ["openai", "anthropic", "google", "meta", "mistral"]
+        },
+        "model_family": {
+          "type": "string",
+          "description": "Model family or series",
+          "examples": ["gpt-4", "claude-3", "llama-2"]
+        },
+        "model_version": {
+          "type": "string",
+          "description": "Specific version of the model",
+          "examples": ["turbo", "opus", "70b"]
+        },
+        "modality": {
+          "type": "array",
+          "description": "Model modalities",
+          "items": {
+            "type": "string",
+            "enum": ["text", "image", "audio", "video", "multimodal"]
+          }
+        },
+        "discovery_source": {
+          "type": "string",
+          "enum": ["opentelemetry", "databricks", "manual"],
+          "description": "How this model was discovered"
+        },
+        "usage": {
+          "type": "object",
+          "description": "Usage statistics",
+          "properties": {
+            "total_calls": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unique_tools": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "tools_using": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "description": "Tool IDs using this model"
+              }
+            },
+            "first_seen": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "last_seen": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "metadata": {
+          "type": "object",
+          "description": "Additional model metadata",
+          "properties": {
+            "context_window": {
+              "type": "integer",
+              "description": "Maximum context window size in tokens"
+            },
+            "max_output_tokens": {
+              "type": "integer"
+            },
+            "cost_per_1k_input_tokens": {
+              "type": "number"
+            },
+            "cost_per_1k_output_tokens": {
+              "type": "number"
+            },
+            "capabilities": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "examples": ["function-calling", "vision", "streaming"]
+              }
+            }
+          }
+        },
+        "catalog_info": {
+          "type": "object",
+          "description": "Information for models registered in Unity Catalog",
+          "properties": {
+            "catalog_name": {
+              "type": "string"
+            },
+            "schema_name": {
+              "type": "string"
+            },
+            "full_name": {
+              "type": "string",
+              "description": "Fully qualified name: catalog.schema.model"
+            },
+            "owner": {
+              "type": "string"
+            },
+            "comment": {
+              "type": "string"
+            },
+            "registered_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "tags": {
+          "type": "array",
+          "description": "User-defined tags",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["id", "name", "discovery_source"]
+    },
+    "DataAsset": {
+      "type": "object",
+      "description": "A data asset from Unity Catalog or other sources",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the asset"
+        },
+        "name": {
+          "type": "string",
+          "description": "Name of the asset"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["catalog", "schema", "table", "view", "volume", "function", "model"],
+          "description": "Type of data asset"
+        },
+        "full_name": {
+          "type": "string",
+          "description": "Fully qualified name",
+          "examples": ["main.default.users", "ml_catalog.models.recommendation_v1"]
+        },
+        "discovery_source": {
+          "type": "string",
+          "enum": ["databricks", "manual"],
+          "description": "Source of discovery"
+        },
+        "hierarchy": {
+          "type": "object",
+          "description": "Hierarchical location",
+          "properties": {
+            "catalog_name": {
+              "type": "string"
+            },
+            "schema_name": {
+              "type": "string"
+            }
+          }
+        },
+        "metadata": {
+          "type": "object",
+          "properties": {
+            "owner": {
+              "type": "string"
+            },
+            "comment": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "table_type": {
+              "type": "string",
+              "description": "For tables: MANAGED, EXTERNAL, VIEW, etc."
+            },
+            "volume_type": {
+              "type": "string",
+              "description": "For volumes: MANAGED, EXTERNAL"
+            },
+            "data_source_format": {
+              "type": "string",
+              "description": "Format of data: DELTA, PARQUET, CSV, etc."
+            },
+            "row_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "schema_details": {
+          "type": "object",
+          "description": "Schema information for tables",
+          "properties": {
+            "columns": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  },
+                  "nullable": {
+                    "type": "boolean"
+                  },
+                  "comment": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "function_details": {
+          "type": "object",
+          "description": "Details for functions",
+          "properties": {
+            "routine_definition": {
+              "type": "string",
+              "description": "SQL or code definition"
+            },
+            "language": {
+              "type": "string",
+              "examples": ["SQL", "PYTHON", "SCALA"]
+            },
+            "parameters": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["id", "name", "type", "discovery_source"]
+    },
+    "Trace": {
+      "type": "object",
+      "description": "A trace from OpenTelemetry or MLflow",
+      "properties": {
+        "trace_id": {
+          "type": "string",
+          "description": "Unique trace identifier"
+        },
+        "source": {
+          "type": "string",
+          "enum": ["opentelemetry", "mlflow"],
+          "description": "Source of the trace"
+        },
+        "tool_id": {
+          "type": "string",
+          "description": "Reference to the tool that generated this trace"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the trace was captured"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total duration in milliseconds"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["OK", "ERROR", "UNSET"],
+          "description": "Trace status"
+        },
+        "spans": {
+          "type": "array",
+          "description": "Spans within this trace",
+          "items": {
+            "$ref": "#/definitions/Span"
+          }
+        },
+        "models_called": {
+          "type": "array",
+          "description": "Models called during this trace",
+          "items": {
+            "type": "string"
+          }
+        },
+        "attributes": {
+          "type": "object",
+          "description": "Trace-level attributes"
+        },
+        "mlflow_info": {
+          "type": "object",
+          "description": "MLflow-specific trace information",
+          "properties": {
+            "request_id": {
+              "type": "string"
+            },
+            "experiment_id": {
+              "type": "string"
+            },
+            "execution_time_ms": {
+              "type": "integer"
+            },
+            "tags": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "required": ["trace_id", "source", "timestamp"]
+    },
+    "Span": {
+      "type": "object",
+      "description": "A span within a trace",
+      "properties": {
+        "span_id": {
+          "type": "string",
+          "description": "Unique span identifier"
+        },
+        "parent_span_id": {
+          "type": "string",
+          "description": "Parent span ID if nested"
+        },
+        "name": {
+          "type": "string",
+          "description": "Span name"
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["INTERNAL", "SERVER", "CLIENT", "PRODUCER", "CONSUMER"],
+          "description": "Span kind"
+        },
+        "start_time": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "end_time": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "status": {
+          "type": "string",
+          "enum": ["OK", "ERROR", "UNSET"]
+        },
+        "attributes": {
+          "type": "object",
+          "description": "Span attributes (key-value pairs)",
+          "properties": {
+            "http.url": {
+              "type": "string"
+            },
+            "http.method": {
+              "type": "string"
+            },
+            "http.status_code": {
+              "type": "integer"
+            },
+            "gen_ai.request.model": {
+              "type": "string"
+            },
+            "gen_ai.response.model": {
+              "type": "string"
+            },
+            "gen_ai.request.temperature": {
+              "type": "number"
+            },
+            "gen_ai.request.max_tokens": {
+              "type": "integer"
+            },
+            "gen_ai.usage.input_tokens": {
+              "type": "integer"
+            },
+            "gen_ai.usage.output_tokens": {
+              "type": "integer"
+            }
+          },
+          "additionalProperties": true
+        },
+        "events": {
+          "type": "array",
+          "description": "Span events",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "timestamp": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "attributes": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      },
+      "required": ["span_id", "name", "start_time"]
+    },
+    "TimeWindow": {
+      "type": "object",
+      "description": "Time window for discovery",
+      "properties": {
+        "start": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "end": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "Statistics": {
+      "type": "object",
+      "description": "Summary statistics",
+      "properties": {
+        "total_tools": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_models": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_data_assets": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_traces": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "by_provider": {
+          "type": "object",
+          "description": "Counts by provider",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        },
+        "by_discovery_source": {
+          "type": "object",
+          "description": "Counts by discovery source",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    "MCPServer": {
+      "type": "object",
+      "description": "An MCP (Model Context Protocol) server",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the MCP server"
+        },
+        "name": {
+          "type": "string",
+          "description": "Name of the MCP server"
+        },
+        "discovery_source": {
+          "type": "string",
+          "enum": ["config_file", "environment", "network", "trace", "manual"],
+          "description": "How this server was discovered"
+        },
+        "transport": {
+          "type": "string",
+          "enum": ["stdio", "http", "sse", "unknown"],
+          "description": "MCP transport protocol"
+        },
+        "endpoint": {
+          "type": "string",
+          "format": "uri",
+          "description": "HTTP/SSE endpoint URL"
+        },
+        "command": {
+          "type": "string",
+          "description": "Command to start the server (for stdio transport)"
+        },
+        "args": {
+          "type": "array",
+          "description": "Command-line arguments",
+          "items": {
+            "type": "string"
+          }
+        },
+        "env": {
+          "type": "object",
+          "description": "Environment variables",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "tools_provided": {
+          "type": "array",
+          "description": "IDs of tools provided by this server",
+          "items": {
+            "type": "string"
+          }
+        },
+        "resources_provided": {
+          "type": "array",
+          "description": "IDs of resources provided by this server",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tools_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of tools provided"
+        },
+        "resources_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of resources provided"
+        },
+        "source_file": {
+          "type": "string",
+          "description": "Configuration file path (if discovered from config)"
+        },
+        "source_env_var": {
+          "type": "string",
+          "description": "Environment variable name (if discovered from env)"
+        },
+        "metadata": {
+          "type": "object",
+          "description": "Additional server metadata",
+          "properties": {
+            "version": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "owner": {
+              "type": "string"
+            },
+            "repository": {
+              "type": "string",
+              "format": "uri"
+            }
+          },
+          "additionalProperties": true
+        },
+        "first_seen": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When this server was first discovered"
+        },
+        "last_seen": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When this server was last observed"
+        },
+        "tags": {
+          "type": "array",
+          "description": "User-defined tags",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["id", "name", "discovery_source"]
+    },
+    "MCPTool": {
+      "type": "object",
+      "description": "A tool provided by an MCP server",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the tool"
+        },
+        "name": {
+          "type": "string",
+          "description": "Name of the tool"
+        },
+        "server_id": {
+          "type": "string",
+          "description": "ID of the MCP server providing this tool"
+        },
+        "discovery_source": {
+          "type": "string",
+          "enum": ["introspection", "trace", "config", "manual"],
+          "description": "How this tool was discovered"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of the tool"
+        },
+        "schema": {
+          "type": "object",
+          "description": "JSON Schema for the tool's parameters",
+          "properties": {
+            "type": {
+              "type": "string"
+            },
+            "properties": {
+              "type": "object"
+            },
+            "required": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "usage": {
+          "type": "object",
+          "description": "Usage statistics",
+          "properties": {
+            "call_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "success_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "error_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "first_used": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "last_used": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "metadata": {
+          "type": "object",
+          "description": "Additional tool metadata",
+          "additionalProperties": true
+        },
+        "tags": {
+          "type": "array",
+          "description": "User-defined tags",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["id", "name", "server_id"]
+    },
+    "MCPResource": {
+      "type": "object",
+      "description": "A resource provided by an MCP server",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the resource"
+        },
+        "uri": {
+          "type": "string",
+          "description": "URI of the resource"
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name of the resource"
+        },
+        "server_id": {
+          "type": "string",
+          "description": "ID of the MCP server providing this resource"
+        },
+        "discovery_source": {
+          "type": "string",
+          "enum": ["introspection", "trace", "config", "manual"],
+          "description": "How this resource was discovered"
+        },
+        "type": {
+          "type": "string",
+          "description": "Type of resource",
+          "examples": ["file", "database", "api", "document"]
+        },
+        "mime_type": {
+          "type": "string",
+          "description": "MIME type of the resource"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description"
+        },
+        "usage": {
+          "type": "object",
+          "description": "Usage statistics",
+          "properties": {
+            "access_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "first_accessed": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "last_accessed": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "metadata": {
+          "type": "object",
+          "description": "Additional resource metadata",
+          "properties": {
+            "size_bytes": {
+              "type": "integer"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "additionalProperties": true
+        },
+        "tags": {
+          "type": "array",
+          "description": "User-defined tags",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["id", "uri", "server_id"]
+    }
+  }
+}
