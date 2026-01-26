@@ -80,6 +80,64 @@ for model in models[:5]:  # Show first 5
     print(f"{model['name']} ({model['provider']})")
 ```
 
+## Step 6: Test Bedrock Model Invocations
+
+⚠️ **Important**: OpenCITE tracks **direct Bedrock model invocations** (API calls to `bedrock-runtime:InvokeModel`), not Bedrock Agent invocations. Console-based Bedrock Agents use different APIs and won't appear in these tests.
+
+### Option A: Make a Test Bedrock Call
+
+Use the provided script to make a real Bedrock API call that will appear in CloudTrail:
+
+```powershell
+python test_bedrock_call.py
+```
+
+This script:
+- Makes a direct `InvokeModel` API call to Claude
+- Generates a CloudTrail event that OpenCITE can detect
+- Shows you the response and timestamp
+
+**Note**: CloudTrail events can take 5-15 minutes to appear. After running this script, wait a few minutes before verifying.
+
+### Option B: Verify Bedrock Setup and Activity
+
+Use the verification script to check your Bedrock connection and see recent model invocations:
+
+```powershell
+python verify_bedrock.py
+```
+
+This script will:
+1. ✅ Verify your Bedrock connection
+2. 📋 List available foundation models
+3. 🔍 Check CloudTrail for recent model invocations (last 7 days)
+4. 📊 Show usage statistics by model
+
+**What it shows**:
+- Direct model API calls (`bedrock-runtime:InvokeModel`)
+- Model usage statistics
+- Recent activity from your code-based Bedrock usage
+
+**What it doesn't show**:
+- Bedrock Agent invocations (console-based agents use `InvokeAgent` API)
+- Agent orchestration events
+
+### Understanding the Difference
+
+- **Model Invocations** (tracked by OpenCITE):
+  - Direct API calls: `bedrock_runtime.invoke_model()`
+  - Code-based usage (Python, Node.js, etc.)
+  - Shows up in CloudTrail as `InvokeModel` events
+  - What most developers use in production
+
+- **Agent Invocations** (not tracked by OpenCITE):
+  - Console-based Bedrock Agents
+  - Uses `InvokeAgent` API
+  - Different CloudTrail event type
+  - Higher-level abstraction for non-developers
+
+If you're testing with console agents, you won't see activity in `verify_bedrock.py`. Use `test_bedrock_call.py` to generate a real model invocation that OpenCITE can track.
+
 ## Important Notes
 
 ⚠️ **Root Credentials Warning**: Using root account credentials is not recommended for security. Consider:
