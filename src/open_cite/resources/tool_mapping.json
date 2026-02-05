@@ -1,0 +1,24 @@
+{
+    "opentelemetry": [
+        {
+            "attributes": {
+                "trace.metadata.openrouter.entity_id": "example_entity",
+                "trace.metadata.openrouter.api_key_name": "example_key"
+            },
+            "identity": {
+                "source_name": "Example Tool Corp",
+                "source_id": "etc-001"
+            }
+        },
+        {
+            "attributes": {
+                "trace.metadata.openrouter.api_key_name": "Travel Agent Key"
+            },
+            "identity": {
+                "source_name": "AI Travel Agent",
+                "source_id": "openrouter"
+            },
+            "match_type": "all"
+        }
+    ]
+}

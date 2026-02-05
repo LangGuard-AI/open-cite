@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -28,7 +29,7 @@
             border-radius: 12px;
             padding: 30px;
             margin-bottom: 20px;
-            box-shadow: 0 8px 16px rgba(0,0,0,0.1);
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
         }
 
         h1 {
@@ -62,7 +63,7 @@
             background: white;
             border-radius: 12px;
             padding: 24px;
-            box-shadow: 0 8px 16px rgba(0,0,0,0.1);
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
         }
 
         .card h2 {
@@ -97,9 +98,12 @@
         }
 
         @keyframes pulse {
-            0%, 100% {
+
+            0%,
+            100% {
                 opacity: 1;
             }
+
             50% {
                 opacity: 0.5;
             }
@@ -150,7 +154,9 @@
         }
 
         @keyframes spin {
-            to { transform: rotate(360deg); }
+            to {
+                transform: rotate(360deg);
+            }
         }
 
         .plugin-item {
@@ -350,7 +356,7 @@
         }
 
         .asset-card:hover {
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
             transform: translateY(-2px);
         }
 
@@ -461,15 +467,136 @@
         }
 
         @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        /* Unknown Tool Highlighting */
+        .asset-card.unknown {
+            background-color: #fffbeb;
+            border: 2px solid #fbbf24;
+        }
+
+        .btn-map {
+            margin-top: 12px;
+            padding: 6px 12px;
+            background: #f59e0b;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.2s;
+            width: auto;
+            display: inline-block;
+        }
+
+        .btn-map:hover {
+            background: #d97706;
+            transform: translateY(-1px);
+        }
+
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(4px);
+        }
+
+        .modal-content {
+            background-color: white;
+            margin: 5% auto;
+            padding: 30px;
+            border-radius: 12px;
+            width: 600px;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        .modal-header h2 {
+            font-size: 1.5em;
+            color: #111827;
+        }
+
+        .close {
+            color: #9ca3af;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        .close:hover {
+            color: #111827;
+        }
+
+        .attribute-list {
+            margin: 15px 0;
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 10px;
+        }
+
+        .attribute-item {
+            display: flex;
+            align-items: center;
+            padding: 10px;
+            background: #f9fafb;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+
+        .attribute-item:hover {
+            background: #f3f4f6;
+        }
+
+        .attribute-item input {
+            margin-right: 12px;
+            width: 18px;
+            height: 18px;
+        }
+
+        .attribute-label {
+            font-size: 0.9em;
+            color: #374151;
+            flex-grow: 1;
+            word-break: break-all;
+        }
+
+        .attribute-value {
+            font-weight: 600;
+            color: #111827;
+            margin-left: 10px;
         }
     </style>
 </head>
+
 <body>
     <div class="container">
         <div class="header">
-            <h1><img src="static/OpenCiteBear.png"/> OpenCITE</h1>
+            <h1><img src="static/OpenCiteBear.png" /> OpenCITE</h1>
             <p class="subtitle"><b>Open C</b>atalog of <b>I</b>ntelligent <b>T</b>ools in the <b>E</b>nterprise</p>
         </div>
 
@@ -514,7 +641,8 @@
                         <button class="tab" onclick="switchTab('models')">Models</button>
                         <button class="tab" onclick="switchTab('mcp')">MCP</button>
                         <button class="tab" onclick="switchTab('data_assets')">Data Assets</button>
-                        <button class="btn-export-inline" id="exportBtnInline" onclick="exportData()" style="display: none;" title="Download Discovered Assets in JSON">
+                        <button class="btn-export-inline" id="exportBtnInline" onclick="exportData()"
+                            style="display: none;" title="Download Discovered Assets in JSON">
                             📥 Download JSON
                         </button>
                     </div>
@@ -527,6 +655,51 @@
                         </div>
                     </div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Map Tool Modal -->
+    <div id="mapToolModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Identify Tool Source</h2>
+                <span class="close" onclick="closeModal()">&times;</span>
+            </div>
+            <p style="color: #6b7280; font-size: 0.9em; margin-bottom: 20px;">
+                Select the attributes that uniquely identify this tool and provide its identity.
+            </p>
+
+            <div id="modalInternalData" style="display: none;"></div>
+
+            <div class="form-group">
+                <label>Identify as (Tool Name)</label>
+                <input type="text" id="mapSourceName" placeholder="e.g. My Customer Service Bot">
+            </div>
+
+            <div class="form-group">
+                <label>Source Identifier (ID)</label>
+                <input type="text" id="mapSourceId" placeholder="e.g. cs-bot-001">
+            </div>
+
+            <div class="form-group">
+                <label>Match Type</label>
+                <select id="mapMatchType"
+                    style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.9em;">
+                    <option value="all">Match ALL selected attributes (Exact match)</option>
+                    <option value="any">Match ANY selected attribute (At least one)</option>
+                </select>
+            </div>
+
+            <div style="margin-top: 20px;">
+                <label style="font-weight: 600; font-size: 0.9em; color: #374151;">Select Identifying
+                    Attributes:</label>
+                <div id="attributeList" class="attribute-list"></div>
+            </div>
+
+            <div style="margin-top: 30px;">
+                <button class="btn btn-primary" onclick="submitMapping()">Save Mapping</button>
+                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
             </div>
         </div>
     </div>
@@ -573,7 +746,7 @@
                 div.id = `plugin-${key}`;
 
                 // Make entire card clickable to toggle checkbox
-                div.onclick = function(e) {
+                div.onclick = function (e) {
                     // Don't toggle if clicking on input fields or the checkbox itself
                     if (e.target.tagName === 'INPUT') {
                         return;
@@ -736,8 +909,8 @@
 
                 const response = await fetch('/api/plugins/configure', {
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({plugins: selectedPlugins})
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ plugins: selectedPlugins })
                 });
 
                 if (!response.ok) {
@@ -780,7 +953,7 @@
 
         async function stopDiscovery() {
             try {
-                await fetch('/api/stop', {method: 'POST'});
+                await fetch('/api/stop', { method: 'POST' });
 
                 // Stop auto-refresh polling
                 if (refreshInterval) {
@@ -921,10 +1094,10 @@
             const totalModels = (totals.models || 0) + (totals.gcp_models || 0) + (totals.gcp_endpoints || 0);
 
             const stats = [
-                {label: 'Tools', value: totals.tools || 0, show: true, tab: 'tools'},
-                {label: 'Models', value: totalModels, show: true, tab: 'models'},
-                {label: 'MCP Servers', value: totals.mcp_servers || 0, show: true, tab: 'mcp'},
-                {label: 'Data Assets', value: totals.data_assets || 0, show: totals.data_assets > 0, tab: 'data_assets'}
+                { label: 'Tools', value: totals.tools || 0, show: true, tab: 'tools' },
+                { label: 'Models', value: totalModels, show: true, tab: 'models' },
+                { label: 'MCP Servers', value: totals.mcp_servers || 0, show: true, tab: 'mcp' },
+                { label: 'Data Assets', value: totals.data_assets || 0, show: totals.data_assets > 0, tab: 'data_assets' }
             ];
 
             container.innerHTML = stats
@@ -971,13 +1144,21 @@
             (assets.tools || []).forEach(tool => {
                 count++;
                 const source = tool.metadata?.source || '';
+                const sourceName = tool.tool_source_name || '';
+                const sourceId = tool.tool_source_id || '';
+                const isUnknown = !sourceName;
+
                 html += `
-                    <div class="asset-card">
+                    <div class="asset-card ${isUnknown ? 'unknown' : ''}">
                         <div class="asset-title">🔧 ${tool.name}</div>
                         <div class="asset-meta">Type: ${tool.type}</div>
-                        ${source ? `<div class="asset-meta">Source: ${source}</div>` : ''}
+                        ${sourceName ? `<div class="asset-meta"><b>Source:</b> ${sourceName}</div>` :
+                        (source ? `<div class="asset-meta">Source: ${source}</div>` :
+                            `<span class="badge" style="background: #fef3c7; color: #92400e;">Mapping Required</span>`)}
+                        ${sourceId ? `<div class="asset-meta"><b>Source ID:</b> ${sourceId}</div>` : ''}
                         <div class="asset-meta">Models: ${tool.models ? tool.models.length : 0}</div>
                         <span class="badge badge-blue">Tool</span>
+                        ${isUnknown ? `<br><button class="btn-map" onclick="openMapModalByName('${tool.name.replace(/'/g, "\\'")}')">📍 Map Source</button>` : ''}
                     </div>
                 `;
             });
@@ -1036,8 +1217,8 @@
             (assets.data_assets || []).forEach(asset => {
                 count++;
                 const icon = asset.type === 'catalog' ? '📚' :
-                             asset.type === 'schema' ? '📁' :
-                             asset.type === 'table' ? '📊' : '📦';
+                    asset.type === 'schema' ? '📁' :
+                        asset.type === 'table' ? '📊' : '📦';
                 html += `
                     <div class="asset-card">
                         <div class="asset-title">${icon} ${asset.name}</div>
@@ -1066,13 +1247,21 @@
             let html = '<div class="asset-grid">';
             assets.tools.forEach(tool => {
                 const source = tool.metadata?.source || '';
+                const sourceName = tool.tool_source_name || '';
+                const sourceId = tool.tool_source_id || '';
+                const isUnknown = !sourceName;
+
                 html += `
-                    <div class="asset-card">
+                    <div class="asset-card ${isUnknown ? 'unknown' : ''}">
                         <div class="asset-title">🔧 ${tool.name}</div>
                         <div class="asset-meta">Type: ${tool.type}</div>
                         <div class="asset-meta">Discovery: ${tool.discovery_source}</div>
-                        ${source ? `<div class="asset-meta">Source: ${source}</div>` : ''}
+                        ${sourceName ? `<div class="asset-meta"><b>Identified Source:</b> ${sourceName}</div>` :
+                        (source ? `<div class="asset-meta">Source: ${source}</div>` :
+                            `<span class="badge" style="background: #fef3c7; color: #92400e;">Mapping Required</span>`)}
+                        ${sourceId ? `<div class="asset-meta"><b>Source ID:</b> ${sourceId}</div>` : ''}
                         <div class="asset-meta">Models: ${tool.models ? tool.models.join(', ') : 'none'}</div>
+                        ${isUnknown ? `<button class="btn-map" onclick="openMapModalByName('${tool.name.replace(/'/g, "\\'")}')">📍 Map Source</button>` : ''}
                     </div>
                 `;
             });
@@ -1165,18 +1354,18 @@
             let html = '<div class="asset-grid">';
             assets.data_assets.forEach(asset => {
                 const icon = asset.type === 'catalog' ? '📚' :
-                             asset.type === 'schema' ? '📁' :
-                             asset.type === 'table' ? '📊' : '📦';
+                    asset.type === 'schema' ? '📁' :
+                        asset.type === 'table' ? '📊' : '📦';
                 html += `
                     <div class="asset-card">
                         <div class="asset-title">${icon} ${asset.name}</div>
                         <div class="asset-meta">Type: ${asset.type}</div>
                         ${asset.owner ? `<div class="asset-meta">Owner: ${asset.owner}</div>` : ''}
                         ${asset.metadata?.ai_experiments ?
-                            `<div class="asset-meta">AI Experiments: ${asset.metadata.ai_experiments.length}</div>` : ''}
+                        `<div class="asset-meta">AI Experiments: ${asset.metadata.ai_experiments.length}</div>` : ''}
                         <span class="badge badge-green">${asset.type}</span>
                         ${asset.metadata?.ai_discovery_method ?
-                            `<span class="badge badge-purple">${asset.metadata.ai_discovery_method}</span>` : ''}
+                        `<span class="badge badge-purple">${asset.metadata.ai_discovery_method}</span>` : ''}
                     </div>
                 `;
             });
@@ -1204,14 +1393,14 @@
 
                 const exportResponse = await fetch('/api/export', {
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({plugins: status.plugins_enabled})
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ plugins: status.plugins_enabled })
                 });
 
                 const data = await exportResponse.json();
 
                 // Download as JSON file
-                const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
@@ -1224,6 +1413,133 @@
             }
         }
 
+        // Tool Mapping Functions
+        let currentMappingTool = null;
+
+        function openMapModalByName(toolName) {
+            const tool = assets.tools.find(t => t.name === toolName);
+            if (!tool) {
+                console.error('Tool not found:', toolName);
+                return;
+            }
+            openMapModal(tool);
+        }
+
+        function openMapModal(tool) {
+            currentMappingTool = tool;
+
+            document.getElementById('mapSourceName').value = tool.name;
+            document.getElementById('mapSourceId').value = (tool.id || '').replace('otel-', '');
+
+            const attrList = document.getElementById('attributeList');
+            attrList.innerHTML = '';
+
+            // Collect all attributes from metadata
+            const metadata = tool.metadata || {};
+            const keys = Object.keys(metadata).filter(k =>
+                !['last_seen', 'tool_source_name', 'tool_source_id', 'traces', 'models', 'models_used', 'discovery_source'].includes(k)
+            );
+
+            if (keys.length === 0) {
+                attrList.innerHTML = '<p style="color: #666; font-size: 0.9em;">No metadata attributes available for identification.</p>';
+            } else {
+                let count = 0;
+                keys.forEach(key => {
+                    const value = metadata[key];
+                    // Skip if null, undefined, object, or empty string
+                    if (value === null || value === undefined || typeof value === 'object' || String(value).trim() === '') return;
+
+                    count++;
+                    const div = document.createElement('div');
+                    div.className = 'attribute-item';
+                    div.innerHTML = `
+                        <input type="checkbox" id="attr-${key}" data-key="${key}" data-value="${value}">
+                        <div class="attribute-label">
+                            <span style="color: #6b7280;">${key}:</span>
+                            <span class="attribute-value">${value}</span>
+                        </div>
+                    `;
+                    div.onclick = (e) => {
+                        if (e.target.tagName !== 'INPUT') {
+                            const cb = div.querySelector('input');
+                            cb.checked = !cb.checked;
+                        }
+                    };
+                    attrList.appendChild(div);
+                });
+
+                if (count === 0) {
+                    attrList.innerHTML = '<p style="color: #666; font-size: 0.9em;">No non-empty attributes available for identification.</p>';
+                }
+            }
+
+            document.getElementById('mapToolModal').style.display = 'block';
+        }
+
+        function closeModal() {
+            document.getElementById('mapToolModal').style.display = 'none';
+            currentMappingTool = null;
+        }
+
+        async function submitMapping() {
+            const sourceName = document.getElementById('mapSourceName').value;
+            const sourceId = document.getElementById('mapSourceId').value;
+            const matchType = document.getElementById('mapMatchType').value;
+
+            if (!sourceName || !sourceId) {
+                alert('Please provide both a Source Name and a Source Identifier.');
+                return;
+            }
+
+            const selectedAttrs = {};
+            const checkboxes = document.querySelectorAll('#attributeList input:checked');
+
+            checkboxes.forEach(cb => {
+                selectedAttrs[cb.dataset.key] = cb.dataset.value;
+            });
+
+            if (Object.keys(selectedAttrs).length === 0) {
+                alert('Please select at least one attribute to identify this tool.');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/map-tool', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        plugin_name: currentMappingTool.discovery_source,
+                        attributes: selectedAttrs,
+                        identity: {
+                            source_name: sourceName,
+                            source_id: sourceId
+                        },
+                        match_type: matchType
+                    })
+                });
+
+                const result = await response.json();
+                if (result.success) {
+                    closeModal();
+                    // Force refresh assets (correct function name is refreshAssets)
+                    refreshAssets();
+                } else {
+                    alert('Failed to save mapping: ' + result.error);
+                }
+            } catch (error) {
+                console.error('Error saving mapping:', error);
+                alert('Error saving mapping: ' + error.message);
+            }
+        }
+
+        // Close modal when clicking outside
+        window.onclick = function (event) {
+            const modal = document.getElementById('mapToolModal');
+            if (event.target == modal) {
+                closeModal();
+            }
+        };
+
         // Initialize
         async function initialize() {
             loadPlugins();
@@ -1235,7 +1551,7 @@
 
                 if (status.running) {
                     console.log('[Init] Discovery already running, stopping it...');
-                    await fetch('/api/stop', {method: 'POST'});
+                    await fetch('/api/stop', { method: 'POST' });
                     console.log('[Init] Stopped existing discovery session');
                 }
             } catch (error) {
@@ -1248,4 +1564,5 @@
         initialize();
     </script>
 </body>
+
 </html>

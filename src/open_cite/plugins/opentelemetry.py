@@ -9,15 +9,20 @@ import json
 import logging
 import threading
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from collections import defaultdict
 from http.server import BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from http.server import HTTPServer
+import re
 
 from open_cite.core import BaseDiscoveryPlugin
 
 logger = logging.getLogger(__name__)
+
+# Configure regex patterns here to capture additional attributes
+# Example: [r"^custom\..*", r"^app\.metadata\..*"]
+DEFAULT_ATTRIBUTE_PATTERNS = []
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
@@ -91,7 +96,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
     Supports standard GenAI semantic conventions for LLM observability.
     """
 
-    def __init__(self, host: str = "localhost", port: int = 4318, mcp_plugin=None):
+    def __init__(self, host: str = "localhost", port: int = 4318, mcp_plugin=None, attribute_patterns: List[str] = None):
         """
         Initialize the OpenTelemetry plugin.
 
@@ -99,12 +104,17 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             host: Host to bind the OTLP receiver to
             port: Port to bind the OTLP receiver to (default: 4318, standard OTLP/HTTP)
             mcp_plugin: Optional MCP plugin instance for MCP discovery integration
+            attribute_patterns: Optional list of regex patterns to match attributes to collect
         """
         self.host = host
         self.port = port
         self.server: Optional[HTTPServer] = None
         self.server_thread: Optional[threading.Thread] = None
         self.mcp_plugin = mcp_plugin
+        
+        # Use provided patterns or fallback to default configuration
+        patterns = attribute_patterns if attribute_patterns is not None else DEFAULT_ATTRIBUTE_PATTERNS
+        self.attribute_patterns = [re.compile(p) for p in patterns]
 
         # Trace storage: {trace_id: {resource_spans, scope_spans, etc.}}
         self.traces: Dict[str, Dict[str, Any]] = {}
@@ -117,10 +127,27 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         # Lock for thread-safe operations
         self._lock = threading.Lock()
 
+        # Identifier for tool source identification
+        from ..identifier import ToolIdentifier
+        self.identifier = ToolIdentifier()
+
     @property
     def name(self) -> str:
         """Name of the plugin."""
         return "opentelemetry"
+
+    @property
+    def supported_asset_types(self) -> Set[str]:
+        """Asset types supported by this plugin."""
+        return {"tool", "model"}
+
+    def get_identification_attributes(self) -> List[str]:
+        """Return a list of attribute keys used for tool identification."""
+        return [
+            "trace.metadata.openrouter.entity_id",
+            "trace.metadata.openrouter.api_key_name",
+            "trace.metadata.openrouter.creator_user_id"
+        ]
 
     def verify_connection(self) -> Dict[str, Any]:
         """
@@ -256,7 +283,6 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         for attr in attributes:
             key = attr.get("key", "")
             value = attr.get("value", {})
-            # Handle different value types
             if "stringValue" in value:
                 attr_dict[key] = value["stringValue"]
             elif "intValue" in value:
@@ -266,22 +292,37 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             elif "doubleValue" in value:
                 attr_dict[key] = value["doubleValue"]
 
-        # Check for model in attributes (using GenAI semantic conventions)
-        model_name = (
-            attr_dict.get("gen_ai.request.model")
-            or attr_dict.get("gen_ai.response.model")
-            or attr_dict.get("llm.model")
-            or attr_dict.get("model")
-        )
-
-        # Extract tool/service name from resource attributes
-        tool_name = None
-        resource_attrs = resource.get("attributes", [])
-        for attr in resource_attrs:
+        # Extract resource attributes as well
+        resource_dict = {}
+        for attr in resource.get("attributes", []):
             key = attr.get("key", "")
             value = attr.get("value", {})
-            if key == "service.name" and "stringValue" in value:
-                tool_name = value["stringValue"]
+            if "stringValue" in value:
+                resource_dict[key] = value["stringValue"]
+            elif "intValue" in value:
+                resource_dict[key] = value["intValue"]
+            elif "boolValue" in value:
+                resource_dict[key] = value["boolValue"]
+            elif "doubleValue" in value:
+                resource_dict[key] = value["doubleValue"]
+
+        # Merged attributes for identification and metadata
+        merged_attrs = {**resource_dict, **attr_dict}
+
+        # Check for model in attributes (using GenAI semantic conventions)
+        model_name = (
+            merged_attrs.get("gen_ai.request.model")
+            or merged_attrs.get("gen_ai.response.model")
+            or merged_attrs.get("llm.model")
+            or merged_attrs.get("model")
+        )
+
+        # Extract tool/service name
+        tool_name = (
+            merged_attrs.get("service.name")
+            or merged_attrs.get("tool.name")
+            or merged_attrs.get("app.name")
+        )
 
         # If no explicit service name, use span name or infer from trace
         if not tool_name:
@@ -306,16 +347,56 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             })
 
             # Store metadata
-            url = attr_dict.get("http.url", "") or attr_dict.get("http.host", "")
-            provider = attr_dict.get("gen_ai.system", "") or attr_dict.get("gen_ai.provider.name", "")
-            source = attr_dict.get("trace.metadata.source", "")
+            url = (
+                merged_attrs.get("http.url") 
+                or merged_attrs.get("url.full")
+                or merged_attrs.get("http.host")
+                or ""
+            )
+            provider = (
+                merged_attrs.get("gen_ai.system") 
+                or merged_attrs.get("gen_ai.provider.name")
+                or ""
+            )
+            source = (
+                merged_attrs.get("trace.metadata.source")
+                or merged_attrs.get("source")
+                or ""
+            )
+
+            # Perform tool identification
+            identification = self.identifier.identify("opentelemetry", merged_attrs)
+            if identification:
+                self.discovered_tools[tool_name]["metadata"].update({
+                    "tool_source_name": identification.get("source_name"),
+                    "tool_source_id": identification.get("source_id")
+                })
+
+            # Always store identification attributes in metadata so they are visible in GUI mapping modal
+            id_attrs = self.get_identification_attributes()
+            for attr_key in id_attrs:
+                if attr_key in merged_attrs:
+                    self.discovered_tools[tool_name]["metadata"][attr_key] = merged_attrs[attr_key]
 
             self.discovered_tools[tool_name]["metadata"].update({
                 "last_seen": datetime.utcnow().isoformat(),
                 "url": url,
                 "provider": provider,
                 "source": source,
+                "discovery_source": "opentelemetry"
             })
+            
+            # Check for attributes matching configured patterns
+            if self.attribute_patterns:
+                for key, value in merged_attrs.items():
+                    # Skip if already in metadata
+                    if key in self.discovered_tools[tool_name]["metadata"]:
+                        continue
+                        
+                    for pattern in self.attribute_patterns:
+                        if pattern.match(key):
+                            self.discovered_tools[tool_name]["metadata"][key] = value
+                            break
 
     def list_assets(self, asset_type: str, **kwargs) -> List[Dict[str, Any]]:
         """
@@ -348,14 +429,27 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         """List discovered tools."""
         tools = []
         for tool_name, tool_data in self.discovered_tools.items():
+            metadata = tool_data.get("metadata", {})
+            
+            # Re-identify if currently unknown to pick up new mappings immediately
+            if not metadata.get("tool_source_name"):
+                identification = self.identifier.identify("opentelemetry", metadata)
+                if identification:
+                    metadata.update({
+                        "tool_source_name": identification.get("source_name"),
+                        "tool_source_id": identification.get("source_id")
+                    })
+
             tools.append({
                 "id": tool_name,  # Use name as ID
                 "name": tool_name,
-                "type": "llm_client",  # OpenCITE schema compliance - tools that use LLM models
+                "type": "llm_client",  # OpenCITE schema compliance
                 "discovery_source": "opentelemetry",  # OpenCITE schema compliance
                 "models": list(tool_data["models"]),
                 "trace_count": len(tool_data["traces"]),
-                "metadata": tool_data["metadata"],
+                "tool_source_name": metadata.get("tool_source_name"),
+                "tool_source_id": metadata.get("tool_source_id"),
+                "metadata": metadata,
             })
         return tools
 

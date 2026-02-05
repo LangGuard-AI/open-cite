@@ -8,7 +8,7 @@ by AI applications in production.
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from collections import defaultdict
 
 from open_cite.core import BaseDiscoveryPlugin
@@ -44,6 +44,14 @@ class MCPPlugin(BaseDiscoveryPlugin):
     def name(self) -> str:
         """Name of the plugin."""
         return "mcp"
+
+    @property
+    def supported_asset_types(self) -> Set[str]:
+        """Asset types supported by this plugin."""
+        return {"mcp_server", "mcp_tool", "mcp_resource"}
+
+    def get_identification_attributes(self) -> List[str]:
+        return ["mcp.server.name", "mcp.server.endpoint"]
 
     def verify_connection(self) -> Dict[str, Any]:
         """

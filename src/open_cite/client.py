@@ -1,11 +1,14 @@
 import logging
+import warnings
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Type
+from typing import List, Dict, Any, Optional, Type, Set
 from .core import BaseDiscoveryPlugin
 from .plugins.databricks import DatabricksPlugin
 from .plugins.opentelemetry import OpenTelemetryPlugin
 from .plugins.mcp import MCPPlugin
 from .plugins.google_cloud import GoogleCloudPlugin
+from .plugins.zscaler import ZscalerPlugin
+from .http_client import get_http_client, OpenCiteHttpClient
 from .schema import (
     OpenCiteExporter,
     ToolFormatter,
@@ -22,6 +25,11 @@ from .schema import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _deprecated(message: str):
+    """Emit a deprecation warning."""
+    warnings.warn(message, DeprecationWarning, stacklevel=3)
 
 class OpenCiteClient:
     """
@@ -53,11 +61,15 @@ class OpenCiteClient:
             gcp_credentials: Google Cloud credentials (if None, uses default)
         """
         self.plugins: Dict[str, BaseDiscoveryPlugin] = {}
+        
+        # Initialize central HTTP client
+        self.http_client = get_http_client()
 
         # Auto-register default plugins
         # In a real plugin system, this might use entry points
         try:
-            self.register_plugin(DatabricksPlugin())
+            # Pass central http_client
+            self.register_plugin(DatabricksPlugin(http_client=self.http_client))
         except Exception as e:
             logger.warning(f"Failed to auto-register Databricks plugin: {e}")
 
@@ -98,6 +110,26 @@ class OpenCiteClient:
             except Exception as e:
                 logger.warning(f"Failed to auto-register Google Cloud plugin: {e}")
 
+        # Register Zscaler plugin (default auto-register if env vars present)
+        try:
+            # Pass http_client dependency injection
+            zscaler_plugin = ZscalerPlugin(http_client=self.http_client)
+            self.register_plugin(zscaler_plugin)
+            logger.debug("Zscaler plugin registered")
+            
+            # Auto-start NSS receiver if port is configured
+            import os
+            nss_port = os.getenv("ZSCALER_NSS_PORT")
+            if nss_port:
+                try:
+                    port_int = int(nss_port)
+                    zscaler_plugin.start_nss_receiver(port=port_int)
+                except ValueError:
+                    logger.warning(f"Invalid ZSCALER_NSS_PORT: {nss_port}")
+                    
+        except Exception as e:
+            logger.debug(f"Zscaler plugin skipped: {e}")
+
     def register_plugin(self, plugin: BaseDiscoveryPlugin):
         """
         Register a discovery plugin.
@@ -113,65 +145,251 @@ class OpenCiteClient:
             raise ValueError(f"Plugin '{name}' not found. Available plugins: {list(self.plugins.keys())}")
         return self.plugins[name]
 
-    # Convenience methods for the default Databricks plugin (for backward compatibility)
-    @property
-    def _databricks(self) -> DatabricksPlugin:
-        return self.get_plugin("databricks") # type: ignore
+    def get_plugins_for_asset_type(self, asset_type: str) -> List[BaseDiscoveryPlugin]:
+        """
+        Get all plugins that support a given asset type.
 
-    def verify_connection(self) -> Dict[str, Any]:
-        return self._databricks.verify_connection()
+        Args:
+            asset_type: The asset type to query for
+
+        Returns:
+            List of plugins supporting that asset type
+        """
+        return [
+            plugin for plugin in self.plugins.values()
+            if asset_type in plugin.supported_asset_types
+        ]
+
+    def get_all_supported_asset_types(self) -> Set[str]:
+        """
+        Get all asset types supported across all registered plugins.
+
+        Returns:
+            Set of all supported asset types
+        """
+        all_types: Set[str] = set()
+        for plugin in self.plugins.values():
+            all_types.update(plugin.supported_asset_types)
+        return all_types
+
+    # =========================================================================
+    # Generic Asset Listing Methods
+    # These aggregate results from all registered plugins that support each type
+    # =========================================================================
+
+    def list_assets(self, asset_type: str, **kwargs) -> List[Dict[str, Any]]:
+        """
+        List assets of a specific type from all registered plugins.
+
+        This is the primary method for querying assets across all plugins.
+        It aggregates results from every plugin that supports the given asset type.
+
+        Args:
+            asset_type: Type of asset to list (e.g., 'tool', 'model', 'mcp_server')
+            **kwargs: Additional filters passed to each plugin
+
+        Returns:
+            Aggregated list of assets from all supporting plugins
+
+        Example:
+            # List all tools from all plugins
+            tools = client.list_assets("tool")
+
+            # List all MCP servers from all plugins
+            servers = client.list_assets("mcp_server")
+
+            # List with filters (passed to plugins)
+            tools = client.list_assets("mcp_tool", server_id="my-server")
+        """
+        results = []
+        plugins = self.get_plugins_for_asset_type(asset_type)
+
+        for plugin in plugins:
+            try:
+                assets = plugin.list_assets(asset_type, **kwargs)
+                # Ensure each asset has discovery_source set to the plugin name
+                for asset in assets:
+                    if "discovery_source" not in asset:
+                        asset["discovery_source"] = plugin.name
+                results.extend(assets)
+            except Exception as e:
+                logger.warning(f"Failed to list {asset_type} from plugin {plugin.name}: {e}")
+
+        return results
+
+    def list_tools(self) -> List[Dict[str, Any]]:
+        """
+        List all discovered tools from all plugins.
+
+        Returns:
+            Aggregated list of tools
+        """
+        return self.list_assets("tool")
+
+    def list_models(self) -> List[Dict[str, Any]]:
+        """
+        List all discovered models from all plugins.
+
+        Note: This includes both AI models discovered via traces (OpenTelemetry)
+        and Vertex AI models (Google Cloud). Use the discovery_source field
+        to distinguish between sources.
+
+        Returns:
+            Aggregated list of models
+        """
+        return self.list_assets("model")
+
+    def list_mcp_servers(self) -> List[Dict[str, Any]]:
+        """
+        List all discovered MCP servers from all plugins.
+
+        This aggregates MCP servers from:
+        - MCP plugin (trace-based discovery)
+        - Google Cloud plugin (Compute Engine instance labels)
+
+        Returns:
+            Aggregated list of MCP servers
+        """
+        return self.list_assets("mcp_server")
+
+    def list_mcp_tools(self, server_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        List all discovered MCP tools from all plugins.
+
+        Args:
+            server_id: Optional server ID to filter by
+
+        Returns:
+            Aggregated list of MCP tools
+        """
+        return self.list_assets("mcp_tool", server_id=server_id)
+
+    def list_mcp_resources(self, server_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        List all discovered MCP resources from all plugins.
+
+        Args:
+            server_id: Optional server ID to filter by
+
+        Returns:
+            Aggregated list of MCP resources
+        """
+        return self.list_assets("mcp_resource", server_id=server_id)
+
+    def list_endpoints(self) -> List[Dict[str, Any]]:
+        """
+        List all discovered endpoints from all plugins.
+
+        Returns:
+            Aggregated list of endpoints (e.g., Vertex AI endpoints)
+        """
+        return self.list_assets("endpoint")
+
+    def list_deployments(self) -> List[Dict[str, Any]]:
+        """
+        List all discovered deployments from all plugins.
+
+        Returns:
+            Aggregated list of deployments
+        """
+        return self.list_assets("deployment")
+
+    def list_generative_models(self) -> List[Dict[str, Any]]:
+        """
+        List all discovered generative AI models from all plugins.
+
+        Returns:
+            Aggregated list of generative models
+        """
+        return self.list_assets("generative_model")
 
     def list_catalogs(self) -> List[Dict[str, Any]]:
-        return self._databricks.list_assets("catalog")
+        """
+        List all discovered catalogs from all plugins.
+
+        Returns:
+            Aggregated list of catalogs
+        """
+        return self.list_assets("catalog")
 
     def list_schemas(self, catalog_name: str) -> List[Dict[str, Any]]:
-        return self._databricks.list_assets("schema", catalog_name=catalog_name)
+        """
+        List all discovered schemas from all plugins.
+
+        Args:
+            catalog_name: Catalog name to filter by
+
+        Returns:
+            Aggregated list of schemas
+        """
+        return self.list_assets("schema", catalog_name=catalog_name)
 
     def list_tables(self, catalog_name: str, schema_name: str) -> List[Dict[str, Any]]:
-        return self._databricks.list_assets("table", catalog_name=catalog_name, schema_name=schema_name)
+        """
+        List all discovered tables from all plugins.
+
+        Args:
+            catalog_name: Catalog name to filter by
+            schema_name: Schema name to filter by
+
+        Returns:
+            Aggregated list of tables
+        """
+        return self.list_assets("table", catalog_name=catalog_name, schema_name=schema_name)
 
     def list_volumes(self, catalog_name: str, schema_name: str) -> List[Dict[str, Any]]:
-        return self._databricks.list_assets("volume", catalog_name=catalog_name, schema_name=schema_name)
-    
-    def list_models(self, catalog_name: str, schema_name: str) -> List[Dict[str, Any]]:
-        return self._databricks.list_assets("model", catalog_name=catalog_name, schema_name=schema_name)
+        """
+        List all discovered volumes from all plugins.
+
+        Args:
+            catalog_name: Catalog name to filter by
+            schema_name: Schema name to filter by
+
+        Returns:
+            Aggregated list of volumes
+        """
+        return self.list_assets("volume", catalog_name=catalog_name, schema_name=schema_name)
 
     def list_functions(self, catalog_name: str, schema_name: str) -> List[Dict[str, Any]]:
-        return self._databricks.list_assets("function", catalog_name=catalog_name, schema_name=schema_name)
+        """
+        List all discovered functions from all plugins.
 
-    # Convenience methods for the OpenTelemetry plugin
+        Args:
+            catalog_name: Catalog name to filter by
+            schema_name: Schema name to filter by
+
+        Returns:
+            Aggregated list of functions
+        """
+        return self.list_assets("function", catalog_name=catalog_name, schema_name=schema_name)
+
+    # =========================================================================
+    # Connection Verification
+    # =========================================================================
+
+    def verify_all_connections(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Verify connections for all registered plugins.
+
+        Returns:
+            Dict mapping plugin names to their connection status
+        """
+        results = {}
+        for name, plugin in self.plugins.items():
+            try:
+                results[name] = plugin.verify_connection()
+            except Exception as e:
+                results[name] = {"success": False, "error": str(e)}
+        return results
+
+    # =========================================================================
+    # Plugin-specific helper methods (for operations not covered by list_assets)
+    # =========================================================================
+
     @property
     def _opentelemetry(self) -> OpenTelemetryPlugin:
         """Get the OpenTelemetry plugin."""
         return self.get_plugin("opentelemetry")  # type: ignore
-
-    def list_otel_tools(self) -> List[Dict[str, Any]]:
-        """
-        List tools discovered via OpenTelemetry traces.
-
-        Returns:
-            List of tools with their models and metadata
-        """
-        return self._opentelemetry.list_assets("tool")
-
-
-    def list_otel_models(self) -> List[Dict[str, Any]]:
-        """
-        List models discovered across all tools via OpenTelemetry.
-
-        Returns:
-            List of models with usage statistics
-        """
-        return self._opentelemetry.list_assets("model")
-
-    def verify_otel_connection(self) -> Dict[str, Any]:
-        """
-        Verify the OpenTelemetry receiver is running.
-
-        Returns:
-            Dict with connection status
-        """
-        return self._opentelemetry.verify_connection()
 
     def start_otel_receiver(self):
         """Start the OpenTelemetry receiver."""
@@ -181,112 +399,10 @@ class OpenCiteClient:
         """Stop the OpenTelemetry receiver."""
         self._opentelemetry.stop_receiver()
 
-    # Convenience methods for the MCP plugin
-    @property
-    def _mcp(self) -> MCPPlugin:
-        """Get the MCP plugin."""
-        return self.get_plugin("mcp")  # type: ignore
-
-    def list_mcp_servers(self) -> List[Dict[str, Any]]:
-        """
-        List discovered MCP servers.
-
-        Returns:
-            List of MCP servers with their metadata
-        """
-        return self._mcp.list_assets("mcp_server")
-
-    def list_mcp_tools(self, server_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        List MCP tools.
-
-        Args:
-            server_id: Optional server ID to filter by
-
-        Returns:
-            List of MCP tools
-        """
-        return self._mcp.list_assets("mcp_tool", server_id=server_id)
-
-    def list_mcp_resources(self, server_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        List MCP resources.
-
-        Args:
-            server_id: Optional server ID to filter by
-
-        Returns:
-            List of MCP resources
-        """
-        return self._mcp.list_assets("mcp_resource", server_id=server_id)
-
-    def verify_mcp_discovery(self) -> Dict[str, Any]:
-        """
-        Verify MCP discovery is working.
-
-        Returns:
-            Dict with discovery status
-        """
-        return self._mcp.verify_connection()
-
-    # Convenience methods for the Google Cloud plugin
     @property
     def _google_cloud(self) -> GoogleCloudPlugin:
         """Get the Google Cloud plugin."""
         return self.get_plugin("google_cloud")  # type: ignore
-
-    def list_gcp_models(self) -> List[Dict[str, Any]]:
-        """
-        List Vertex AI models.
-
-        Returns:
-            List of Vertex AI models
-        """
-        return self._google_cloud.list_assets("model")
-
-    def list_gcp_endpoints(self) -> List[Dict[str, Any]]:
-        """
-        List Vertex AI endpoints.
-
-        Returns:
-            List of Vertex AI endpoints
-        """
-        return self._google_cloud.list_assets("endpoint")
-
-    def list_gcp_deployments(self) -> List[Dict[str, Any]]:
-        """
-        List model deployments.
-
-        Returns:
-            List of model deployments (models deployed to endpoints)
-        """
-        return self._google_cloud.list_assets("deployment")
-
-    def list_gcp_generative_models(self) -> List[Dict[str, Any]]:
-        """
-        List available generative AI models (Gemini, PaLM, etc.).
-
-        Returns:
-            List of generative AI models
-        """
-        return self._google_cloud.list_assets("generative_model")
-
-    def list_gcp_mcp_servers(self, **kwargs) -> List[Dict[str, Any]]:
-        """
-        List MCP servers running on GCP Compute Engine instances.
-
-        Discovers MCP servers through instance labels. Instances must be labeled with:
-        - mcp-server: Server name (required)
-        - mcp-transport: Transport type (optional, default: stdio)
-        - mcp-port: Port number for HTTP/SSE servers (optional)
-
-        Args:
-            **kwargs: Optional filters (e.g., zones=["us-central1-a"])
-
-        Returns:
-            List of MCP servers discovered on Compute Engine instances
-        """
-        return self._google_cloud.list_assets("mcp_server", **kwargs)
 
     def scan_gcp_mcp_servers(
         self,
@@ -299,56 +415,139 @@ class OpenCiteClient:
 
         This method scans instances for open ports that might indicate MCP servers.
         It complements label-based discovery by finding servers that may not be
-        properly labeled. Uses gcloud CLI to get instance details, then performs
-        TCP port scanning.
+        properly labeled.
 
         Default ports scanned: 3000, 3001, 3002, 8000, 8080, 8888, 5000, 9000
 
         Args:
-            zones: Optional list of zones to scan (e.g., ["us-central1-a"])
-                   If None, scans all zones in the project
-            ports: Optional list of ports to scan (e.g., [3000, 8080])
-                   If None, uses default MCP-common ports
-            min_ports_open: Minimum number of open ports to consider an instance
-                           as a potential MCP server (default: 1)
+            zones: Optional list of zones to scan
+            ports: Optional list of ports to scan
+            min_ports_open: Minimum number of open ports to consider
 
         Returns:
-            List of instances with open ports that might be MCP servers.
-            Each result includes:
-            - discovery_source: "gcp_port_scan"
-            - open_ports: List of open ports detected
-            - endpoint: Constructed endpoint URL (if HTTP ports found)
-            - inferred: True if no mcp-server label found
-
-        Example:
-            # Scan all instances in all zones
-            servers = client.scan_gcp_mcp_servers()
-
-            # Scan specific zones only
-            servers = client.scan_gcp_mcp_servers(zones=["us-central1-a"])
-
-            # Scan specific ports
-            servers = client.scan_gcp_mcp_servers(ports=[3000, 8080])
-
-            # Require at least 2 open ports
-            servers = client.scan_gcp_mcp_servers(min_ports_open=2)
+            List of instances with open ports that might be MCP servers
         """
         return self._google_cloud.discover_mcp_servers_by_port_scan(
             zones=zones, ports=ports, min_ports_open=min_ports_open
         )
 
+    def refresh_gcp_discovery(self):
+        """Refresh Google Cloud discovery data."""
+        self._google_cloud.refresh_discovery()
+
+    # =========================================================================
+    # Deprecated methods (for backward compatibility)
+    # =========================================================================
+
+    @property
+    def _databricks(self) -> DatabricksPlugin:
+        """Get the Databricks plugin."""
+        return self.get_plugin("databricks")  # type: ignore
+
+    @property
+    def _mcp(self) -> MCPPlugin:
+        """Get the MCP plugin."""
+        return self.get_plugin("mcp")  # type: ignore
+
+    def verify_connection(self) -> Dict[str, Any]:
+        """
+        Verify connection to Databricks.
+
+        Deprecated: Use verify_all_connections() instead.
+        """
+        _deprecated("verify_connection() is deprecated. Use verify_all_connections() instead.")
+        return self._databricks.verify_connection()
+
+    def verify_otel_connection(self) -> Dict[str, Any]:
+        """
+        Verify the OpenTelemetry receiver is running.
+
+        Deprecated: Use verify_all_connections()['opentelemetry'] instead.
+        """
+        _deprecated("verify_otel_connection() is deprecated. Use verify_all_connections()['opentelemetry'] instead.")
+        return self._opentelemetry.verify_connection()
+
+    def verify_mcp_discovery(self) -> Dict[str, Any]:
+        """
+        Verify MCP discovery is working.
+
+        Deprecated: Use verify_all_connections()['mcp'] instead.
+        """
+        _deprecated("verify_mcp_discovery() is deprecated. Use verify_all_connections()['mcp'] instead.")
+        return self._mcp.verify_connection()
+
     def verify_gcp_connection(self) -> Dict[str, Any]:
         """
         Verify connection to Google Cloud.
 
-        Returns:
-            Dict with connection status
+        Deprecated: Use verify_all_connections()['google_cloud'] instead.
         """
+        _deprecated("verify_gcp_connection() is deprecated. Use verify_all_connections()['google_cloud'] instead.")
         return self._google_cloud.verify_connection()
 
-    def refresh_gcp_discovery(self):
-        """Refresh Google Cloud discovery data."""
-        self._google_cloud.refresh_discovery()
+    def list_otel_tools(self) -> List[Dict[str, Any]]:
+        """
+        List tools discovered via OpenTelemetry traces.
+
+        Deprecated: Use list_tools() to aggregate from all plugins,
+        or list_assets('tool') with filtering.
+        """
+        _deprecated("list_otel_tools() is deprecated. Use list_tools() instead.")
+        return self._opentelemetry.list_assets("tool")
+
+    def list_otel_models(self) -> List[Dict[str, Any]]:
+        """
+        List models discovered via OpenTelemetry traces.
+
+        Deprecated: Use list_models() to aggregate from all plugins.
+        """
+        _deprecated("list_otel_models() is deprecated. Use list_models() instead.")
+        return self._opentelemetry.list_assets("model")
+
+    def list_gcp_models(self) -> List[Dict[str, Any]]:
+        """
+        List Vertex AI models.
+
+        Deprecated: Use list_models() to aggregate from all plugins.
+        """
+        _deprecated("list_gcp_models() is deprecated. Use list_models() instead.")
+        return self._google_cloud.list_assets("model")
+
+    def list_gcp_endpoints(self) -> List[Dict[str, Any]]:
+        """
+        List Vertex AI endpoints.
+
+        Deprecated: Use list_endpoints() to aggregate from all plugins.
+        """
+        _deprecated("list_gcp_endpoints() is deprecated. Use list_endpoints() instead.")
+        return self._google_cloud.list_assets("endpoint")
+
+    def list_gcp_deployments(self) -> List[Dict[str, Any]]:
+        """
+        List model deployments.
+
+        Deprecated: Use list_deployments() to aggregate from all plugins.
+        """
+        _deprecated("list_gcp_deployments() is deprecated. Use list_deployments() instead.")
+        return self._google_cloud.list_assets("deployment")
+
+    def list_gcp_generative_models(self) -> List[Dict[str, Any]]:
+        """
+        List available generative AI models.
+
+        Deprecated: Use list_generative_models() to aggregate from all plugins.
+        """
+        _deprecated("list_gcp_generative_models() is deprecated. Use list_generative_models() instead.")
+        return self._google_cloud.list_assets("generative_model")
+
+    def list_gcp_mcp_servers(self, **kwargs) -> List[Dict[str, Any]]:
+        """
+        List MCP servers running on GCP Compute Engine instances.
+
+        Deprecated: Use list_mcp_servers() to aggregate from all plugins.
+        """
+        _deprecated("list_gcp_mcp_servers() is deprecated. Use list_mcp_servers() instead.")
+        return self._google_cloud.list_assets("mcp_server", **kwargs)
 
 
     # Export methods
@@ -401,16 +600,17 @@ class OpenCiteClient:
                 "version": "1.0.0",
             })
 
-        # Gather MCP data
-        if include_mcp and "mcp" in self.plugins:
+        # Gather MCP data (aggregate from all plugins that support MCP)
+        if include_mcp:
             mcp_servers = self._export_mcp_servers()
             mcp_tools = self._export_mcp_tools()
             mcp_resources = self._export_mcp_resources()
 
-            plugins_info.append({
-                "name": "mcp",
-                "version": "1.0.0",
-            })
+            if "mcp" in self.plugins:
+                plugins_info.append({
+                    "name": "mcp",
+                    "version": "1.0.0",
+                })
 
         # Gather Databricks data (if requested)
         if include_databricks and "databricks" in self.plugins:
@@ -424,13 +624,16 @@ class OpenCiteClient:
 
         # Gather Google Cloud data
         if include_google_cloud and "google_cloud" in self.plugins:
-            gcp_models = self.list_gcp_models()
-            gcp_endpoints = self.list_gcp_endpoints()
-            gcp_deployments = self.list_gcp_deployments()
-            gcp_generative_models = self.list_gcp_generative_models()
+            # Use generic list methods which aggregate from all plugins
+            gcp_plugin = self._google_cloud
+            gcp_models = gcp_plugin.list_assets("model")
+            gcp_endpoints = gcp_plugin.list_assets("endpoint")
+            gcp_deployments = gcp_plugin.list_assets("deployment")
+            gcp_generative_models = gcp_plugin.list_assets("generative_model")
 
-            # Also discover MCP servers on GCP
-            gcp_mcp_servers = self.list_gcp_mcp_servers()
+            # GCP MCP servers are already included via list_mcp_servers aggregation
+            # but we keep them separate for the export schema
+            gcp_mcp_servers = gcp_plugin.list_assets("mcp_server")
 
             plugins_info.append({
                 "name": "google_cloud",
@@ -470,7 +673,7 @@ class OpenCiteClient:
 
     def _export_otel_tools(self) -> List[Dict[str, Any]]:
         """Export OpenTelemetry tools to schema format."""
-        otel_tools = self.list_otel_tools()
+        otel_tools = self._opentelemetry.list_assets("tool")
         formatted_tools = []
 
         for tool in otel_tools:
@@ -502,7 +705,7 @@ class OpenCiteClient:
 
     def _export_otel_models(self) -> List[Dict[str, Any]]:
         """Export OpenTelemetry models to schema format."""
-        otel_models = self.list_otel_models()
+        otel_models = self._opentelemetry.list_assets("model")
         formatted_models = []
 
         for model in otel_models:
@@ -632,6 +835,38 @@ class OpenCiteClient:
                 except Exception as e:
                     logger.warning(f"Could not fetch AI workload table usage: {e}")
 
+                try:
+                    # Query for tables accessed by Genie spaces
+                    genie_usage = databricks_plugin.get_tables_used_by_genie(days=30)
+                    if genie_usage:
+                        logger.info(f"Found {len(genie_usage)} tables from Genie spaces")
+                        
+                        # Merge into used_tables
+                        for table_name, usage in genie_usage.items():
+                            if table_name not in used_tables:
+                                used_tables[table_name] = {
+                                    "discovery_method": "genie_spaces"
+                                }
+                            
+                            # Merge usage info
+                            table_info = used_tables[table_name]
+                            table_info["genie_users"] = usage.get("genie_users", [])
+                            table_info["genie_spaces"] = usage.get("genie_spaces", [])
+                            table_info.setdefault("access_count", 0)
+                            table_info["access_count"] += usage.get("access_count", 0)
+                            
+                            # Update timestamps
+                            if usage.get("first_seen"):
+                                if not table_info.get("first_seen") or usage["first_seen"] < table_info["first_seen"]:
+                                    table_info["first_seen"] = usage["first_seen"]
+                                    
+                            if usage.get("last_seen"):
+                                if not table_info.get("last_seen") or usage["last_seen"] > table_info["last_seen"]:
+                                    table_info["last_seen"] = usage["last_seen"]
+
+                except Exception as e:
+                    logger.warning(f"Could not fetch Genie table usage: {e}")
+
             if not used_tables:
                 logger.info("No Databricks tables with AI/ML usage detected. Skipping Databricks export.")
                 return data_assets
@@ -740,6 +975,9 @@ class OpenCiteClient:
                                 "ai_first_seen": usage_info.get("first_seen"),
                                 "ai_last_seen": usage_info.get("last_seen"),
                                 "ai_discovery_method": usage_info.get("discovery_method", "unknown"),
+                                # Add Genie usage metadata
+                                "genie_users": usage_info.get("genie_users", []),
+                                "genie_spaces": usage_info.get("genie_spaces", []),
                             }
                         )
                         data_assets.append(table_asset)

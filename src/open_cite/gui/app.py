@@ -139,6 +139,8 @@ def get_plugin_metadata(plugin_name, plugin_class):
             "network": f"http://{local_ip}:4318/v1/traces" if local_ip != '127.0.0.1' else None
         }
 
+
+
     elif plugin_name == "mcp":
         metadata["name"] = "MCP (Model Context Protocol)"
         metadata["description"] = "Discovers MCP servers, tools, and resources from OTLP traces"
@@ -533,6 +535,48 @@ def export_data():
 
     except Exception as e:
         logger.error(f"Export failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/map-tool', methods=['POST'])
+def map_tool():
+    """Save a new tool mapping."""
+    if not client:
+        return jsonify({"error": "No client initialized"}), 400
+
+    try:
+        data = request.json
+        plugin_name = data.get('plugin_name')
+        attributes = data.get('attributes')
+        identity = data.get('identity')
+        match_type = data.get('match_type', 'all')
+
+        if not all([plugin_name, attributes, identity]):
+            return jsonify({"error": "Missing required fields"}), 400
+
+        # Find the plugin with this name
+        plugin = client.plugins.get(plugin_name)
+        if not plugin:
+            return jsonify({"error": f"Plugin {plugin_name} not found"}), 404
+
+        # Check if the plugin has an identifier
+        if not hasattr(plugin, 'identifier'):
+            return jsonify({"error": f"Plugin {plugin_name} does not support mapping"}), 400
+
+        # Save the mapping
+        success = plugin.identifier.add_mapping(plugin_name, attributes, identity, match_type=match_type)
+        
+        if success:
+            # Clear asset cache to show the updated identification immediately
+            global asset_cache, asset_cache_time
+            asset_cache = None
+            asset_cache_time = None
+            return jsonify({"success": True})
+        else:
+            return jsonify({"error": "Failed to save mapping"}), 500
+
+    except Exception as e:
+        logger.error(f"Failed to map tool: {e}")
         return jsonify({"error": str(e)}), 500
 
 

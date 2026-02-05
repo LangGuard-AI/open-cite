@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 import mlflow
 from databricks.sdk import WorkspaceClient
 from ..core import BaseDiscoveryPlugin
@@ -12,7 +12,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
     Databricks discovery plugin.
     """
 
-    def __init__(self, host: Optional[str] = None, token: Optional[str] = None, warehouse_id: Optional[str] = None):
+    def __init__(self, host: Optional[str] = None, token: Optional[str] = None, warehouse_id: Optional[str] = None, http_client: Any = None):
         self.host = host or os.getenv("DATABRICKS_HOST")
         self.token = token or os.getenv("DATABRICKS_TOKEN")
         self.warehouse_id = warehouse_id or os.getenv("DATABRICKS_WAREHOUSE_ID")
@@ -27,11 +27,32 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
 
         # Configure Databricks SDK
         self.workspace_client = WorkspaceClient(host=self.host, token=self.token)
+        
+        # Inject custom session if provided
+        if http_client:
+            self.http_client = http_client
+            # Injecting session into WorkspaceClient's API client
+            # Note: This relies on internal SDK structure (api_client._session)
+            # which is common in generated SDKs but might need adjustment if SDK version differs.
+            if hasattr(self.workspace_client, "api_client") and hasattr(self.workspace_client.api_client, "_session"):
+                 self.workspace_client.api_client._session = http_client._session
+            elif hasattr(self.workspace_client, "_api_client") and hasattr(self.workspace_client._api_client, "_session"):
+                 self.workspace_client._api_client._session = http_client._session
+            else:
+                logger.warning("Could not inject custom HTTP session into Databricks WorkspaceClient")
+        
         self.mlflow_client = mlflow.tracking.MlflowClient()
 
     @property
     def name(self) -> str:
         return "databricks"
+
+    @property
+    def supported_asset_types(self) -> Set[str]:
+        return {"catalog", "schema", "table", "volume", "model", "function"}
+
+    def get_identification_attributes(self) -> List[str]:
+        return ["databricks.workspace_id", "databricks.catalog", "databricks.schema"]
 
     def _get_warehouse_id(self) -> Optional[str]:
         """
@@ -421,3 +442,109 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             ai_table_usage[table_name]["ai_experiment_names"] = list(ai_table_usage[table_name]["ai_experiment_names"])
 
         return ai_table_usage
+
+    def get_tables_used_by_genie(self, days: int = 30, warehouse_id: str = None) -> Dict[str, Dict[str, Any]]:
+        """
+        Get tables that are used by Databricks Genie spaces.
+
+        This queries system tables to find tables accessed by queries originating from Genie.
+        It joins system.query.history with system.access.table_lineage.
+
+        Args:
+            days: Number of days to look back
+            warehouse_id: SQL warehouse ID for executing queries (optional)
+
+        Returns:
+            Dict mapping table full names to Genie usage information:
+            {
+                "catalog.schema.table": {
+                    "access_count": int,
+                    "genie_users": [list of users],
+                    "genie_spaces": [list of space IDs],
+                    "first_seen": str,
+                    "last_seen": str
+                }
+            }
+        """
+        genie_table_usage = {}
+
+        try:
+            from databricks import sql
+
+            wh_id = warehouse_id or self._get_warehouse_id()
+            if not wh_id:
+                logger.warning("No SQL warehouse available. Cannot query Genie table usage.")
+                return genie_table_usage
+
+            http_path = f"/sql/1.0/warehouses/{wh_id}"
+
+            # Query for tables touched by Genie-originated queries
+            query = f"""
+            SELECT
+                lineage.source_table_full_name as table_name,
+                history.executed_by as user,
+                history.query_source.genie_space_id as space_id,
+                MIN(history.start_time) as first_access,
+                MAX(history.start_time) as last_access,
+                COUNT(*) as access_count
+            FROM system.access.table_lineage lineage
+            JOIN system.query.history history ON lineage.entity_id = history.statement_id
+            WHERE
+                lineage.entity_type = 'QUERY'
+                AND history.query_source.genie_space_id IS NOT NULL
+                AND history.start_time >= DATE_SUB(CURRENT_DATE(), {days})
+            GROUP BY
+                lineage.source_table_full_name,
+                history.executed_by,
+                history.query_source.genie_space_id
+            """
+
+            with sql.connect(
+                server_hostname=self.host.replace("https://", ""),
+                http_path=http_path,
+                access_token=self.token
+            ) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(query)
+
+                    for row in cursor.fetchall():
+                        table_name = row[0]
+                        user = row[1]
+                        space_id = row[2]
+                        first_access = row[3]
+                        last_access = row[4]
+                        access_count = row[5]
+
+                        if table_name not in genie_table_usage:
+                            genie_table_usage[table_name] = {
+                                "access_count": 0,
+                                "genie_users": set(),
+                                "genie_spaces": set(),
+                                "first_seen": None,
+                                "last_seen": None
+                            }
+
+                        genie_table_usage[table_name]["access_count"] += access_count
+                        genie_table_usage[table_name]["genie_users"].add(user)
+                        genie_table_usage[table_name]["genie_spaces"].add(space_id)
+
+                        if not genie_table_usage[table_name]["first_seen"] or first_access < genie_table_usage[table_name]["first_seen"]:
+                            genie_table_usage[table_name]["first_seen"] = str(first_access)
+
+                        if not genie_table_usage[table_name]["last_seen"] or last_access > genie_table_usage[table_name]["last_seen"]:
+                            genie_table_usage[table_name]["last_seen"] = str(last_access)
+
+            logger.info(f"Found {len(genie_table_usage)} tables accessed by Genie spaces")
+
+        except ImportError:
+            logger.warning("databricks-sql-connector not installed. Cannot query Genie usage.")
+        except Exception as e:
+            logger.warning(f"Could not query Genie table usage: {e}")
+            logger.info("This requires SQL warehouse access and system tables (query.history, access.table_lineage)")
+
+        # Convert sets to lists
+        for table_name in genie_table_usage:
+            genie_table_usage[table_name]["genie_users"] = list(genie_table_usage[table_name]["genie_users"])
+            genie_table_usage[table_name]["genie_spaces"] = list(genie_table_usage[table_name]["genie_spaces"])
+
+        return genie_table_usage

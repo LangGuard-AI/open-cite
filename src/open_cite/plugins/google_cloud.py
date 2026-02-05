@@ -9,7 +9,7 @@ import logging
 import subprocess
 import socket
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from datetime import datetime
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -67,6 +67,14 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
     def name(self) -> str:
         """Name of the plugin."""
         return "google_cloud"
+
+    @property
+    def supported_asset_types(self) -> Set[str]:
+        """Asset types supported by this plugin."""
+        return {"model", "endpoint", "deployment", "generative_model", "mcp_server"}
+
+    def get_identification_attributes(self) -> List[str]:
+        return ["gcp.project_id", "gcp.location"]
 
     def _get_aiplatform_client(self):
         """Get or create Vertex AI client (lazy initialization)."""
