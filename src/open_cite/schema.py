@@ -223,6 +223,11 @@ class ToolFormatter:
         if "tags" in kwargs:
             tool["tags"] = kwargs["tags"]
 
+        if "tool_source_name" in kwargs:
+            tool["tool_source_name"] = kwargs["tool_source_name"]
+        if "tool_source_id" in kwargs:
+            tool["tool_source_id"] = kwargs["tool_source_id"]
+
         return tool
 
 
