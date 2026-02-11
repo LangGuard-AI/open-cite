@@ -8,7 +8,7 @@ by AI applications in production.
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
 from collections import defaultdict
 
 from open_cite.core import BaseDiscoveryPlugin
@@ -24,8 +24,19 @@ class MCPPlugin(BaseDiscoveryPlugin):
     providing visibility into actual MCP usage in production.
     """
 
-    def __init__(self):
-        """Initialize the MCP plugin."""
+    def __init__(
+        self,
+        instance_id: Optional[str] = None,
+        display_name: Optional[str] = None,
+    ):
+        """
+        Initialize the MCP plugin.
+
+        Args:
+            instance_id: Unique identifier for this plugin instance
+            display_name: Human-readable name for this instance
+        """
+        super().__init__(instance_id=instance_id, display_name=display_name)
         # Storage for discovered entities
         self.mcp_servers: Dict[str, Dict[str, Any]] = {}
         self.mcp_tools: Dict[str, Dict[str, Any]] = {}
@@ -41,9 +52,13 @@ class MCPPlugin(BaseDiscoveryPlugin):
         self._lock = threading.Lock()
 
     @property
-    def name(self) -> str:
-        """Name of the plugin."""
+    def plugin_type(self) -> str:
+        """Type identifier for this plugin."""
         return "mcp"
+
+    def get_config(self) -> Dict[str, Any]:
+        """Return plugin configuration."""
+        return {}
 
     @property
     def supported_asset_types(self) -> Set[str]:

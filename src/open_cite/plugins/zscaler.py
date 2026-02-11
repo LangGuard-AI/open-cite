@@ -18,14 +18,17 @@ class ZscalerPlugin(BaseDiscoveryPlugin):
     """
 
     def __init__(
-        self, 
-        api_key: Optional[str] = None, 
-        username: Optional[str] = None, 
+        self,
+        api_key: Optional[str] = None,
+        username: Optional[str] = None,
         password: Optional[str] = None,
         cloud_name: str = "zscaler.net",
         nss_port: Optional[int] = None,
-        http_client: Any = None
+        http_client: Any = None,
+        instance_id: Optional[str] = None,
+        display_name: Optional[str] = None,
     ):
+        super().__init__(instance_id=instance_id, display_name=display_name)
         self.api_key = api_key or os.getenv("ZSCALER_API_KEY")
         self.username = username or os.getenv("ZSCALER_USERNAME")
         self.password = password or os.getenv("ZSCALER_PASSWORD")
@@ -44,8 +47,17 @@ class ZscalerPlugin(BaseDiscoveryPlugin):
         self.shadow_mcp_logs = []
 
     @property
-    def name(self) -> str:
+    def plugin_type(self) -> str:
         return "zscaler"
+
+    def get_config(self) -> Dict[str, Any]:
+        """Return plugin configuration (sensitive values masked)."""
+        return {
+            "cloud_name": self.cloud_name,
+            "username": self.username,
+            "api_key": "****" if self.api_key else None,
+            "nss_port": self.nss_port,
+        }
 
     @property
     def supported_asset_types(self) -> Set[str]:

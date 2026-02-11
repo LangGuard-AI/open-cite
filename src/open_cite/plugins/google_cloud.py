@@ -35,6 +35,8 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
         project_id: Optional[str] = None,
         location: str = "us-central1",
         credentials: Optional[Any] = None,
+        instance_id: Optional[str] = None,
+        display_name: Optional[str] = None,
     ):
         """
         Initialize the Google Cloud plugin.
@@ -43,7 +45,10 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
             project_id: GCP project ID (if None, uses default from environment)
             location: GCP region/location (default: us-central1)
             credentials: GCP credentials (if None, uses default from environment)
+            instance_id: Unique identifier for this plugin instance
+            display_name: Human-readable name for this instance
         """
+        super().__init__(instance_id=instance_id, display_name=display_name)
         self.project_id = project_id
         self.location = location
         self.credentials = credentials
@@ -64,9 +69,16 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
         self._lock = threading.Lock()
 
     @property
-    def name(self) -> str:
-        """Name of the plugin."""
+    def plugin_type(self) -> str:
+        """Type identifier for this plugin."""
         return "google_cloud"
+
+    def get_config(self) -> Dict[str, Any]:
+        """Return plugin configuration (sensitive values masked)."""
+        return {
+            "project_id": self.project_id,
+            "location": self.location,
+        }
 
     @property
     def supported_asset_types(self) -> Set[str]:

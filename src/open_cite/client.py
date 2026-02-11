@@ -1,5 +1,6 @@
 import logging
 import warnings
+from collections import defaultdict
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Type, Set
 from .core import BaseDiscoveryPlugin
@@ -60,8 +61,11 @@ class OpenCiteClient:
             gcp_location: Google Cloud location (default: us-central1)
             gcp_credentials: Google Cloud credentials (if None, uses default)
         """
+        # Plugin registry: instance_id -> plugin instance
         self.plugins: Dict[str, BaseDiscoveryPlugin] = {}
-        
+        # Track which instances belong to which plugin type
+        self._plugin_types: Dict[str, List[str]] = defaultdict(list)
+
         # Initialize central HTTP client
         self.http_client = get_http_client()
 
@@ -132,18 +136,98 @@ class OpenCiteClient:
 
     def register_plugin(self, plugin: BaseDiscoveryPlugin):
         """
-        Register a discovery plugin.
-        """
-        self.plugins[plugin.name] = plugin
-        logger.info(f"Registered plugin: {plugin.name}")
+        Register a discovery plugin instance.
 
-    def get_plugin(self, name: str) -> BaseDiscoveryPlugin:
+        Args:
+            plugin: The plugin instance to register
+
+        Raises:
+            ValueError: If a plugin with the same instance_id is already registered
         """
-        Get a registered plugin by name.
+        instance_id = plugin.instance_id
+
+        if instance_id in self.plugins:
+            raise ValueError(f"Plugin instance '{instance_id}' already registered")
+
+        self.plugins[instance_id] = plugin
+        self._plugin_types[plugin.plugin_type].append(instance_id)
+        logger.info(f"Registered plugin: {instance_id} (type: {plugin.plugin_type})")
+
+    def unregister_plugin(self, instance_id: str):
         """
-        if name not in self.plugins:
-            raise ValueError(f"Plugin '{name}' not found. Available plugins: {list(self.plugins.keys())}")
-        return self.plugins[name]
+        Unregister a plugin instance.
+
+        Args:
+            instance_id: The instance ID of the plugin to unregister
+
+        Raises:
+            ValueError: If the plugin instance is not found
+        """
+        if instance_id not in self.plugins:
+            raise ValueError(f"Plugin instance '{instance_id}' not found")
+
+        plugin = self.plugins[instance_id]
+        del self.plugins[instance_id]
+        self._plugin_types[plugin.plugin_type].remove(instance_id)
+        logger.info(f"Unregistered plugin: {instance_id}")
+
+    def get_plugins_by_type(self, plugin_type: str) -> List[BaseDiscoveryPlugin]:
+        """
+        Get all instances of a plugin type.
+
+        Args:
+            plugin_type: The plugin type to query for (e.g., 'databricks', 'opentelemetry')
+
+        Returns:
+            List of plugin instances of that type
+        """
+        return [self.plugins[iid] for iid in self._plugin_types.get(plugin_type, [])]
+
+    def list_plugin_instances(self) -> List[Dict[str, Any]]:
+        """
+        List all plugin instances with metadata.
+
+        Returns:
+            List of plugin instance information dictionaries
+        """
+        return [plugin.to_dict() for plugin in self.plugins.values()]
+
+    def get_plugin(self, instance_id: str) -> BaseDiscoveryPlugin:
+        """
+        Get a registered plugin by instance ID.
+
+        For backward compatibility, if instance_id matches a plugin_type and only
+        one instance of that type exists, returns that instance.
+
+        Args:
+            instance_id: The instance ID (or plugin type for single instances)
+
+        Returns:
+            The plugin instance
+
+        Raises:
+            ValueError: If the plugin instance is not found
+        """
+        # Direct lookup by instance_id
+        if instance_id in self.plugins:
+            return self.plugins[instance_id]
+
+        # Backward compatibility: try looking up by plugin_type
+        # if there's exactly one instance of that type
+        if instance_id in self._plugin_types:
+            instances = self._plugin_types[instance_id]
+            if len(instances) == 1:
+                return self.plugins[instances[0]]
+            elif len(instances) > 1:
+                raise ValueError(
+                    f"Multiple instances of plugin type '{instance_id}' exist. "
+                    f"Specify instance_id: {instances}"
+                )
+
+        raise ValueError(
+            f"Plugin '{instance_id}' not found. "
+            f"Available plugins: {list(self.plugins.keys())}"
+        )
 
     def get_plugins_for_asset_type(self, asset_type: str) -> List[BaseDiscoveryPlugin]:
         """
@@ -207,13 +291,13 @@ class OpenCiteClient:
         for plugin in plugins:
             try:
                 assets = plugin.list_assets(asset_type, **kwargs)
-                # Ensure each asset has discovery_source set to the plugin name
+                # Ensure each asset has discovery_source set to the plugin instance_id
                 for asset in assets:
                     if "discovery_source" not in asset:
-                        asset["discovery_source"] = plugin.name
+                        asset["discovery_source"] = plugin.instance_id
                 results.extend(assets)
             except Exception as e:
-                logger.warning(f"Failed to list {asset_type} from plugin {plugin.name}: {e}")
+                logger.warning(f"Failed to list {asset_type} from plugin {plugin.instance_id}: {e}")
 
         return results
 
@@ -275,6 +359,44 @@ class OpenCiteClient:
             Aggregated list of MCP resources
         """
         return self.list_assets("mcp_resource", server_id=server_id)
+
+    def list_agents(self) -> List[Dict[str, Any]]:
+        """
+        List all discovered agents from all plugins.
+
+        Returns:
+            Aggregated list of agents
+        """
+        return self.list_assets("agent")
+
+    def list_downstream_systems(self) -> List[Dict[str, Any]]:
+        """
+        List all discovered downstream systems from all plugins.
+
+        Returns:
+            Aggregated list of downstream systems
+        """
+        return self.list_assets("downstream_system")
+
+    def list_lineage(self, source_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        List all lineage relationships from OpenTelemetry plugin.
+
+        Args:
+            source_id: Optional asset ID to filter by
+
+        Returns:
+            List of lineage relationships
+        """
+        results = []
+        for plugin in self.plugins.values():
+            if hasattr(plugin, 'list_lineage'):
+                try:
+                    relationships = plugin.list_lineage(source_id=source_id)
+                    results.extend(relationships)
+                except Exception as e:
+                    logger.warning(f"Failed to get lineage from {plugin.instance_id}: {e}")
+        return results
 
     def list_endpoints(self) -> List[Dict[str, Any]]:
         """
