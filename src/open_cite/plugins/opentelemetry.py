@@ -96,7 +96,15 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
     Supports standard GenAI semantic conventions for LLM observability.
     """
 
-    def __init__(self, host: str = "localhost", port: int = 4318, mcp_plugin=None, attribute_patterns: List[str] = None):
+    def __init__(
+        self,
+        host: str = "localhost",
+        port: int = 4318,
+        mcp_plugin=None,
+        attribute_patterns: List[str] = None,
+        instance_id: Optional[str] = None,
+        display_name: Optional[str] = None,
+    ):
         """
         Initialize the OpenTelemetry plugin.
 
@@ -105,7 +113,10 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             port: Port to bind the OTLP receiver to (default: 4318, standard OTLP/HTTP)
             mcp_plugin: Optional MCP plugin instance for MCP discovery integration
             attribute_patterns: Optional list of regex patterns to match attributes to collect
+            instance_id: Unique identifier for this plugin instance
+            display_name: Human-readable name for this instance
         """
+        super().__init__(instance_id=instance_id, display_name=display_name)
         self.host = host
         self.port = port
         self.server: Optional[HTTPServer] = None
@@ -124,6 +135,39 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             lambda: {"models": set(), "traces": [], "metadata": {}}
         )
 
+        # Discovered agents: {agent_name: {tools_used: set(), models_used: set(), ...}}
+        self.discovered_agents: Dict[str, Dict[str, Any]] = defaultdict(
+            lambda: {
+                "tools_used": set(),
+                "models_used": set(),
+                "confidence": "low",
+                "first_seen": None,
+                "last_seen": None,
+                "metadata": {},
+            }
+        )
+
+        # Discovered downstream systems: {system_id: {...}}
+        self.discovered_downstream: Dict[str, Dict[str, Any]] = defaultdict(
+            lambda: {
+                "name": "",
+                "type": "unknown",
+                "endpoint": None,
+                "tools_connecting": set(),
+                "first_seen": None,
+                "last_seen": None,
+                "metadata": {},
+            }
+        )
+
+        # Lineage relationships: list of (source_id, source_type, target_id, target_type, rel_type)
+        self.lineage: Dict[str, Dict[str, Any]] = {}
+
+        # Token usage tracking per model: {model_name: {input_tokens, output_tokens}}
+        self.model_token_usage: Dict[str, Dict[str, int]] = defaultdict(
+            lambda: {"input_tokens": 0, "output_tokens": 0}
+        )
+
         # Lock for thread-safe operations
         self._lock = threading.Lock()
 
@@ -132,14 +176,21 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         self.identifier = ToolIdentifier()
 
     @property
-    def name(self) -> str:
-        """Name of the plugin."""
+    def plugin_type(self) -> str:
+        """Type identifier for this plugin."""
         return "opentelemetry"
+
+    def get_config(self) -> Dict[str, Any]:
+        """Return plugin configuration."""
+        return {
+            "host": self.host,
+            "port": self.port,
+        }
 
     @property
     def supported_asset_types(self) -> Set[str]:
         """Asset types supported by this plugin."""
-        return {"tool", "model"}
+        return {"tool", "model", "agent", "downstream_system"}
 
     def get_identification_attributes(self) -> List[str]:
         """Return a list of attribute keys used for tool identification."""
@@ -220,6 +271,11 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 # OTLP format: {"resourceSpans": [...]}
                 resource_spans = otlp_data.get("resourceSpans", [])
 
+                # Track per-span detections for parent-child correlation
+                span_agents: Dict[str, str] = {}   # span_id -> agent_name
+                span_tools: Dict[str, str] = {}     # span_id -> tool_name
+                span_parents: Dict[str, str] = {}   # span_id -> parent_span_id
+
                 for resource_span in resource_spans:
                     resource = resource_span.get("resource", {})
                     scope_spans = resource_span.get("scopeSpans", [])
@@ -230,8 +286,12 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                         for span in spans:
                             trace_id = span.get("traceId", "")
                             span_id = span.get("spanId", "")
+                            parent_span_id = span.get("parentSpanId", "")
                             span_name = span.get("name", "")
                             attributes = span.get("attributes", [])
+
+                            if parent_span_id:
+                                span_parents[span_id] = parent_span_id
 
                             # Store the trace
                             if trace_id not in self.traces:
@@ -248,15 +308,35 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                                 "resource": resource,
                             })
 
-                            # Detect OpenRouter usage
-                            self._detect_openrouter_usage(
+                            # Detect OpenRouter usage (tools/models)
+                            tool_name = self._detect_openrouter_usage(
                                 trace_id, span_id, span_name, attributes, resource
                             )
+                            if tool_name:
+                                span_tools[span_id] = tool_name
+
+                            # Detect agents
+                            agent_name = self._detect_agent(
+                                trace_id, span_id, span_name, attributes, resource
+                            )
+                            if agent_name:
+                                span_agents[span_id] = agent_name
+
+                            # Detect downstream systems
+                            self._detect_downstream_system(
+                                trace_id, span_id, span_name, attributes, resource
+                            )
+
+                            # Extract token usage
+                            self._extract_token_usage(attributes)
 
                             # Detect MCP tool/resource usage
                             self._detect_mcp_usage(
                                 trace_id, span_id, span_name, attributes, resource
                             )
+
+                # Correlate agents with tools via parent-child span relationships
+                self._correlate_agent_tools(span_agents, span_tools, span_parents)
 
                 logger.info(f"Ingested traces. Total traces: {len(self.traces)}")
             except Exception as e:
@@ -269,7 +349,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         span_name: str,
         attributes: List[Dict[str, Any]],
         resource: Dict[str, Any],
-    ):
+    ) -> Optional[str]:
         """
         Detect if a span represents LLM/AI model usage.
 
@@ -277,6 +357,9 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         - gen_ai.request.model or gen_ai.response.model
         - llm.model or model attributes
         - service.name for tool identification
+
+        Returns:
+            The detected tool name, or None if no tool was detected.
         """
         # Convert attributes list to dict for easier access
         attr_dict = {}
@@ -318,15 +401,43 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         )
 
         # Extract tool/service name
-        tool_name = (
-            merged_attrs.get("service.name")
-            or merged_attrs.get("tool.name")
-            or merged_attrs.get("app.name")
+        # Priority:
+        #   1. Explicit tool attribute (gen_ai.tool.name, tool.name)
+        #   2. Span name when span is a tool call (has gen_ai.tool.call.id)
+        #   3. service.name / app.name (but NOT when it equals the agent name)
+        #   4. Span name as last resort
+        is_tool_call = "gen_ai.tool.call.id" in attr_dict
+        agent_name = (
+            merged_attrs.get("gen_ai.agent.name")
+            or merged_attrs.get("agent_name")
+            or merged_attrs.get("agent.name")
         )
+
+        tool_name = (
+            attr_dict.get("gen_ai.tool.name")
+            or attr_dict.get("tool.name")
+        )
+
+        # For tool-call spans, prefer the span name (e.g. "CodeExecution")
+        if not tool_name and is_tool_call and span_name:
+            tool_name = span_name
+
+        # Fall back to service.name, but skip if it matches the agent name
+        if not tool_name:
+            service_name = (
+                merged_attrs.get("service.name")
+                or merged_attrs.get("app.name")
+            )
+            if service_name and service_name != agent_name:
+                tool_name = service_name
 
         # If no explicit service name, use span name or infer from trace
         if not tool_name:
             tool_name = span_name or f"tool_{trace_id[:8]}"
+
+        # Skip recording this span as a tool if the resolved name is just the agent name
+        if tool_name == agent_name:
+            return None
 
         # Debug logging
         if logger.isEnabledFor(logging.DEBUG):
@@ -334,6 +445,9 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                         f"tool_name={tool_name}")
 
         # If we detected model usage, record it (regardless of provider)
+        if not model_name:
+            return tool_name if tool_name else None
+
         if model_name:
             if model_name not in self.discovered_tools[tool_name]["models"]:
                 self.discovered_tools[tool_name]["models"].add(model_name)
@@ -398,18 +512,22 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                             self.discovered_tools[tool_name]["metadata"][key] = value
                             break
 
+            return tool_name
+        return None
+
     def list_assets(self, asset_type: str, **kwargs) -> List[Dict[str, Any]]:
         """
         List assets discovered from OpenTelemetry traces.
 
         Supported asset types:
-        - "tool": Tools using OpenRouter models
-        - "trace": Raw traces received
+        - "tool": Tools using AI models
         - "model": Models discovered across all tools
+        - "agent": Agents detected from trace patterns
+        - "downstream_system": Downstream systems (databases, APIs, etc.)
 
         Args:
             asset_type: Type of asset to list
-            **kwargs: Additional filters (e.g., tool_name, model_name)
+            **kwargs: Additional filters
 
         Returns:
             List of assets
@@ -419,10 +537,14 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 return self._list_tools(**kwargs)
             elif asset_type == "model":
                 return self._list_models(**kwargs)
+            elif asset_type == "agent":
+                return self._list_agents(**kwargs)
+            elif asset_type == "downstream_system":
+                return self._list_downstream_systems(**kwargs)
             else:
                 raise ValueError(
                     f"Unsupported asset type: {asset_type}. "
-                    f"Supported types: tool, model"
+                    f"Supported types: tool, model, agent, downstream_system"
                 )
 
     def _list_tools(self, **kwargs) -> List[Dict[str, Any]]:
@@ -477,14 +599,320 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             # Extract provider from model name (e.g., "openai/gpt-4" -> "openai")
             provider = model_name.split("/")[0] if "/" in model_name else "unknown"
 
+            token_data = self.model_token_usage.get(model_name, {})
             models.append({
                 "name": model_name,
                 "provider": provider,
                 "tools": list(data["tools"]),
                 "usage_count": data["usage_count"],
+                "total_input_tokens": token_data.get("input_tokens", 0),
+                "total_output_tokens": token_data.get("output_tokens", 0),
             })
 
         return models
+
+    def _list_agents(self, **kwargs) -> List[Dict[str, Any]]:
+        """List all discovered agents."""
+        agents = []
+        for agent_name, agent_data in self.discovered_agents.items():
+            agents.append({
+                "id": agent_name,
+                "name": agent_name,
+                "confidence": agent_data["confidence"],
+                "tools_used": list(agent_data["tools_used"]),
+                "models_used": list(agent_data["models_used"]),
+                "first_seen": agent_data["first_seen"],
+                "last_seen": agent_data["last_seen"],
+                "metadata": agent_data["metadata"],
+            })
+        return agents
+
+    def _list_downstream_systems(self, **kwargs) -> List[Dict[str, Any]]:
+        """List all discovered downstream systems."""
+        systems = []
+        for system_id, system_data in self.discovered_downstream.items():
+            systems.append({
+                "id": system_id,
+                "name": system_data["name"],
+                "type": system_data["type"],
+                "endpoint": system_data["endpoint"],
+                "tools_connecting": list(system_data["tools_connecting"]),
+                "first_seen": system_data["first_seen"],
+                "last_seen": system_data["last_seen"],
+                "metadata": system_data["metadata"],
+            })
+        return systems
+
+    def list_lineage(self, source_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List lineage relationships."""
+        with self._lock:
+            if source_id:
+                return [
+                    rel for rel in self.lineage.values()
+                    if rel["source_id"] == source_id or rel["target_id"] == source_id
+                ]
+            return list(self.lineage.values())
+
+    # Agent detection patterns
+    AGENT_SPAN_PATTERNS = re.compile(
+        r'(agent|bot|assistant|copilot|workflow|pipeline|orchestrator)',
+        re.IGNORECASE
+    )
+
+    def _detect_agent(
+        self,
+        trace_id: str,
+        span_id: str,
+        span_name: str,
+        attributes: List[Dict[str, Any]],
+        resource: Dict[str, Any],
+    ) -> Optional[str]:
+        """
+        Detect if a span represents an agent.
+
+        Detection strategy:
+        - Explicit agent attributes (gen_ai.agent.name, agent_name) -> high confidence
+        - Span name pattern matching (agent, bot, assistant, etc.) -> medium confidence
+        - Fall back to service.name when span structure indicates agentic behavior -> low confidence
+
+        Returns:
+            The detected agent name, or None if no agent was detected.
+        """
+        attr_dict = self._attrs_to_dict(attributes)
+        resource_dict = self._attrs_to_dict(resource.get("attributes", []))
+        merged = {**resource_dict, **attr_dict}
+        now = datetime.utcnow().isoformat()
+
+        # Check for explicit agent attributes (high confidence)
+        agent_name = (
+            merged.get("gen_ai.agent.name")
+            or merged.get("agent_name")
+            or merged.get("agent.name")
+        )
+        confidence = "high" if agent_name else None
+
+        # Check span name patterns (medium confidence)
+        if not agent_name and self.AGENT_SPAN_PATTERNS.search(span_name):
+            agent_name = span_name
+            confidence = "medium"
+
+        if not agent_name:
+            return None
+
+        agent = self.discovered_agents[agent_name]
+        if not agent["first_seen"]:
+            agent["first_seen"] = now
+        agent["last_seen"] = now
+        agent["confidence"] = confidence
+
+        # Track tools and models used by this agent
+        # Prefer explicit tool attributes; fall back to service.name only if distinct from agent
+        is_tool_call = "gen_ai.tool.call.id" in merged
+        tool_name = (
+            merged.get("gen_ai.tool.name")
+            or merged.get("tool.name")
+        )
+        if not tool_name and is_tool_call and span_name:
+            tool_name = span_name
+        if not tool_name:
+            svc = merged.get("service.name")
+            if svc and svc != agent_name:
+                tool_name = svc
+
+        model_name = (
+            merged.get("gen_ai.request.model")
+            or merged.get("gen_ai.response.model")
+        )
+
+        if tool_name:
+            agent["tools_used"].add(tool_name)
+            self._add_lineage(agent_name, "agent", tool_name, "tool", "uses")
+
+        if model_name:
+            agent["models_used"].add(model_name)
+            self._add_lineage(agent_name, "agent", model_name, "model", "uses")
+
+        return agent_name
+
+    def _correlate_agent_tools(
+        self,
+        span_agents: Dict[str, str],
+        span_tools: Dict[str, str],
+        span_parents: Dict[str, str],
+    ):
+        """
+        Correlate agents with tools via parent-child span relationships.
+
+        In OTEL traces, agent spans and tool spans are typically separate:
+        the agent span is the parent and tool/LLM spans are children.
+        This method walks up from each tool span to find an ancestor agent span
+        and creates the agent->tool lineage relationship.
+        """
+        if not span_agents or not span_tools:
+            return
+
+        for tool_span_id, tool_name in span_tools.items():
+            # Walk up the parent chain from this tool span to find an agent
+            current = tool_span_id
+            visited = set()
+            while current in span_parents and current not in visited:
+                visited.add(current)
+                parent = span_parents[current]
+                if parent in span_agents:
+                    agent_name = span_agents[parent]
+                    if agent_name != tool_name:
+                        self.discovered_agents[agent_name]["tools_used"].add(tool_name)
+                        self._add_lineage(agent_name, "agent", tool_name, "tool", "uses")
+                        logger.info(
+                            f"Correlated agent '{agent_name}' -> tool '{tool_name}' via span hierarchy"
+                        )
+                    break
+                current = parent
+
+    def _detect_downstream_system(
+        self,
+        trace_id: str,
+        span_id: str,
+        span_name: str,
+        attributes: List[Dict[str, Any]],
+        resource: Dict[str, Any],
+    ):
+        """
+        Detect downstream systems (databases, external APIs, message queues, etc.)
+        from OTEL span attributes.
+        """
+        attr_dict = self._attrs_to_dict(attributes)
+        resource_dict = self._attrs_to_dict(resource.get("attributes", []))
+        merged = {**resource_dict, **attr_dict}
+        now = datetime.utcnow().isoformat()
+
+        system_name = None
+        system_type = "unknown"
+        endpoint = None
+
+        # Database systems
+        db_system = merged.get("db.system")
+        if db_system:
+            db_name = merged.get("db.name") or merged.get("db.namespace") or db_system
+            system_name = f"{db_system}:{db_name}" if db_name != db_system else db_system
+            system_type = "database"
+            endpoint = merged.get("server.address") or merged.get("net.peer.name")
+
+        # HTTP/API calls (only CLIENT spans to external services)
+        if not system_name:
+            span_kind = merged.get("span.kind") or attr_dict.get("span.kind")
+            http_url = merged.get("http.url") or merged.get("url.full")
+            server_addr = merged.get("server.address") or merged.get("net.peer.name")
+
+            if http_url and server_addr:
+                system_name = server_addr
+                system_type = "api"
+                endpoint = http_url
+
+        # Messaging systems
+        if not system_name:
+            messaging_system = merged.get("messaging.system")
+            if messaging_system:
+                destination = merged.get("messaging.destination.name") or messaging_system
+                system_name = f"{messaging_system}:{destination}"
+                system_type = "messaging"
+
+        # RPC systems
+        if not system_name:
+            rpc_system = merged.get("rpc.system")
+            if rpc_system:
+                rpc_service = merged.get("rpc.service") or rpc_system
+                system_name = f"{rpc_system}:{rpc_service}"
+                system_type = "rpc"
+
+        if not system_name:
+            return
+
+        # Generate a stable ID
+        system_id = system_name.lower().replace(" ", "_").replace(":", "_")
+
+        system = self.discovered_downstream[system_id]
+        system["name"] = system_name
+        system["type"] = system_type
+        if endpoint:
+            system["endpoint"] = endpoint
+        if not system["first_seen"]:
+            system["first_seen"] = now
+        system["last_seen"] = now
+
+        # Track which tools connect to this system
+        tool_name = (
+            merged.get("service.name")
+            or merged.get("tool.name")
+            or resource_dict.get("service.name")
+        )
+        if tool_name:
+            system["tools_connecting"].add(tool_name)
+            self._add_lineage(tool_name, "tool", system_id, "downstream", "connects_to")
+
+    def _extract_token_usage(self, attributes: List[Dict[str, Any]]):
+        """Extract token usage statistics from span attributes."""
+        attr_dict = self._attrs_to_dict(attributes)
+
+        model_name = (
+            attr_dict.get("gen_ai.request.model")
+            or attr_dict.get("gen_ai.response.model")
+        )
+        if not model_name:
+            return
+
+        input_tokens = attr_dict.get("gen_ai.usage.input_tokens") or attr_dict.get("gen_ai.usage.prompt_tokens")
+        output_tokens = attr_dict.get("gen_ai.usage.output_tokens") or attr_dict.get("gen_ai.usage.completion_tokens")
+
+        if input_tokens:
+            try:
+                self.model_token_usage[model_name]["input_tokens"] += int(input_tokens)
+            except (ValueError, TypeError):
+                pass
+        if output_tokens:
+            try:
+                self.model_token_usage[model_name]["output_tokens"] += int(output_tokens)
+            except (ValueError, TypeError):
+                pass
+
+    def _add_lineage(self, source_id: str, source_type: str,
+                     target_id: str, target_type: str,
+                     relationship_type: str):
+        """Add or update a lineage relationship."""
+        key = f"{source_id}:{target_id}:{relationship_type}"
+        now = datetime.utcnow().isoformat()
+
+        if key in self.lineage:
+            self.lineage[key]["weight"] += 1
+            self.lineage[key]["last_seen"] = now
+        else:
+            self.lineage[key] = {
+                "source_id": source_id,
+                "source_type": source_type,
+                "target_id": target_id,
+                "target_type": target_type,
+                "relationship_type": relationship_type,
+                "weight": 1,
+                "first_seen": now,
+                "last_seen": now,
+            }
+
+    @staticmethod
+    def _attrs_to_dict(attributes: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Convert OTLP attributes list to a flat dictionary."""
+        result = {}
+        for attr in attributes:
+            key = attr.get("key", "")
+            value = attr.get("value", {})
+            if "stringValue" in value:
+                result[key] = value["stringValue"]
+            elif "intValue" in value:
+                result[key] = value["intValue"]
+            elif "boolValue" in value:
+                result[key] = value["boolValue"]
+            elif "doubleValue" in value:
+                result[key] = value["doubleValue"]
+        return result
 
     def _detect_mcp_usage(
         self,

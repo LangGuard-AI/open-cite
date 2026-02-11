@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: opencite
+  labels:
+    app.kubernetes.io/name: opencite
+    app.kubernetes.io/component: api

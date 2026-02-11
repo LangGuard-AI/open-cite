@@ -97,8 +97,8 @@ def discover_available_plugins():
                 if obj.__module__ != module.__name__:
                     continue
 
-                # Check if it's a plugin (has 'name' property and inherits from BaseDiscoveryPlugin)
-                if hasattr(obj, 'name') and hasattr(obj, 'list_assets'):
+                # Check if it's a plugin (has 'plugin_type' or 'name' property and inherits from BaseDiscoveryPlugin)
+                if (hasattr(obj, 'plugin_type') or hasattr(obj, 'name')) and hasattr(obj, 'list_assets'):
                     # Get plugin metadata
                     plugin_info = get_plugin_metadata(modname, obj)
                     if plugin_info:
@@ -189,6 +189,233 @@ def list_available_plugins():
     except Exception as e:
         logger.error(f"Failed to discover plugins: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/instances', methods=['GET'])
+def list_plugin_instances():
+    """List all active plugin instances."""
+    if not client:
+        return jsonify({"instances": [], "count": 0})
+
+    try:
+        instances = client.list_plugin_instances()
+        return jsonify({"instances": instances, "count": len(instances)})
+    except Exception as e:
+        logger.error(f"Failed to list plugin instances: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/instances', methods=['POST'])
+def create_plugin_instance():
+    """Create a new plugin instance."""
+    global client
+
+    try:
+        data = request.json
+        plugin_type = data.get('plugin_type')
+        instance_id = data.get('instance_id')
+        display_name = data.get('display_name')
+        config = data.get('config', {})
+        auto_start = data.get('auto_start', False)
+
+        if not plugin_type:
+            return jsonify({"error": "plugin_type is required"}), 400
+
+        # Initialize client if not already running
+        if not client:
+            client = OpenCiteClient()
+
+        # Auto-generate instance_id if not provided
+        if not instance_id:
+            base_id = plugin_type
+            counter = 1
+            instance_id = base_id
+            existing_ids = [p.instance_id for p in client.plugins.values()]
+            while instance_id in existing_ids:
+                counter += 1
+                instance_id = f"{base_id}-{counter}"
+
+        # Auto-generate display_name if not provided
+        if not display_name:
+            display_name = plugin_type.replace('_', ' ').title()
+            if instance_id != plugin_type:
+                display_name = f"{display_name} ({instance_id})"
+
+        # Create the plugin instance
+        plugin_instance = _create_plugin_instance(plugin_type, instance_id, display_name, config)
+
+        # Register the plugin
+        client.register_plugin(plugin_instance)
+
+        # Start the plugin if auto_start is enabled
+        if auto_start:
+            _start_plugin_instance(plugin_instance)
+            with state_lock:
+                if plugin_type not in discovery_status["plugins_enabled"]:
+                    discovery_status["plugins_enabled"].append(plugin_type)
+                discovery_status["running"] = True
+
+        return jsonify({
+            "success": True,
+            "instance": plugin_instance.to_dict()
+        }), 201
+
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"Failed to create plugin instance: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/instances/<instance_id>', methods=['DELETE'])
+def delete_plugin_instance(instance_id: str):
+    """Delete a plugin instance."""
+    global client
+
+    try:
+        if not client or instance_id not in client.plugins:
+            return jsonify({"error": f"Instance '{instance_id}' not found"}), 404
+
+        plugin = client.plugins[instance_id]
+        _stop_plugin_instance(plugin)
+        client.unregister_plugin(instance_id)
+
+        return jsonify({"success": True, "message": f"Instance '{instance_id}' deleted"})
+
+    except Exception as e:
+        logger.error(f"Failed to delete instance: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/instances/<instance_id>/start', methods=['POST'])
+def start_plugin_instance(instance_id: str):
+    """Start a plugin instance."""
+    try:
+        if not client:
+            return jsonify({"error": "No client initialized"}), 400
+
+        if instance_id not in client.plugins:
+            return jsonify({"error": f"Instance '{instance_id}' not found"}), 404
+
+        plugin = client.plugins[instance_id]
+        _start_plugin_instance(plugin)
+
+        # Update discovery status
+        with state_lock:
+            plugin_type = plugin.plugin_type
+            if plugin_type not in discovery_status["plugins_enabled"]:
+                discovery_status["plugins_enabled"].append(plugin_type)
+            discovery_status["running"] = True
+
+        return jsonify({"success": True, "message": f"Instance '{instance_id}' started"})
+
+    except Exception as e:
+        logger.error(f"Failed to start instance: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/instances/<instance_id>/stop', methods=['POST'])
+def stop_plugin_instance(instance_id: str):
+    """Stop a plugin instance."""
+    try:
+        if not client:
+            return jsonify({"error": "No client initialized"}), 400
+
+        if instance_id not in client.plugins:
+            return jsonify({"error": f"Instance '{instance_id}' not found"}), 404
+
+        plugin = client.plugins[instance_id]
+        _stop_plugin_instance(plugin)
+
+        return jsonify({"success": True, "message": f"Instance '{instance_id}' stopped"})
+
+    except Exception as e:
+        logger.error(f"Failed to stop instance: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+def _create_plugin_instance(plugin_type: str, instance_id: str, display_name: str, config: dict):
+    """Create a new plugin instance of the specified type."""
+    if plugin_type == 'opentelemetry':
+        from open_cite.plugins.opentelemetry import OpenTelemetryPlugin
+        mcp_plugin = client.plugins.get('mcp') if client else None
+        return OpenTelemetryPlugin(
+            host=config.get('host', '0.0.0.0'),
+            port=config.get('port', 4318),
+            mcp_plugin=mcp_plugin,
+            instance_id=instance_id,
+            display_name=display_name,
+        )
+    elif plugin_type == 'mcp':
+        from open_cite.plugins.mcp import MCPPlugin
+        return MCPPlugin(
+            instance_id=instance_id,
+            display_name=display_name,
+        )
+    elif plugin_type == 'databricks':
+        from open_cite.plugins.databricks import DatabricksPlugin
+        return DatabricksPlugin(
+            host=config.get('host'),
+            token=config.get('token'),
+            warehouse_id=config.get('warehouse_id'),
+            instance_id=instance_id,
+            display_name=display_name,
+        )
+    elif plugin_type == 'google_cloud':
+        from open_cite.plugins.google_cloud import GoogleCloudPlugin
+        return GoogleCloudPlugin(
+            project_id=config.get('project_id'),
+            location=config.get('location', 'us-central1'),
+            instance_id=instance_id,
+            display_name=display_name,
+        )
+    elif plugin_type == 'zscaler':
+        from open_cite.plugins.zscaler import ZscalerPlugin
+        return ZscalerPlugin(
+            api_key=config.get('api_key'),
+            username=config.get('username'),
+            password=config.get('password'),
+            cloud_name=config.get('cloud_name', 'zscaler.net'),
+            nss_port=config.get('nss_port'),
+            instance_id=instance_id,
+            display_name=display_name,
+        )
+    else:
+        raise ValueError(f"Unknown plugin type: {plugin_type}")
+
+
+def _start_plugin_instance(plugin):
+    """Start a plugin instance (plugin-specific initialization)."""
+    plugin_type = plugin.plugin_type
+
+    if plugin_type == 'opentelemetry':
+        if hasattr(plugin, 'start_receiver'):
+            plugin.start_receiver()
+            logger.info(f"Started OpenTelemetry receiver for {plugin.instance_id}")
+    elif plugin_type == 'zscaler':
+        if hasattr(plugin, 'nss_port') and plugin.nss_port:
+            plugin.start_nss_receiver(port=plugin.nss_port)
+            logger.info(f"Started Zscaler NSS receiver for {plugin.instance_id}")
+
+    # Set plugin status to running
+    plugin.status = 'running'
+
+
+def _stop_plugin_instance(plugin):
+    """Stop a plugin instance (plugin-specific cleanup)."""
+    plugin_type = plugin.plugin_type
+
+    if plugin_type == 'opentelemetry':
+        if hasattr(plugin, 'stop_receiver'):
+            plugin.stop_receiver()
+            logger.info(f"Stopped OpenTelemetry receiver for {plugin.instance_id}")
+    elif plugin_type == 'zscaler':
+        if hasattr(plugin, 'stop_nss_receiver'):
+            plugin.stop_nss_receiver()
+            logger.info(f"Stopped Zscaler NSS receiver for {plugin.instance_id}")
+
+    # Set plugin status to stopped
+    plugin.status = 'stopped'
 
 
 @app.route('/api/plugins/configure', methods=['POST'])

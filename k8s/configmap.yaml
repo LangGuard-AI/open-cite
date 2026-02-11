@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opencite-config
+  namespace: opencite
+  labels:
+    app.kubernetes.io/name: opencite
+    app.kubernetes.io/component: api
+data:
+  # API Server
+  OPENCITE_HOST: "0.0.0.0"
+  OPENCITE_PORT: "8080"
+
+  # OTLP Receiver
+  OPENCITE_OTLP_HOST: "0.0.0.0"
+  OPENCITE_OTLP_PORT: "4318"
+
+  # Plugin toggles
+  OPENCITE_ENABLE_OTEL: "true"
+  OPENCITE_ENABLE_MCP: "true"
+  OPENCITE_ENABLE_DATABRICKS: "false"
+  OPENCITE_ENABLE_GOOGLE_CLOUD: "false"
+
+  # Auto-start discovery
+  OPENCITE_AUTO_START: "true"
+
+  # Logging
+  OPENCITE_LOG_LEVEL: "INFO"
+
+  # Persistence (SQLite)
+  OPENCITE_PERSISTENCE_ENABLED: "true"
+  OPENCITE_DB_PATH: "/data/opencite.db"
+
+  # Google Cloud (non-sensitive)
+  GCP_LOCATION: "us-central1"

@@ -49,7 +49,7 @@
 
         .main-grid {
             display: grid;
-            grid-template-columns: 350px 1fr;
+            grid-template-columns: 400px 1fr;
             gap: 20px;
         }
 
@@ -88,6 +88,10 @@
         }
 
         .status-indicator.stopped {
+            background: #6b7280;
+        }
+
+        .status-indicator.error {
             background: #ef4444;
         }
 
@@ -98,15 +102,8 @@
         }
 
         @keyframes pulse {
-
-            0%,
-            100% {
-                opacity: 1;
-            }
-
-            50% {
-                opacity: 0.5;
-            }
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
         }
 
         .progress-container {
@@ -140,99 +137,104 @@
             color: #991b1b;
         }
 
-        .progress-icon {
-            flex-shrink: 0;
-        }
-
         .spinner {
             width: 14px;
             height: 14px;
-            border: 2px solid #92400e;
+            border: 2px solid currentColor;
             border-top-color: transparent;
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
         }
 
         @keyframes spin {
-            to {
-                transform: rotate(360deg);
-            }
+            to { transform: rotate(360deg); }
         }
 
-        .plugin-item {
+        /* Instance Card Styles */
+        .instance-card {
             background: #f9fafb;
             border: 2px solid #e5e7eb;
             border-radius: 8px;
             padding: 16px;
             margin-bottom: 12px;
-            cursor: pointer;
             transition: all 0.2s;
         }
 
-        .plugin-item:hover {
+        .instance-card:hover {
             border-color: #667eea;
             background: #f3f4f6;
         }
 
-        .plugin-item.selected {
-            border-color: #667eea;
-            background: #eef2ff;
-        }
-
-        .plugin-header {
+        .instance-header {
             display: flex;
             align-items: center;
             gap: 10px;
             margin-bottom: 8px;
         }
 
-        .plugin-checkbox {
-            width: 20px;
-            height: 20px;
-            cursor: pointer;
-        }
-
-        .plugin-name {
+        .instance-name {
             font-weight: 600;
             color: #333;
             font-size: 1.1em;
+            flex-grow: 1;
         }
 
-        .plugin-description {
+        .instance-type {
+            color: #6b7280;
+            font-size: 0.85em;
+        }
+
+        .instance-info {
             color: #666;
             font-size: 0.9em;
-            margin-top: 4px;
+            margin-bottom: 8px;
         }
 
-        .plugin-config {
+        .instance-actions {
+            display: flex;
+            gap: 8px;
             margin-top: 12px;
-            padding-top: 12px;
-            border-top: 1px solid #e5e7eb;
-            display: none;
         }
 
-        .plugin-item.selected .plugin-config {
-            display: block;
+        .instance-actions button {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 4px;
+            font-size: 0.85em;
+            cursor: pointer;
+            transition: all 0.2s;
         }
 
-        .form-group {
-            margin-bottom: 12px;
+        .btn-edit {
+            background: #e5e7eb;
+            color: #374151;
+        }
+        .btn-edit:hover {
+            background: #d1d5db;
         }
 
-        .form-group label {
-            display: block;
-            color: #555;
-            font-size: 0.9em;
-            margin-bottom: 4px;
-            font-weight: 500;
+        .btn-start {
+            background: #10b981;
+            color: white;
+        }
+        .btn-start:hover {
+            background: #059669;
         }
 
-        .form-group input {
-            width: 100%;
-            padding: 8px 12px;
-            border: 1px solid #d1d5db;
-            border-radius: 6px;
-            font-size: 0.9em;
+        .btn-stop {
+            background: #f59e0b;
+            color: white;
+        }
+        .btn-stop:hover {
+            background: #d97706;
+        }
+
+        .btn-remove {
+            background: #ef4444;
+            color: white;
+        }
+        .btn-remove:hover {
+            background: #dc2626;
         }
 
         .btn {
@@ -272,13 +274,16 @@
             background: #4b5563;
         }
 
-        .btn-export {
+        .btn-add {
             background: #10b981;
             color: white;
-            margin-top: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
         }
 
-        .btn-export:hover {
+        .btn-add:hover {
             background: #059669;
         }
 
@@ -329,16 +334,6 @@
 
         .btn-export-inline:hover {
             background: #059669;
-            transform: translateY(-1px);
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
-
-        .tab-content {
-            display: none;
-        }
-
-        .tab-content.active {
-            display: block;
         }
 
         .asset-grid {
@@ -358,6 +353,11 @@
         .asset-card:hover {
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
             transform: translateY(-2px);
+        }
+
+        .asset-card.unknown {
+            background-color: #fffbeb;
+            border: 2px solid #fbbf24;
         }
 
         .asset-title {
@@ -383,20 +383,9 @@
             margin-top: 4px;
         }
 
-        .badge-blue {
-            background: #dbeafe;
-            color: #1e40af;
-        }
-
-        .badge-green {
-            background: #d1fae5;
-            color: #065f46;
-        }
-
-        .badge-purple {
-            background: #ede9fe;
-            color: #5b21b6;
-        }
+        .badge-blue { background: #dbeafe; color: #1e40af; }
+        .badge-green { background: #d1fae5; color: #065f46; }
+        .badge-purple { background: #ede9fe; color: #5b21b6; }
 
         .empty-state {
             text-align: center;
@@ -422,6 +411,7 @@
             padding: 16px;
             border-radius: 8px;
             text-align: center;
+            cursor: pointer;
             transition: transform 0.2s, box-shadow 0.2s;
         }
 
@@ -450,58 +440,6 @@
             margin-bottom: 16px;
         }
 
-        .loading {
-            text-align: center;
-            padding: 40px;
-            color: #6b7280;
-        }
-
-        .spinner {
-            border: 3px solid #f3f4f6;
-            border-top: 3px solid #667eea;
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 16px;
-        }
-
-        @keyframes spin {
-            0% {
-                transform: rotate(0deg);
-            }
-
-            100% {
-                transform: rotate(360deg);
-            }
-        }
-
-        /* Unknown Tool Highlighting */
-        .asset-card.unknown {
-            background-color: #fffbeb;
-            border: 2px solid #fbbf24;
-        }
-
-        .btn-map {
-            margin-top: 12px;
-            padding: 6px 12px;
-            background: #f59e0b;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 13px;
-            font-weight: 600;
-            transition: all 0.2s;
-            width: auto;
-            display: inline-block;
-        }
-
-        .btn-map:hover {
-            background: #d97706;
-            transform: translateY(-1px);
-        }
-
         /* Modal Styles */
         .modal {
             display: none;
@@ -523,7 +461,7 @@
             width: 600px;
             max-height: 80vh;
             overflow-y: auto;
-            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
         }
 
         .modal-header {
@@ -549,6 +487,70 @@
 
         .close:hover {
             color: #111827;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-group label {
+            display: block;
+            color: #555;
+            font-size: 0.9em;
+            margin-bottom: 4px;
+            font-weight: 500;
+        }
+
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            font-size: 0.95em;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .plugin-type-card {
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .plugin-type-card:hover {
+            border-color: #667eea;
+            background: #f9fafb;
+        }
+
+        .plugin-type-card.selected {
+            border-color: #667eea;
+            background: #eef2ff;
+        }
+
+        .plugin-type-name {
+            font-weight: 600;
+            color: #333;
+        }
+
+        .plugin-type-description {
+            font-size: 0.85em;
+            color: #666;
+            margin-top: 4px;
+        }
+
+        .config-section {
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid #e5e7eb;
         }
 
         .attribute-list {
@@ -578,17 +580,35 @@
             height: 18px;
         }
 
-        .attribute-label {
-            font-size: 0.9em;
-            color: #374151;
-            flex-grow: 1;
-            word-break: break-all;
+        .btn-map {
+            margin-top: 12px;
+            padding: 6px 12px;
+            background: #f59e0b;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
         }
 
-        .attribute-value {
-            font-weight: 600;
-            color: #111827;
-            margin-left: 10px;
+        .btn-map:hover {
+            background: #d97706;
+        }
+
+        .no-instances {
+            text-align: center;
+            padding: 30px;
+            color: #6b7280;
+            background: #f9fafb;
+            border-radius: 8px;
+            border: 2px dashed #e5e7eb;
+        }
+
+        .instances-list {
+            max-height: 400px;
+            overflow-y: auto;
+            margin-bottom: 12px;
         }
     </style>
 </head>
@@ -614,18 +634,15 @@
                     <div id="progressContainer" class="progress-container" style="display: none;"></div>
                 </div>
 
-                <!-- Plugin Configuration -->
+                <!-- Configured Plugins -->
                 <div class="card">
-                    <h2>Configure Plugins</h2>
+                    <h2>Configured Plugins</h2>
                     <div id="errorMessage" class="error-message" style="display: none;"></div>
 
-                    <div id="pluginsList"></div>
+                    <div id="instancesList" class="instances-list"></div>
 
-                    <button class="btn btn-primary" id="startBtn" onclick="startDiscovery()">
-                        Start Discovery
-                    </button>
-                    <button class="btn btn-secondary" id="stopBtn" onclick="stopDiscovery()" style="display: none;">
-                        Stop Discovery
+                    <button class="btn btn-add" onclick="openAddInstanceModal()">
+                        + Add Plugin
                     </button>
                 </div>
             </div>
@@ -643,7 +660,7 @@
                         <button class="tab" onclick="switchTab('data_assets')">Data Assets</button>
                         <button class="btn-export-inline" id="exportBtnInline" onclick="exportData()"
                             style="display: none;" title="Download Discovered Assets in JSON">
-                            📥 Download JSON
+                            Download JSON
                         </button>
                     </div>
 
@@ -651,10 +668,53 @@
                         <div class="empty-state">
                             <div class="empty-state-icon">📦</div>
                             <h3>No assets discovered yet</h3>
-                            <p>Configure and start plugins to begin discovery</p>
+                            <p>Add plugin instances to begin discovery</p>
                         </div>
                     </div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Plugin Instance Modal -->
+    <div id="addInstanceModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="instanceModalTitle">Add Plugin</h2>
+                <span class="close" onclick="closeAddInstanceModal()">&times;</span>
+            </div>
+
+            <div class="form-group">
+                <label>Plugin Type *</label>
+                <div id="pluginTypesList"></div>
+            </div>
+
+            <div id="instanceConfigSection" class="config-section" style="display: none;">
+                <div class="form-group">
+                    <label>Instance Name *</label>
+                    <input type="text" id="instanceDisplayName" placeholder="e.g. Production Databricks">
+                </div>
+
+                <div class="form-group">
+                    <label>Instance ID (auto-generated if empty)</label>
+                    <input type="text" id="instanceId" placeholder="e.g. databricks-prod">
+                </div>
+
+                <div id="pluginConfigFields"></div>
+
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="instanceAutoStart" checked style="width: auto; margin-right: 8px;">
+                        Start immediately after adding
+                    </label>
+                </div>
+            </div>
+
+            <div style="margin-top: 30px; display: flex; gap: 10px;">
+                <button class="btn btn-primary" id="saveInstanceBtn" onclick="saveInstance()" disabled>
+                    Add Instance
+                </button>
+                <button class="btn btn-secondary" onclick="closeAddInstanceModal()">Cancel</button>
             </div>
         </div>
     </div>
@@ -664,7 +724,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h2>Identify Tool Source</h2>
-                <span class="close" onclick="closeModal()">&times;</span>
+                <span class="close" onclick="closeMapModal()">&times;</span>
             </div>
             <p style="color: #6b7280; font-size: 0.9em; margin-bottom: 20px;">
                 Select the attributes that uniquely identify this tool and provide its identity.
@@ -684,345 +744,361 @@
 
             <div class="form-group">
                 <label>Match Type</label>
-                <select id="mapMatchType"
-                    style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.9em;">
+                <select id="mapMatchType">
                     <option value="all">Match ALL selected attributes (Exact match)</option>
                     <option value="any">Match ANY selected attribute (At least one)</option>
                 </select>
             </div>
 
             <div style="margin-top: 20px;">
-                <label style="font-weight: 600; font-size: 0.9em; color: #374151;">Select Identifying
-                    Attributes:</label>
+                <label style="font-weight: 600; font-size: 0.9em; color: #374151;">Select Identifying Attributes:</label>
                 <div id="attributeList" class="attribute-list"></div>
             </div>
 
             <div style="margin-top: 30px;">
                 <button class="btn btn-primary" onclick="submitMapping()">Save Mapping</button>
-                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button class="btn btn-secondary" onclick="closeMapModal()">Cancel</button>
             </div>
         </div>
     </div>
 
     <script>
-        let plugins = {};
+        let pluginTypes = {};
+        let instances = [];
         let assets = {};
         let currentTab = 'all';
         let refreshInterval = null;
+        let selectedPluginType = null;
+        let editingInstanceId = null;
 
-        // Load available plugins on page load
-        async function loadPlugins() {
+        // Initialize
+        async function initialize() {
+            try {
+                await loadPluginTypes();
+                await loadInstances();
+                await updateStatus();
+
+                // Start polling if there are running instances
+                if (instances.some(i => i.status === 'running')) {
+                    startPolling();
+                }
+                console.log('Initialization complete. Plugin types:', Object.keys(pluginTypes));
+            } catch (error) {
+                console.error('Initialization error:', error);
+            }
+        }
+
+        // Load available plugin types
+        async function loadPluginTypes() {
             try {
                 const response = await fetch('/api/plugins');
-                plugins = await response.json();
-                renderPlugins();
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                pluginTypes = await response.json();
+                console.log('Loaded plugin types:', pluginTypes);
             } catch (error) {
-                console.error('Error loading plugins:', error);
+                console.error('Error loading plugin types:', error);
+                pluginTypes = {};
             }
         }
 
-        function renderPlugins() {
-            const container = document.getElementById('pluginsList');
-            container.innerHTML = '';
+        // Load configured instances
+        async function loadInstances() {
+            try {
+                const response = await fetch('/api/instances');
+                const data = await response.json();
+                instances = data.instances || [];
+                renderInstances();
 
-            // Render plugins dynamically - OpenTelemetry first, then MCP as sub-option, then all others
-            const pluginKeys = Object.keys(plugins);
+                // Show export button if there are running instances
+                const hasRunning = instances.some(i => i.status === 'running');
+                document.getElementById('exportBtnInline').style.display = hasRunning ? 'block' : 'none';
+            } catch (error) {
+                console.error('Error loading instances:', error);
+            }
+        }
 
-            // Define preferred order (plugins not in this list will be added at the end)
-            const preferredOrder = ['opentelemetry', 'mcp', 'databricks', 'google_cloud', 'openrouter'];
+        // Render instance cards
+        function renderInstances() {
+            const container = document.getElementById('instancesList');
 
-            // Create final order: preferred plugins first, then any additional ones
-            const pluginOrder = [
-                ...preferredOrder.filter(key => pluginKeys.includes(key)),
-                ...pluginKeys.filter(key => !preferredOrder.includes(key))
-            ];
+            if (instances.length === 0) {
+                container.innerHTML = `
+                    <div class="no-instances">
+                        <p>No plugin instances configured</p>
+                        <p style="font-size: 0.9em; margin-top: 8px;">Click "Add Plugin Instance" to get started</p>
+                    </div>
+                `;
+                return;
+            }
 
-            pluginOrder.forEach(key => {
-                if (!plugins[key]) return;
+            container.innerHTML = instances.map(instance => {
+                const isRunning = instance.status === 'running';
+                const statusClass = isRunning ? 'running' : (instance.status === 'error' ? 'error' : 'stopped');
+                const pluginInfo = pluginTypes[instance.plugin_type] || {};
 
-                const plugin = plugins[key];
-                const div = document.createElement('div');
-                div.className = 'plugin-item';
-                div.id = `plugin-${key}`;
-
-                // Make entire card clickable to toggle checkbox
-                div.onclick = function (e) {
-                    // Don't toggle if clicking on input fields or the checkbox itself
-                    if (e.target.tagName === 'INPUT') {
-                        return;
-                    }
-                    const checkbox = document.getElementById(`check-${key}`);
-                    checkbox.checked = !checkbox.checked;
-                    togglePlugin(key);
-                };
-
-                // MCP is indented as sub-option of OpenTelemetry
-                if (key === 'mcp') {
-                    div.style.marginLeft = '20px';
-                    div.style.borderLeft = '3px solid #667eea';
-                    div.style.paddingLeft = '12px';
-                    div.style.display = 'none'; // Hidden by default, shown when OpenTelemetry is checked
-                }
-
-                let configFields = '';
-                if (plugin.required_fields && Object.keys(plugin.required_fields).length > 0) {
-                    Object.entries(plugin.required_fields).forEach(([fieldKey, field]) => {
-                        const inputType = field.type || 'text';
-
-                        // For checkbox "auto_start" on plugins with trace_endpoints, add onchange handler
-                        const onchangeHandler = (plugin.trace_endpoints && fieldKey === 'auto_start')
-                            ? `onchange="toggleTraceEndpoints('${key}', this.checked)"`
-                            : '';
-
-                        configFields += `
-                            <div class="form-group">
-                                <label>${field.label}${field.required ? ' *' : ''}</label>
-                                <input
-                                    type="${inputType}"
-                                    id="${key}-${fieldKey}"
-                                    placeholder="${field.default}"
-                                    ${field.required ? 'required' : ''}
-                                    ${inputType === 'checkbox' ? '' : 'onfocus="this.value=\'\'"'}
-                                    ${onchangeHandler}
-                                >
-                            </div>
-                        `;
-                    });
-                }
-
-                div.innerHTML = `
-                    <div class="plugin-header">
-                        <input type="checkbox" class="plugin-checkbox" id="check-${key}"
-                            onchange="togglePlugin('${key}')">
-                        <div>
-                            <div class="plugin-name">${plugin.name}</div>
-                            <div class="plugin-description">${plugin.description}</div>
+                return `
+                    <div class="instance-card">
+                        <div class="instance-header">
+                            <span class="status-indicator ${statusClass}"></span>
+                            <span class="instance-name">${instance.display_name}</span>
+                        </div>
+                        <div class="instance-type">Type: ${pluginInfo.name || instance.plugin_type}</div>
+                        <div class="instance-info">ID: ${instance.instance_id}</div>
+                        ${instance.config?.host ? `<div class="instance-info">Host: ${instance.config.host}</div>` : ''}
+                        ${instance.config?.port ? `<div class="instance-info">Port: ${instance.config.port}</div>` : ''}
+                        <div class="instance-actions">
+                            ${isRunning
+                                ? `<button class="btn-stop" onclick="stopInstance('${instance.instance_id}')">Stop</button>`
+                                : `<button class="btn-start" onclick="startInstance('${instance.instance_id}')">Start</button>`
+                            }
+                            <button class="btn-remove" onclick="removeInstance('${instance.instance_id}')">Remove</button>
                         </div>
                     </div>
-                    ${(configFields) ? `<div class="plugin-config">${configFields}</div>` : ''}
                 `;
-
-                container.appendChild(div);
-            });
+            }).join('');
         }
 
-        function togglePlugin(pluginKey) {
-            console.log(`togglePlugin called for: ${pluginKey}`);
-            const checkbox = document.getElementById(`check-${pluginKey}`);
-            const item = document.getElementById(`plugin-${pluginKey}`);
+        // Open add instance modal
+        function openAddInstanceModal() {
+            try {
+                selectedPluginType = null;
+                editingInstanceId = null;
+                document.getElementById('instanceModalTitle').textContent = 'Add Plugin';
+                document.getElementById('saveInstanceBtn').textContent = 'Add Plugin';
+                document.getElementById('instanceDisplayName').value = '';
+                document.getElementById('instanceId').value = '';
+                document.getElementById('instanceAutoStart').checked = true;
+                document.getElementById('instanceConfigSection').style.display = 'none';
+                document.getElementById('saveInstanceBtn').disabled = true;
 
-            if (checkbox.checked) {
-                console.log(`Checkbox checked for ${pluginKey}`);
-                item.classList.add('selected');
-                // Show trace endpoints if this plugin has them
-                toggleTraceEndpoints(pluginKey, true);
-
-                // If OpenTelemetry is checked, show MCP plugin
-                if (pluginKey === 'opentelemetry') {
-                    const mcpPlugin = document.getElementById('plugin-mcp');
-                    if (mcpPlugin) {
-                        mcpPlugin.style.display = 'block';
-                    }
-                }
-            } else {
-                console.log(`Checkbox unchecked for ${pluginKey}`);
-                item.classList.remove('selected');
-                // Hide trace endpoints
-                toggleTraceEndpoints(pluginKey, false);
-
-                // If OpenTelemetry is unchecked, hide and uncheck MCP plugin
-                if (pluginKey === 'opentelemetry') {
-                    const mcpPlugin = document.getElementById('plugin-mcp');
-                    if (mcpPlugin) {
-                        mcpPlugin.style.display = 'none';
-                        // Also uncheck MCP if it was checked
-                        const mcpCheckbox = document.getElementById('check-mcp');
-                        if (mcpCheckbox && mcpCheckbox.checked) {
-                            mcpCheckbox.checked = false;
-                            mcpPlugin.classList.remove('selected');
-                        }
-                    }
-                }
+                renderPluginTypesList();
+                document.getElementById('addInstanceModal').style.display = 'block';
+            } catch (error) {
+                console.error('Error opening modal:', error);
+                alert('Error opening modal: ' + error.message);
             }
         }
 
-        function toggleTraceEndpoints(pluginKey, isChecked) {
-            console.log(`toggleTraceEndpoints called for ${pluginKey}, isChecked: ${isChecked}`);
-            const endpointsDiv = document.getElementById(`${pluginKey}-endpoints`);
-            console.log(`Found endpointsDiv:`, endpointsDiv);
-            if (endpointsDiv) {
-                endpointsDiv.style.display = isChecked ? 'block' : 'none';
-                console.log(`Set display to: ${isChecked ? 'block' : 'none'}`);
-            } else {
-                console.log(`No endpoints div found for ${pluginKey}`);
+        // Render plugin type selection
+        function renderPluginTypesList() {
+            const container = document.getElementById('pluginTypesList');
+            container.innerHTML = Object.entries(pluginTypes).map(([key, plugin]) => `
+                <div class="plugin-type-card ${selectedPluginType === key ? 'selected' : ''}"
+                     onclick="selectPluginType('${key}')">
+                    <div class="plugin-type-name">${plugin.name}</div>
+                    <div class="plugin-type-description">${plugin.description}</div>
+                </div>
+            `).join('');
+        }
+
+        // Select plugin type
+        function selectPluginType(type) {
+            selectedPluginType = type;
+            renderPluginTypesList();
+
+            const plugin = pluginTypes[type];
+            document.getElementById('instanceConfigSection').style.display = 'block';
+            document.getElementById('saveInstanceBtn').disabled = false;
+
+            // Set default display name
+            if (!document.getElementById('instanceDisplayName').value) {
+                document.getElementById('instanceDisplayName').value = plugin.name;
+            }
+
+            // Render config fields
+            const configContainer = document.getElementById('pluginConfigFields');
+            const fields = plugin.required_fields || {};
+
+            if (Object.keys(fields).length === 0) {
+                configContainer.innerHTML = '';
+                return;
+            }
+
+            configContainer.innerHTML = '<h4 style="margin-bottom: 12px; color: #374151;">Configuration</h4>' +
+                Object.entries(fields).map(([key, field]) => `
+                    <div class="form-group">
+                        <label>${field.label}${field.required ? ' *' : ''}</label>
+                        <input type="${field.type || 'text'}"
+                               id="config-${key}"
+                               placeholder="${field.default || ''}"
+                               ${field.required ? 'required' : ''}>
+                    </div>
+                `).join('');
+        }
+
+        // Save instance
+        async function saveInstance() {
+            if (!selectedPluginType) {
+                showError('Please select a plugin type');
+                return;
+            }
+
+            const displayName = document.getElementById('instanceDisplayName').value.trim();
+            if (!displayName) {
+                showError('Please enter an instance name');
+                return;
+            }
+
+            const instanceId = document.getElementById('instanceId').value.trim() || null;
+            const autoStart = document.getElementById('instanceAutoStart').checked;
+
+            // Collect config values
+            const config = {};
+            const plugin = pluginTypes[selectedPluginType];
+            const fields = plugin.required_fields || {};
+
+            for (const [key, field] of Object.entries(fields)) {
+                const input = document.getElementById(`config-${key}`);
+                if (input) {
+                    const value = input.value.trim();
+                    if (value) {
+                        config[key] = value;
+                    } else if (field.required) {
+                        showError(`${field.label} is required`);
+                        return;
+                    }
+                }
+            }
+
+            try {
+                const response = await fetch('/api/instances', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        plugin_type: selectedPluginType,
+                        instance_id: instanceId,
+                        display_name: displayName,
+                        config: config,
+                        auto_start: autoStart
+                    })
+                });
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(result.error || 'Failed to create instance');
+                }
+
+                closeAddInstanceModal();
+                await loadInstances();
+
+                if (autoStart) {
+                    startPolling();
+                    refreshAssets();
+                }
+
+            } catch (error) {
+                showError(error.message);
             }
         }
 
-        async function startDiscovery() {
-            const selectedPlugins = [];
-            hideError();
+        // Start instance
+        async function startInstance(instanceId) {
+            try {
+                const response = await fetch(`/api/instances/${instanceId}/start`, { method: 'POST' });
+                const result = await response.json();
 
-            // Collect selected plugins and their configuration
-            Object.keys(plugins).forEach(key => {
-                const checkbox = document.getElementById(`check-${key}`);
-                if (checkbox && checkbox.checked) {
-                    const config = {};
-                    const fields = plugins[key].required_fields || {};
-
-                    Object.keys(fields).forEach(fieldKey => {
-                        const input = document.getElementById(`${key}-${fieldKey}`);
-                        if (input) {
-                            // Handle checkbox inputs
-                            if (input.type === 'checkbox') {
-                                config[fieldKey] = input.checked ? 'true' : 'false';
-                            } else {
-                                // Only send value if non-empty, otherwise don't include it
-                                // This allows backend to fall back to environment variables
-                                const value = input.value.trim();
-                                if (value) {
-                                    config[fieldKey] = value;
-                                }
-                            }
-                        }
-                    });
-
-                    selectedPlugins.push({
-                        name: key,
-                        config: config
-                    });
+                if (!response.ok) {
+                    throw new Error(result.error || 'Failed to start instance');
                 }
-            });
 
-            if (selectedPlugins.length === 0) {
-                showError('Please select at least one plugin');
+                await loadInstances();
+                startPolling();
+                refreshAssets();
+
+            } catch (error) {
+                showError(error.message);
+            }
+        }
+
+        // Stop instance
+        async function stopInstance(instanceId) {
+            try {
+                const response = await fetch(`/api/instances/${instanceId}/stop`, { method: 'POST' });
+                const result = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(result.error || 'Failed to stop instance');
+                }
+
+                await loadInstances();
+
+                // Stop polling if no running instances
+                if (!instances.some(i => i.status === 'running')) {
+                    stopPolling();
+                }
+
+            } catch (error) {
+                showError(error.message);
+            }
+        }
+
+        // Remove instance
+        async function removeInstance(instanceId) {
+            if (!confirm(`Are you sure you want to remove instance "${instanceId}"?`)) {
                 return;
             }
 
             try {
-                // Show loading state
-                const startBtn = document.getElementById('startBtn');
-                startBtn.disabled = true;
-                startBtn.textContent = 'Initializing...';
-
-                // Start polling status immediately to show progress
-                const statusPollInterval = setInterval(updateStatus, 500);
-
-                const response = await fetch('/api/plugins/configure', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ plugins: selectedPlugins })
-                });
+                const response = await fetch(`/api/instances/${instanceId}`, { method: 'DELETE' });
+                const result = await response.json();
 
                 if (!response.ok) {
-                    const error = await response.json();
-                    clearInterval(statusPollInterval);
-                    throw new Error(error.error);
+                    throw new Error(result.error || 'Failed to remove instance');
                 }
 
-                // Wait a bit for final status update
-                await new Promise(resolve => setTimeout(resolve, 500));
-                clearInterval(statusPollInterval);
+                await loadInstances();
 
-                // Update UI to show running state
-                startBtn.style.display = 'none';
-                document.getElementById('stopBtn').style.display = 'block';
-                document.getElementById('exportBtnInline').style.display = 'block';
+            } catch (error) {
+                showError(error.message);
+            }
+        }
 
-                // Update status one more time
-                await updateStatus();
+        // Close add instance modal
+        function closeAddInstanceModal() {
+            document.getElementById('addInstanceModal').style.display = 'none';
+            hideError();
+        }
 
-                // Call assets immediately
+        // Polling for asset updates
+        function startPolling() {
+            if (refreshInterval) return;
+
+            refreshInterval = setInterval(() => {
                 refreshAssets();
-
-                // Start auto-refresh polling every 3 seconds for real-time OTLP discoveries
-                if (refreshInterval) {
-                    clearInterval(refreshInterval);
-                }
-                refreshInterval = setInterval(() => {
-                    console.log('[Auto-refresh] Fetching latest assets...');
-                    refreshAssets();
-                }, 3000);
-
-            } catch (error) {
-                console.error('Error starting discovery:', error);
-                showError(error.message || 'Failed to start discovery');
-                document.getElementById('startBtn').disabled = false;
-                document.getElementById('startBtn').textContent = 'Start Discovery';
-            }
-        }
-
-        async function stopDiscovery() {
-            try {
-                await fetch('/api/stop', { method: 'POST' });
-
-                // Stop auto-refresh polling
-                if (refreshInterval) {
-                    clearInterval(refreshInterval);
-                    refreshInterval = null;
-                    console.log('[Auto-refresh] Stopped polling');
-                }
-
-                document.getElementById('startBtn').style.display = 'block';
-                document.getElementById('startBtn').disabled = false;
-                document.getElementById('startBtn').textContent = 'Start Discovery';
-                document.getElementById('stopBtn').style.display = 'none';
-                document.getElementById('exportBtnInline').style.display = 'none';
-
-                // Clear progress display
-                document.getElementById('progressContainer').style.display = 'none';
-                document.getElementById('progressContainer').innerHTML = '';
-
-                hideError();
                 updateStatus();
-            } catch (error) {
-                console.error('Error stopping discovery:', error);
+            }, 3000);
+
+            // Immediate refresh
+            refreshAssets();
+        }
+
+        function stopPolling() {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
             }
         }
 
+        // Refresh assets
         async function refreshAssets() {
             try {
-                console.log('[RefreshAssets] Fetching from /api/assets...');
                 const response = await fetch('/api/assets');
                 const data = await response.json();
 
-                console.log('[RefreshAssets] Received data:', data);
-
                 if (data.assets) {
                     assets = data.assets;
-                    console.log('[RefreshAssets] Updated assets:', {
-                        tools: assets.tools?.length || 0,
-                        models: assets.models?.length || 0,
-                        mcp_servers: assets.mcp_servers?.length || 0
-                    });
                     renderStats(data.totals);
                     renderAssets();
-                }
-
-                await updateStatus();
-
-                // After assets are loaded, show "Start Discovery" button again (if not polling)
-                if (!refreshInterval) {
-                    document.getElementById('startBtn').style.display = 'block';
-                    document.getElementById('startBtn').disabled = false;
-                    document.getElementById('startBtn').textContent = 'Start Discovery';
-                    document.getElementById('stopBtn').style.display = 'none';
                 }
             } catch (error) {
                 console.error('Error refreshing assets:', error);
             }
         }
 
-        function showError(message) {
-            const errorMsg = document.getElementById('errorMessage');
-            errorMsg.textContent = message;
-            errorMsg.style.display = 'block';
-        }
-
-        function hideError() {
-            const errorMsg = document.getElementById('errorMessage');
-            errorMsg.style.display = 'none';
-        }
-
+        // Update status
         async function updateStatus() {
             try {
                 const response = await fetch('/api/status');
@@ -1033,20 +1109,11 @@
                 const pluginsActive = document.getElementById('pluginsActive');
                 const progressContainer = document.getElementById('progressContainer');
 
-                // Update status indicator and text
                 if (status.running) {
-                    // Check if still initializing (has in_progress items)
-                    const hasInProgress = status.progress && status.progress.some(p => p.status === 'in_progress');
-                    console.log('updateStatus: hasInProgress =', hasInProgress, 'progress items =', status.progress);
-
-                    if (hasInProgress) {
-                        indicator.className = 'status-indicator loading';
-                    } else {
-                        indicator.className = 'status-indicator running';
-                    }
-
+                    const hasInProgress = status.progress?.some(p => p.status === 'in_progress');
+                    indicator.className = hasInProgress ? 'status-indicator loading' : 'status-indicator running';
                     statusText.textContent = status.current_status || 'Running';
-                    pluginsActive.textContent = `Active plugins: ${status.plugins_enabled.join(', ')}`;
+                    pluginsActive.textContent = `Active: ${status.plugins_enabled?.join(', ') || 'none'}`;
                 } else {
                     indicator.className = 'status-indicator stopped';
                     statusText.textContent = status.current_status || 'Stopped';
@@ -1054,21 +1121,15 @@
                 }
 
                 // Update progress display
-                if (status.progress && status.progress.length > 0) {
+                if (status.progress?.length > 0) {
                     progressContainer.style.display = 'block';
                     progressContainer.innerHTML = status.progress.map(p => {
-                        let icon = '';
-                        if (p.status === 'success') {
-                            icon = '✓';
-                        } else if (p.status === 'error') {
-                            icon = '✗';
-                        } else if (p.status === 'in_progress') {
-                            icon = '<div class="spinner"></div>';
-                        }
-
+                        const icon = p.status === 'success' ? '✓' :
+                                    p.status === 'error' ? '✗' :
+                                    '<div class="spinner"></div>';
                         return `
                             <div class="progress-item ${p.status}">
-                                <span class="progress-icon">${icon}</span>
+                                <span>${icon}</span>
                                 <span>${p.message}</span>
                             </div>
                         `;
@@ -1076,40 +1137,38 @@
                 } else {
                     progressContainer.style.display = 'none';
                 }
-
-                // Display errors if any
-                if (status.error) {
-                    showError(status.error);
-                }
             } catch (error) {
                 console.error('Error updating status:', error);
             }
         }
 
+        // Render stats
         function renderStats(totals) {
+            if (!totals) return;
+
             const container = document.getElementById('statsContainer');
             container.style.display = 'grid';
 
-            // Combine OpenTelemetry and GCP models count
             const totalModels = (totals.models || 0) + (totals.gcp_models || 0) + (totals.gcp_endpoints || 0);
 
             const stats = [
-                { label: 'Tools', value: totals.tools || 0, show: true, tab: 'tools' },
-                { label: 'Models', value: totalModels, show: true, tab: 'models' },
-                { label: 'MCP Servers', value: totals.mcp_servers || 0, show: true, tab: 'mcp' },
-                { label: 'Data Assets', value: totals.data_assets || 0, show: totals.data_assets > 0, tab: 'data_assets' }
+                { label: 'Tools', value: totals.tools || 0, tab: 'tools' },
+                { label: 'Models', value: totalModels, tab: 'models' },
+                { label: 'MCP Servers', value: totals.mcp_servers || 0, tab: 'mcp' },
+                { label: 'Data Assets', value: totals.data_assets || 0, tab: 'data_assets', show: totals.data_assets > 0 }
             ];
 
             container.innerHTML = stats
-                .filter(s => s.show)
+                .filter(s => s.show !== false)
                 .map(s => `
-                    <div class="stat-card" style="cursor: pointer;" onclick="switchTab('${s.tab}')">
+                    <div class="stat-card" onclick="switchTab('${s.tab}')">
                         <div class="stat-number">${s.value}</div>
                         <div class="stat-label">${s.label}</div>
                     </div>
                 `).join('');
         }
 
+        // Render assets
         function renderAssets() {
             const container = document.getElementById('assetsContainer');
             let html = '';
@@ -1136,66 +1195,36 @@
         }
 
         function renderAllAssets() {
-            console.log('renderAllAssets called, assets:', assets);
             let html = '<div class="asset-grid">';
             let count = 0;
 
             // Tools
             (assets.tools || []).forEach(tool => {
                 count++;
-                const source = tool.metadata?.source || '';
                 const sourceName = tool.tool_source_name || '';
-                const sourceId = tool.tool_source_id || '';
                 const isUnknown = !sourceName;
-
                 html += `
                     <div class="asset-card ${isUnknown ? 'unknown' : ''}">
                         <div class="asset-title">🔧 ${tool.name}</div>
                         <div class="asset-meta">Type: ${tool.type}</div>
-                        ${sourceName ? `<div class="asset-meta"><b>Source:</b> ${sourceName}</div>` :
-                        (source ? `<div class="asset-meta">Source: ${source}</div>` :
-                            `<span class="badge" style="background: #fef3c7; color: #92400e;">Mapping Required</span>`)}
-                        ${sourceId ? `<div class="asset-meta"><b>Source ID:</b> ${sourceId}</div>` : ''}
-                        <div class="asset-meta">Models: ${tool.models ? tool.models.length : 0}</div>
+                        <div class="asset-meta">Source: ${tool.discovery_source}</div>
+                        ${sourceName ? `<div class="asset-meta"><b>Identified:</b> ${sourceName}</div>` :
+                            `<span class="badge" style="background: #fef3c7; color: #92400e;">Mapping Required</span>`}
+                        <div class="asset-meta">Models: ${tool.models?.length || 0}</div>
                         <span class="badge badge-blue">Tool</span>
-                        ${isUnknown ? `<br><button class="btn-map" onclick="openMapModalByName('${tool.name.replace(/'/g, "\\'")}')">📍 Map Source</button>` : ''}
+                        ${isUnknown ? `<br><button class="btn-map" onclick="openMapModal('${tool.name.replace(/'/g, "\\'")}')">Map Source</button>` : ''}
                     </div>
                 `;
             });
 
-            // Models (OpenTelemetry)
+            // Models
             (assets.models || []).forEach(model => {
                 count++;
                 html += `
                     <div class="asset-card">
                         <div class="asset-title">🤖 ${model.name}</div>
                         <div class="asset-meta">Provider: ${model.provider}</div>
-                        <div class="asset-meta">Tools using: ${model.tools ? model.tools.length : 0}</div>
                         <span class="badge badge-green">Model</span>
-                    </div>
-                `;
-            });
-
-            // GCP Models
-            (assets.gcp_models || []).forEach(model => {
-                count++;
-                html += `
-                    <div class="asset-card">
-                        <div class="asset-title">🤖 ${model.display_name || model.name}</div>
-                        <div class="asset-meta">Provider: Vertex AI</div>
-                        <span class="badge badge-green">Model</span>
-                    </div>
-                `;
-            });
-
-            // GCP Endpoints
-            (assets.gcp_endpoints || []).forEach(endpoint => {
-                count++;
-                html += `
-                    <div class="asset-card">
-                        <div class="asset-title">🔗 ${endpoint.display_name || endpoint.name}</div>
-                        <div class="asset-meta">Type: Endpoint</div>
-                        <span class="badge badge-purple">Endpoint</span>
                     </div>
                 `;
             });
@@ -1207,61 +1236,43 @@
                     <div class="asset-card">
                         <div class="asset-title">🌐 ${server.name}</div>
                         <div class="asset-meta">Transport: ${server.transport || 'unknown'}</div>
-                        <div class="asset-meta">Tools: ${server.tools_count || 0}</div>
                         <span class="badge badge-purple">MCP Server</span>
                     </div>
                 `;
             });
 
-            // Data Assets (Databricks)
+            // Data Assets
             (assets.data_assets || []).forEach(asset => {
                 count++;
-                const icon = asset.type === 'catalog' ? '📚' :
-                    asset.type === 'schema' ? '📁' :
-                        asset.type === 'table' ? '📊' : '📦';
+                const icon = asset.type === 'catalog' ? '📚' : asset.type === 'schema' ? '📁' : '📊';
                 html += `
                     <div class="asset-card">
                         <div class="asset-title">${icon} ${asset.name}</div>
                         <div class="asset-meta">Type: ${asset.type}</div>
-                        ${asset.owner ? `<div class="asset-meta">Owner: ${asset.owner}</div>` : ''}
                         <span class="badge badge-green">Data Asset</span>
                     </div>
                 `;
             });
 
             html += '</div>';
-
-            console.log('renderAllAssets complete, count:', count, 'html length:', html.length);
-
-            // Return empty string if no assets, so empty state shows
-            if (count === 0) {
-                return '';
-            }
-
-            return html;
+            return count === 0 ? '' : html;
         }
 
         function renderTools() {
-            if (!assets.tools || assets.tools.length === 0) return '';
-
+            if (!assets.tools?.length) return '';
             let html = '<div class="asset-grid">';
             assets.tools.forEach(tool => {
-                const source = tool.metadata?.source || '';
                 const sourceName = tool.tool_source_name || '';
-                const sourceId = tool.tool_source_id || '';
                 const isUnknown = !sourceName;
-
                 html += `
                     <div class="asset-card ${isUnknown ? 'unknown' : ''}">
                         <div class="asset-title">🔧 ${tool.name}</div>
                         <div class="asset-meta">Type: ${tool.type}</div>
                         <div class="asset-meta">Discovery: ${tool.discovery_source}</div>
-                        ${sourceName ? `<div class="asset-meta"><b>Identified Source:</b> ${sourceName}</div>` :
-                        (source ? `<div class="asset-meta">Source: ${source}</div>` :
-                            `<span class="badge" style="background: #fef3c7; color: #92400e;">Mapping Required</span>`)}
-                        ${sourceId ? `<div class="asset-meta"><b>Source ID:</b> ${sourceId}</div>` : ''}
-                        <div class="asset-meta">Models: ${tool.models ? tool.models.join(', ') : 'none'}</div>
-                        ${isUnknown ? `<button class="btn-map" onclick="openMapModalByName('${tool.name.replace(/'/g, "\\'")}')">📍 Map Source</button>` : ''}
+                        ${sourceName ? `<div class="asset-meta"><b>Identified:</b> ${sourceName}</div>` :
+                            `<span class="badge" style="background: #fef3c7; color: #92400e;">Mapping Required</span>`}
+                        <div class="asset-meta">Models: ${tool.models?.join(', ') || 'none'}</div>
+                        ${isUnknown ? `<button class="btn-map" onclick="openMapModal('${tool.name.replace(/'/g, "\\'")}')">Map Source</button>` : ''}
                     </div>
                 `;
             });
@@ -1270,102 +1281,52 @@
         }
 
         function renderModels() {
-            const hasOtelModels = assets.models && assets.models.length > 0;
-            const hasGcpModels = assets.gcp_models && assets.gcp_models.length > 0;
-
-            if (!hasOtelModels && !hasGcpModels) return '';
+            const allModels = [...(assets.models || []), ...(assets.gcp_models || [])];
+            if (!allModels.length) return '';
 
             let html = '<div class="asset-grid">';
-
-            // OpenTelemetry models
             (assets.models || []).forEach(model => {
                 html += `
                     <div class="asset-card">
                         <div class="asset-title">🤖 ${model.name}</div>
                         <div class="asset-meta">Provider: ${model.provider}</div>
                         <div class="asset-meta">Usage: ${model.usage_count || 0} calls</div>
-                        <div class="asset-meta">Tools: ${model.tools ? model.tools.join(', ') : 'none'}</div>
                         <span class="badge badge-blue">OpenTelemetry</span>
                     </div>
                 `;
             });
-
-            // GCP Vertex AI models
             (assets.gcp_models || []).forEach(model => {
                 html += `
                     <div class="asset-card">
                         <div class="asset-title">🤖 ${model.display_name || model.name}</div>
-                        <div class="asset-meta">ID: ${model.name}</div>
-                        ${model.model_version_id ? `<div class="asset-meta">Version: ${model.model_version_id}</div>` : ''}
                         <span class="badge badge-green">Vertex AI</span>
                     </div>
                 `;
             });
-
-            // GCP endpoints (model deployments)
-            (assets.gcp_endpoints || []).forEach(endpoint => {
-                html += `
-                    <div class="asset-card">
-                        <div class="asset-title">🔗 ${endpoint.display_name || endpoint.name}</div>
-                        <div class="asset-meta">Endpoint ID: ${endpoint.name}</div>
-                        ${endpoint.deployed_model_id ? `<div class="asset-meta">Model: ${endpoint.deployed_model_id}</div>` : ''}
-                        <span class="badge badge-purple">Endpoint</span>
-                    </div>
-                `;
-            });
-
             html += '</div>';
             return html;
         }
 
         function renderMCP() {
-            let html = '<div class="asset-grid">';
+            if (!assets.mcp_servers?.length && !assets.mcp_tools?.length) return '';
 
+            let html = '<div class="asset-grid">';
             (assets.mcp_servers || []).forEach(server => {
                 html += `
                     <div class="asset-card">
                         <div class="asset-title">🌐 ${server.name}</div>
                         <div class="asset-meta">Transport: ${server.transport}</div>
                         <div class="asset-meta">Tools: ${server.tools_count || 0}</div>
-                        <div class="asset-meta">Resources: ${server.resources_count || 0}</div>
                         <span class="badge badge-purple">Server</span>
                     </div>
                 `;
             });
-
             (assets.mcp_tools || []).forEach(tool => {
                 html += `
                     <div class="asset-card">
                         <div class="asset-title">🛠️ ${tool.name}</div>
                         <div class="asset-meta">Server: ${tool.server_id}</div>
-                        <div class="asset-meta">Calls: ${tool.usage?.call_count || 0}</div>
                         <span class="badge badge-blue">Tool</span>
-                    </div>
-                `;
-            });
-
-            html += '</div>';
-            return html || '';
-        }
-
-        function renderDataAssets() {
-            if (!assets.data_assets || assets.data_assets.length === 0) return '';
-
-            let html = '<div class="asset-grid">';
-            assets.data_assets.forEach(asset => {
-                const icon = asset.type === 'catalog' ? '📚' :
-                    asset.type === 'schema' ? '📁' :
-                        asset.type === 'table' ? '📊' : '📦';
-                html += `
-                    <div class="asset-card">
-                        <div class="asset-title">${icon} ${asset.name}</div>
-                        <div class="asset-meta">Type: ${asset.type}</div>
-                        ${asset.owner ? `<div class="asset-meta">Owner: ${asset.owner}</div>` : ''}
-                        ${asset.metadata?.ai_experiments ?
-                        `<div class="asset-meta">AI Experiments: ${asset.metadata.ai_experiments.length}</div>` : ''}
-                        <span class="badge badge-green">${asset.type}</span>
-                        ${asset.metadata?.ai_discovery_method ?
-                        `<span class="badge badge-purple">${asset.metadata.ai_discovery_method}</span>` : ''}
                     </div>
                 `;
             });
@@ -1373,33 +1334,44 @@
             return html;
         }
 
+        function renderDataAssets() {
+            if (!assets.data_assets?.length) return '';
+
+            let html = '<div class="asset-grid">';
+            assets.data_assets.forEach(asset => {
+                const icon = asset.type === 'catalog' ? '📚' : asset.type === 'schema' ? '📁' : '📊';
+                html += `
+                    <div class="asset-card">
+                        <div class="asset-title">${icon} ${asset.name}</div>
+                        <div class="asset-meta">Type: ${asset.type}</div>
+                        ${asset.owner ? `<div class="asset-meta">Owner: ${asset.owner}</div>` : ''}
+                        <span class="badge badge-green">${asset.type}</span>
+                    </div>
+                `;
+            });
+            html += '</div>';
+            return html;
+        }
 
         function switchTab(tab) {
             currentTab = tab;
-
-            // Update tab buttons
-            document.querySelectorAll('.tab').forEach(btn => {
-                btn.classList.remove('active');
-            });
+            document.querySelectorAll('.tab').forEach(btn => btn.classList.remove('active'));
             event.target.classList.add('active');
-
             renderAssets();
         }
 
         async function exportData() {
             try {
-                const response = await fetch('/api/status');
-                const status = await response.json();
+                const statusResp = await fetch('/api/status');
+                const status = await statusResp.json();
 
-                const exportResponse = await fetch('/api/export', {
+                const exportResp = await fetch('/api/export', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ plugins: status.plugins_enabled })
                 });
 
-                const data = await exportResponse.json();
-
-                // Download as JSON file
+                const data = await exportResp.json();
                 const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
@@ -1408,75 +1380,50 @@
                 a.click();
                 URL.revokeObjectURL(url);
             } catch (error) {
-                console.error('Error exporting data:', error);
+                console.error('Export failed:', error);
                 alert('Export failed: ' + error.message);
             }
         }
 
-        // Tool Mapping Functions
+        // Tool mapping functions
         let currentMappingTool = null;
 
-        function openMapModalByName(toolName) {
-            const tool = assets.tools.find(t => t.name === toolName);
-            if (!tool) {
-                console.error('Tool not found:', toolName);
-                return;
-            }
-            openMapModal(tool);
-        }
+        function openMapModal(toolName) {
+            const tool = assets.tools?.find(t => t.name === toolName);
+            if (!tool) return;
 
-        function openMapModal(tool) {
             currentMappingTool = tool;
-
             document.getElementById('mapSourceName').value = tool.name;
             document.getElementById('mapSourceId').value = (tool.id || '').replace('otel-', '');
 
             const attrList = document.getElementById('attributeList');
-            attrList.innerHTML = '';
-
-            // Collect all attributes from metadata
             const metadata = tool.metadata || {};
             const keys = Object.keys(metadata).filter(k =>
-                !['last_seen', 'tool_source_name', 'tool_source_id', 'traces', 'models', 'models_used', 'discovery_source'].includes(k)
+                !['last_seen', 'tool_source_name', 'tool_source_id', 'traces', 'models', 'discovery_source'].includes(k)
             );
 
             if (keys.length === 0) {
-                attrList.innerHTML = '<p style="color: #666; font-size: 0.9em;">No metadata attributes available for identification.</p>';
+                attrList.innerHTML = '<p style="color: #666;">No metadata attributes available.</p>';
             } else {
-                let count = 0;
-                keys.forEach(key => {
+                attrList.innerHTML = keys.map(key => {
                     const value = metadata[key];
-                    // Skip if null, undefined, object, or empty string
-                    if (value === null || value === undefined || typeof value === 'object' || String(value).trim() === '') return;
-
-                    count++;
-                    const div = document.createElement('div');
-                    div.className = 'attribute-item';
-                    div.innerHTML = `
-                        <input type="checkbox" id="attr-${key}" data-key="${key}" data-value="${value}">
-                        <div class="attribute-label">
-                            <span style="color: #6b7280;">${key}:</span>
-                            <span class="attribute-value">${value}</span>
+                    if (value === null || value === undefined || typeof value === 'object') return '';
+                    return `
+                        <div class="attribute-item" onclick="this.querySelector('input').click()">
+                            <input type="checkbox" data-key="${key}" data-value="${value}">
+                            <div style="flex-grow: 1;">
+                                <span style="color: #6b7280;">${key}:</span>
+                                <span style="font-weight: 600;">${value}</span>
+                            </div>
                         </div>
                     `;
-                    div.onclick = (e) => {
-                        if (e.target.tagName !== 'INPUT') {
-                            const cb = div.querySelector('input');
-                            cb.checked = !cb.checked;
-                        }
-                    };
-                    attrList.appendChild(div);
-                });
-
-                if (count === 0) {
-                    attrList.innerHTML = '<p style="color: #666; font-size: 0.9em;">No non-empty attributes available for identification.</p>';
-                }
+                }).join('');
             }
 
             document.getElementById('mapToolModal').style.display = 'block';
         }
 
-        function closeModal() {
+        function closeMapModal() {
             document.getElementById('mapToolModal').style.display = 'none';
             currentMappingTool = null;
         }
@@ -1487,19 +1434,17 @@
             const matchType = document.getElementById('mapMatchType').value;
 
             if (!sourceName || !sourceId) {
-                alert('Please provide both a Source Name and a Source Identifier.');
+                alert('Please provide both a Source Name and Source Identifier.');
                 return;
             }
 
             const selectedAttrs = {};
-            const checkboxes = document.querySelectorAll('#attributeList input:checked');
-
-            checkboxes.forEach(cb => {
+            document.querySelectorAll('#attributeList input:checked').forEach(cb => {
                 selectedAttrs[cb.dataset.key] = cb.dataset.value;
             });
 
             if (Object.keys(selectedAttrs).length === 0) {
-                alert('Please select at least one attribute to identify this tool.');
+                alert('Please select at least one attribute.');
                 return;
             }
 
@@ -1510,57 +1455,41 @@
                     body: JSON.stringify({
                         plugin_name: currentMappingTool.discovery_source,
                         attributes: selectedAttrs,
-                        identity: {
-                            source_name: sourceName,
-                            source_id: sourceId
-                        },
+                        identity: { source_name: sourceName, source_id: sourceId },
                         match_type: matchType
                     })
                 });
 
                 const result = await response.json();
                 if (result.success) {
-                    closeModal();
-                    // Force refresh assets (correct function name is refreshAssets)
+                    closeMapModal();
                     refreshAssets();
                 } else {
-                    alert('Failed to save mapping: ' + result.error);
+                    alert('Failed: ' + result.error);
                 }
             } catch (error) {
-                console.error('Error saving mapping:', error);
-                alert('Error saving mapping: ' + error.message);
+                alert('Error: ' + error.message);
             }
         }
 
-        // Close modal when clicking outside
-        window.onclick = function (event) {
-            const modal = document.getElementById('mapToolModal');
-            if (event.target == modal) {
-                closeModal();
+        function showError(message) {
+            const errorMsg = document.getElementById('errorMessage');
+            errorMsg.textContent = message;
+            errorMsg.style.display = 'block';
+        }
+
+        function hideError() {
+            document.getElementById('errorMessage').style.display = 'none';
+        }
+
+        // Close modals when clicking outside
+        window.onclick = function(event) {
+            if (event.target.classList.contains('modal')) {
+                event.target.style.display = 'none';
             }
         };
 
-        // Initialize
-        async function initialize() {
-            loadPlugins();
-
-            // Check if discovery is already running and stop it
-            try {
-                const response = await fetch('/api/status');
-                const status = await response.json();
-
-                if (status.running) {
-                    console.log('[Init] Discovery already running, stopping it...');
-                    await fetch('/api/stop', { method: 'POST' });
-                    console.log('[Init] Stopped existing discovery session');
-                }
-            } catch (error) {
-                console.error('[Init] Error checking/stopping discovery:', error);
-            }
-
-            updateStatus();
-        }
-
+        // Initialize on load
         initialize();
     </script>
 </body>

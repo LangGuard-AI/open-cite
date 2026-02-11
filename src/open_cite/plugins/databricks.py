@@ -12,7 +12,16 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
     Databricks discovery plugin.
     """
 
-    def __init__(self, host: Optional[str] = None, token: Optional[str] = None, warehouse_id: Optional[str] = None, http_client: Any = None):
+    def __init__(
+        self,
+        host: Optional[str] = None,
+        token: Optional[str] = None,
+        warehouse_id: Optional[str] = None,
+        http_client: Any = None,
+        instance_id: Optional[str] = None,
+        display_name: Optional[str] = None,
+    ):
+        super().__init__(instance_id=instance_id, display_name=display_name)
         self.host = host or os.getenv("DATABRICKS_HOST")
         self.token = token or os.getenv("DATABRICKS_TOKEN")
         self.warehouse_id = warehouse_id or os.getenv("DATABRICKS_WAREHOUSE_ID")
@@ -44,8 +53,16 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         self.mlflow_client = mlflow.tracking.MlflowClient()
 
     @property
-    def name(self) -> str:
+    def plugin_type(self) -> str:
         return "databricks"
+
+    def get_config(self) -> Dict[str, Any]:
+        """Return plugin configuration (sensitive values masked)."""
+        return {
+            "host": self.host,
+            "token": "****" if self.token else None,
+            "warehouse_id": self.warehouse_id,
+        }
 
     @property
     def supported_asset_types(self) -> Set[str]:
@@ -178,7 +195,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
 
     def _list_models(self, catalog_name: str, schema_name: str) -> List[Dict[str, Any]]:
         if not catalog_name or not schema_name:
-            raise ValueError("catalog_name and schema_name are required for listing models")
+            return []
         models = []
         for model in self.workspace_client.registered_models.list(catalog_name=catalog_name, schema_name=schema_name):
             models.append({

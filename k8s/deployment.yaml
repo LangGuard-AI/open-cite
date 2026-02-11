@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opencite-api
+  namespace: opencite
+  labels:
+    app.kubernetes.io/name: opencite
+    app.kubernetes.io/component: api
+spec:
+  # Single replica - state stored in SQLite on PV
+  replicas: 1
+  strategy:
+    type: Recreate  # Ensure clean shutdown before new pod starts (for SQLite safety)
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opencite
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: opencite
+        app.kubernetes.io/component: api
+    spec:
+      containers:
+        - name: opencite
+          image: opencite:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: otlp
+              containerPort: 4318
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: opencite-config
+            - secretRef:
+                name: opencite-secrets
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: false
+            allowPrivilegeEscalation: false
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: opencite-data
+      terminationGracePeriodSeconds: 30

@@ -7,6 +7,10 @@ echo ""
 # Activate virtual environment
 source venv/bin/activate
 
+# Enable persistence
+OPENCITE_PERSISTENCE_ENABLED=true
+OPENCITE_DB_PATH=./opencite.db
+
 # Export development environment variables (optional)
 export FLASK_ENV=development
 export FLASK_DEBUG=1
