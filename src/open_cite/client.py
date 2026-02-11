@@ -10,6 +10,8 @@ from .plugins.mcp import MCPPlugin
 from .plugins.google_cloud import GoogleCloudPlugin
 from .plugins.zscaler import ZscalerPlugin
 from .http_client import get_http_client, OpenCiteHttpClient
+from .plugins.aws import AWSBedrockPlugin, AWSSageMakerPlugin
+
 from .schema import (
     OpenCiteExporter,
     ToolFormatter,
@@ -47,6 +49,13 @@ class OpenCiteClient:
         gcp_project_id: Optional[str] = None,
         gcp_location: str = "us-central1",
         gcp_credentials: Optional[Any] = None,
+        enable_aws_bedrock: bool = False,
+        enable_aws_sagemaker: bool = False,
+        aws_region: Optional[str] = None,
+        aws_profile: Optional[str] = None,
+        aws_access_key_id: Optional[str] = None,
+        aws_secret_access_key: Optional[str] = None,
+        aws_role_arn: Optional[str] = None,
     ):
         """
         Initialize the OpenCite client.
@@ -60,6 +69,13 @@ class OpenCiteClient:
             gcp_project_id: Google Cloud project ID (if None, uses default)
             gcp_location: Google Cloud location (default: us-central1)
             gcp_credentials: Google Cloud credentials (if None, uses default)
+            enable_aws_bedrock: If True, register the AWS Bedrock plugin
+            enable_aws_sagemaker: If True, register the AWS SageMaker plugin
+            aws_region: AWS region (default: from env or us-east-1)
+            aws_profile: AWS profile name from ~/.aws/credentials
+            aws_access_key_id: AWS access key ID (if None, uses env/default)
+            aws_secret_access_key: AWS secret access key (if None, uses env/default)
+            aws_role_arn: Optional IAM role ARN to assume
         """
         # Plugin registry: instance_id -> plugin instance
         self.plugins: Dict[str, BaseDiscoveryPlugin] = {}
@@ -133,6 +149,36 @@ class OpenCiteClient:
                     
         except Exception as e:
             logger.debug(f"Zscaler plugin skipped: {e}")
+
+        # Register AWS Bedrock plugin (if enabled)
+        if enable_aws_bedrock:
+            try:
+                bedrock_plugin = AWSBedrockPlugin(
+                    region=aws_region,
+                    profile=aws_profile,
+                    access_key_id=aws_access_key_id,
+                    secret_access_key=aws_secret_access_key,
+                    role_arn=aws_role_arn,
+                )
+                self.register_plugin(bedrock_plugin)
+                logger.info(f"AWS Bedrock plugin registered for region {bedrock_plugin.region}")
+            except Exception as e:
+                logger.warning(f"Failed to auto-register AWS Bedrock plugin: {e}")
+
+        # Register AWS SageMaker plugin (if enabled)
+        if enable_aws_sagemaker:
+            try:
+                sagemaker_plugin = AWSSageMakerPlugin(
+                    region=aws_region,
+                    profile=aws_profile,
+                    access_key_id=aws_access_key_id,
+                    secret_access_key=aws_secret_access_key,
+                    role_arn=aws_role_arn,
+                )
+                self.register_plugin(sagemaker_plugin)
+                logger.info(f"AWS SageMaker plugin registered for region {sagemaker_plugin.region}")
+            except Exception as e:
+                logger.warning(f"Failed to auto-register AWS SageMaker plugin: {e}")
 
     def register_plugin(self, plugin: BaseDiscoveryPlugin):
         """
@@ -671,6 +717,188 @@ class OpenCiteClient:
         _deprecated("list_gcp_mcp_servers() is deprecated. Use list_mcp_servers() instead.")
         return self._google_cloud.list_assets("mcp_server", **kwargs)
 
+    # Convenience methods for the AWS Bedrock plugin
+    @property
+    def _aws_bedrock(self) -> AWSBedrockPlugin:
+        """Get the AWS Bedrock plugin."""
+        return self.get_plugin("aws_bedrock")  # type: ignore
+
+    def list_bedrock_models(self) -> List[Dict[str, Any]]:
+        """
+        List available Bedrock foundation models.
+
+        Returns:
+            List of foundation models (Claude, Llama, Titan, etc.)
+        """
+        return self._aws_bedrock.list_assets("model")
+
+    def list_bedrock_custom_models(self) -> List[Dict[str, Any]]:
+        """
+        List custom/fine-tuned Bedrock models.
+
+        Returns:
+            List of custom models
+        """
+        return self._aws_bedrock.list_assets("custom_model")
+
+    def list_bedrock_provisioned_throughput(self) -> List[Dict[str, Any]]:
+        """
+        List Bedrock provisioned throughput configurations.
+
+        Returns:
+            List of provisioned throughput configs
+        """
+        return self._aws_bedrock.list_assets("provisioned_throughput")
+
+    def list_bedrock_invocations(self, days: int = 7) -> List[Dict[str, Any]]:
+        """
+        List Bedrock model invocations from CloudTrail.
+
+        This shows which Bedrock models are actually being USED.
+
+        Args:
+            days: Number of days to look back (default: 7)
+
+        Returns:
+            List of invocation events
+        """
+        return self._aws_bedrock.list_assets("invocation", days=days)
+
+    def get_bedrock_usage_by_model(self, days: int = 7) -> Dict[str, Dict[str, Any]]:
+        """
+        Get Bedrock usage statistics aggregated by model.
+
+        Args:
+            days: Number of days to analyze
+
+        Returns:
+            Dict mapping model_id to usage stats (invocation count, users, etc.)
+        """
+        return self._aws_bedrock.get_usage_by_model(days=days)
+
+    def get_bedrock_usage_by_user(self, days: int = 7) -> Dict[str, Dict[str, Any]]:
+        """
+        Get Bedrock usage statistics aggregated by user/role.
+
+        Args:
+            days: Number of days to analyze
+
+        Returns:
+            Dict mapping user ARN to usage stats
+        """
+        return self._aws_bedrock.get_usage_by_user(days=days)
+
+    def verify_bedrock_connection(self) -> Dict[str, Any]:
+        """
+        Verify connection to AWS Bedrock.
+
+        Returns:
+            Dict with connection status
+        """
+        return self._aws_bedrock.verify_connection()
+
+    def refresh_bedrock_discovery(self):
+        """Refresh AWS Bedrock discovery data."""
+        self._aws_bedrock.refresh_discovery()
+
+    # Convenience methods for the AWS SageMaker plugin
+    @property
+    def _aws_sagemaker(self) -> AWSSageMakerPlugin:
+        """Get the AWS SageMaker plugin."""
+        return self.get_plugin("aws_sagemaker")  # type: ignore
+
+    def list_sagemaker_endpoints(self) -> List[Dict[str, Any]]:
+        """
+        List SageMaker endpoints.
+
+        Returns:
+            List of deployed model endpoints
+        """
+        return self._aws_sagemaker.list_assets("endpoint")
+
+    def list_sagemaker_models(self) -> List[Dict[str, Any]]:
+        """
+        List SageMaker models.
+
+        Returns:
+            List of registered models
+        """
+        return self._aws_sagemaker.list_assets("model")
+
+    def list_sagemaker_model_packages(self) -> List[Dict[str, Any]]:
+        """
+        List SageMaker model registry packages.
+
+        Returns:
+            List of model packages in the registry
+        """
+        return self._aws_sagemaker.list_assets("model_package")
+
+    def list_sagemaker_training_jobs(self, days: int = 30) -> List[Dict[str, Any]]:
+        """
+        List recent SageMaker training jobs.
+
+        Args:
+            days: Number of days to look back (default: 30)
+
+        Returns:
+            List of training jobs
+        """
+        return self._aws_sagemaker.list_assets("training_job", days=days)
+
+    def get_sagemaker_endpoint_metrics(
+        self,
+        endpoint_name: str,
+        days: int = 7
+    ) -> Dict[str, Any]:
+        """
+        Get invocation metrics for a specific SageMaker endpoint.
+
+        Args:
+            endpoint_name: Name of the endpoint
+            days: Number of days to look back
+
+        Returns:
+            Dict with invocation count, latency, errors, etc.
+        """
+        return self._aws_sagemaker.get_endpoint_invocation_metrics(endpoint_name, days)
+
+    def get_all_sagemaker_endpoint_metrics(self, days: int = 7) -> List[Dict[str, Any]]:
+        """
+        Get invocation metrics for all SageMaker endpoints.
+
+        Args:
+            days: Number of days to look back
+
+        Returns:
+            List of endpoint metrics, sorted by invocation count
+        """
+        return self._aws_sagemaker.get_all_endpoint_metrics(days=days)
+
+    def get_sagemaker_usage_summary(self, days: int = 7) -> Dict[str, Any]:
+        """
+        Get a summary of SageMaker usage.
+
+        Args:
+            days: Number of days to analyze
+
+        Returns:
+            Summary with counts, top endpoints, etc.
+        """
+        return self._aws_sagemaker.get_usage_summary(days=days)
+
+    def verify_sagemaker_connection(self) -> Dict[str, Any]:
+        """
+        Verify connection to AWS SageMaker.
+
+        Returns:
+            Dict with connection status
+        """
+        return self._aws_sagemaker.verify_connection()
+
+    def refresh_sagemaker_discovery(self):
+        """Refresh AWS SageMaker discovery data."""
+        self._aws_sagemaker.refresh_discovery()
 
     # Export methods
     def export_to_json(
@@ -679,6 +907,8 @@ class OpenCiteClient:
         include_databricks: bool = False,
         include_mcp: bool = True,
         include_google_cloud: bool = False,
+        include_aws_bedrock: bool = False,
+        include_aws_sagemaker: bool = False,
         filepath: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
@@ -689,6 +919,8 @@ class OpenCiteClient:
             include_databricks: Include Databricks discoveries (experimental)
             include_mcp: Include MCP discoveries (default: True)
             include_google_cloud: Include Google Cloud discoveries
+            include_aws_bedrock: Include AWS Bedrock discoveries
+            include_aws_sagemaker: Include AWS SageMaker discoveries
             filepath: Optional path to save JSON file
 
         Returns:
@@ -707,6 +939,16 @@ class OpenCiteClient:
         gcp_deployments = []
         gcp_generative_models = []
         gcp_mcp_servers = []
+        aws_bedrock_models = []
+        aws_bedrock_custom_models = []
+        aws_bedrock_provisioned = []
+        aws_bedrock_invocations = []
+        aws_bedrock_usage = {}
+        aws_sagemaker_endpoints = []
+        aws_sagemaker_models = []
+        aws_sagemaker_packages = []
+        aws_sagemaker_training_jobs = []
+        aws_sagemaker_usage = {}
         plugins_info = []
 
         # Gather OpenTelemetry data
@@ -762,6 +1004,32 @@ class OpenCiteClient:
                 "version": "1.0.0",
             })
 
+        # Gather AWS Bedrock data
+        if include_aws_bedrock and "aws_bedrock" in self.plugins:
+            aws_bedrock_models = self.list_bedrock_models()
+            aws_bedrock_custom_models = self.list_bedrock_custom_models()
+            aws_bedrock_provisioned = self.list_bedrock_provisioned_throughput()
+            aws_bedrock_invocations = self.list_bedrock_invocations(days=7)
+            aws_bedrock_usage = self.get_bedrock_usage_by_model(days=7)
+
+            plugins_info.append({
+                "name": "aws_bedrock",
+                "version": "1.0.0",
+            })
+
+        # Gather AWS SageMaker data
+        if include_aws_sagemaker and "aws_sagemaker" in self.plugins:
+            aws_sagemaker_endpoints = self.list_sagemaker_endpoints()
+            aws_sagemaker_models = self.list_sagemaker_models()
+            aws_sagemaker_packages = self.list_sagemaker_model_packages()
+            aws_sagemaker_training_jobs = self.list_sagemaker_training_jobs(days=30)
+            aws_sagemaker_usage = self.get_sagemaker_usage_summary(days=7)
+
+            plugins_info.append({
+                "name": "aws_sagemaker",
+                "version": "1.0.0",
+            })
+
         # Build metadata
         metadata = {
             "generated_by": "opencite-client",
@@ -785,6 +1053,20 @@ class OpenCiteClient:
         export_data["gcp_deployments"] = gcp_deployments
         export_data["gcp_generative_models"] = gcp_generative_models
         export_data["gcp_mcp_servers"] = gcp_mcp_servers
+
+        # Add AWS Bedrock entities
+        export_data["aws_bedrock_models"] = aws_bedrock_models
+        export_data["aws_bedrock_custom_models"] = aws_bedrock_custom_models
+        export_data["aws_bedrock_provisioned_throughput"] = aws_bedrock_provisioned
+        export_data["aws_bedrock_invocations"] = aws_bedrock_invocations
+        export_data["aws_bedrock_usage_by_model"] = aws_bedrock_usage
+
+        # Add AWS SageMaker entities
+        export_data["aws_sagemaker_endpoints"] = aws_sagemaker_endpoints
+        export_data["aws_sagemaker_models"] = aws_sagemaker_models
+        export_data["aws_sagemaker_model_packages"] = aws_sagemaker_packages
+        export_data["aws_sagemaker_training_jobs"] = aws_sagemaker_training_jobs
+        export_data["aws_sagemaker_usage_summary"] = aws_sagemaker_usage
 
         # Save to file if requested
         if filepath:
