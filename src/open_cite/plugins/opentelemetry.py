@@ -274,6 +274,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 # Track per-span detections for parent-child correlation
                 span_agents: Dict[str, str] = {}   # span_id -> agent_name
                 span_tools: Dict[str, str] = {}     # span_id -> tool_name
+                span_models: Dict[str, str] = {}    # span_id -> model_name
                 span_parents: Dict[str, str] = {}   # span_id -> parent_span_id
 
                 for resource_span in resource_spans:
@@ -315,6 +316,19 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                             if tool_name:
                                 span_tools[span_id] = tool_name
 
+                            # Track model per span for agent-model correlation
+                            attr_dict = self._attrs_to_dict(attributes)
+                            res_dict = self._attrs_to_dict(resource.get("attributes", []))
+                            merged = {**res_dict, **attr_dict}
+                            span_model = (
+                                merged.get("gen_ai.request.model")
+                                or merged.get("gen_ai.response.model")
+                                or merged.get("llm.model")
+                                or merged.get("model")
+                            )
+                            if span_model:
+                                span_models[span_id] = span_model
+
                             # Detect agents
                             agent_name = self._detect_agent(
                                 trace_id, span_id, span_name, attributes, resource
@@ -337,6 +351,9 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
                 # Correlate agents with tools via parent-child span relationships
                 self._correlate_agent_tools(span_agents, span_tools, span_parents)
+
+                # Correlate agents with models via parent-child span relationships
+                self._correlate_agent_models(span_agents, span_models, span_parents)
 
                 logger.info(f"Ingested traces. Total traces: {len(self.traces)}")
             except Exception as e:
@@ -653,12 +670,6 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 ]
             return list(self.lineage.values())
 
-    # Agent detection patterns
-    AGENT_SPAN_PATTERNS = re.compile(
-        r'(agent|bot|assistant|copilot|workflow|pipeline|orchestrator)',
-        re.IGNORECASE
-    )
-
     def _detect_agent(
         self,
         trace_id: str,
@@ -670,10 +681,8 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         """
         Detect if a span represents an agent.
 
-        Detection strategy:
-        - Explicit agent attributes (gen_ai.agent.name, agent_name) -> high confidence
-        - Span name pattern matching (agent, bot, assistant, etc.) -> medium confidence
-        - Fall back to service.name when span structure indicates agentic behavior -> low confidence
+        Detection is based on explicit agent attributes only:
+        - gen_ai.agent.name, agent_name, agent.name -> high confidence
 
         Returns:
             The detected agent name, or None if no agent was detected.
@@ -683,18 +692,12 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         merged = {**resource_dict, **attr_dict}
         now = datetime.utcnow().isoformat()
 
-        # Check for explicit agent attributes (high confidence)
+        # Only detect agents via explicit attributes
         agent_name = (
             merged.get("gen_ai.agent.name")
             or merged.get("agent_name")
             or merged.get("agent.name")
         )
-        confidence = "high" if agent_name else None
-
-        # Check span name patterns (medium confidence)
-        if not agent_name and self.AGENT_SPAN_PATTERNS.search(span_name):
-            agent_name = span_name
-            confidence = "medium"
 
         if not agent_name:
             return None
@@ -703,7 +706,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         if not agent["first_seen"]:
             agent["first_seen"] = now
         agent["last_seen"] = now
-        agent["confidence"] = confidence
+        agent["confidence"] = "high"
 
         # Track tools and models used by this agent
         # Prefer explicit tool attributes; fall back to service.name only if distinct from agent
@@ -766,6 +769,44 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                         logger.info(
                             f"Correlated agent '{agent_name}' -> tool '{tool_name}' via span hierarchy"
                         )
+                    break
+                current = parent
+
+    def _correlate_agent_models(
+        self,
+        span_agents: Dict[str, str],
+        span_models: Dict[str, str],
+        span_parents: Dict[str, str],
+    ):
+        """
+        Correlate agents with models via parent-child span relationships.
+
+        In OTEL traces, agent spans and LLM call spans are typically separate:
+        the agent span is the parent and the LLM call span (with gen_ai.request.model)
+        is a child or grandchild. This method walks up from each model-bearing span
+        to find an ancestor agent span and creates the agent->model lineage relationship.
+        """
+        if not span_agents or not span_models:
+            return
+
+        for model_span_id, model_name in span_models.items():
+            # Skip if this span is itself an agent (already handled in _detect_agent)
+            if model_span_id in span_agents:
+                continue
+
+            # Walk up the parent chain from this model span to find an agent
+            current = model_span_id
+            visited = set()
+            while current in span_parents and current not in visited:
+                visited.add(current)
+                parent = span_parents[current]
+                if parent in span_agents:
+                    agent_name = span_agents[parent]
+                    self.discovered_agents[agent_name]["models_used"].add(model_name)
+                    self._add_lineage(agent_name, "agent", model_name, "model", "uses")
+                    logger.info(
+                        f"Correlated agent '{agent_name}' -> model '{model_name}' via span hierarchy"
+                    )
                     break
                 current = parent
 
