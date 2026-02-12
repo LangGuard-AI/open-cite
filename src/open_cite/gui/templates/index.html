@@ -611,6 +611,7 @@
             margin-bottom: 12px;
         }
     </style>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 </head>
 
 <body>
@@ -656,6 +657,8 @@
                         <button class="tab active" onclick="switchTab('all')">All Assets</button>
                         <button class="tab" onclick="switchTab('tools')">Tools</button>
                         <button class="tab" onclick="switchTab('models')">Models</button>
+                        <button class="tab" onclick="switchTab('agents')">Agents</button>
+                        <button class="tab" onclick="switchTab('downstream')">Downstream</button>
                         <button class="tab" onclick="switchTab('mcp')">MCP</button>
                         <button class="tab" onclick="switchTab('data_assets')">Data Assets</button>
                         <button class="btn-export-inline" id="exportBtnInline" onclick="exportData()"
@@ -695,11 +698,6 @@
                     <input type="text" id="instanceDisplayName" placeholder="e.g. Production Databricks">
                 </div>
 
-                <div class="form-group">
-                    <label>Instance ID (auto-generated if empty)</label>
-                    <input type="text" id="instanceId" placeholder="e.g. databricks-prod">
-                </div>
-
                 <div id="pluginConfigFields"></div>
 
                 <div class="form-group">
@@ -723,7 +721,7 @@
     <div id="mapToolModal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h2>Identify Tool Source</h2>
+                <h2>Identify Asset</h2>
                 <span class="close" onclick="closeMapModal()">&times;</span>
             </div>
             <p style="color: #6b7280; font-size: 0.9em; margin-bottom: 20px;">
@@ -733,13 +731,8 @@
             <div id="modalInternalData" style="display: none;"></div>
 
             <div class="form-group">
-                <label>Identify as (Tool Name)</label>
+                <label>Asset Name</label>
                 <input type="text" id="mapSourceName" placeholder="e.g. My Customer Service Bot">
-            </div>
-
-            <div class="form-group">
-                <label>Source Identifier (ID)</label>
-                <input type="text" id="mapSourceId" placeholder="e.g. cs-bot-001">
             </div>
 
             <div class="form-group">
@@ -770,6 +763,9 @@
         let refreshInterval = null;
         let selectedPluginType = null;
         let editingInstanceId = null;
+        let instanceNameUserEdited = false;
+        let socket = null;
+        let useWebSocket = false;
 
         // Initialize
         async function initialize() {
@@ -777,6 +773,11 @@
                 await loadPluginTypes();
                 await loadInstances();
                 await updateStatus();
+
+                // Track manual edits to instance name field
+                document.getElementById('instanceDisplayName').addEventListener('input', function() {
+                    instanceNameUserEdited = true;
+                });
 
                 // Start polling if there are running instances
                 if (instances.some(i => i.status === 'running')) {
@@ -865,10 +866,10 @@
             try {
                 selectedPluginType = null;
                 editingInstanceId = null;
+                instanceNameUserEdited = false;
                 document.getElementById('instanceModalTitle').textContent = 'Add Plugin';
                 document.getElementById('saveInstanceBtn').textContent = 'Add Plugin';
                 document.getElementById('instanceDisplayName').value = '';
-                document.getElementById('instanceId').value = '';
                 document.getElementById('instanceAutoStart').checked = true;
                 document.getElementById('instanceConfigSection').style.display = 'none';
                 document.getElementById('saveInstanceBtn').disabled = true;
@@ -902,8 +903,8 @@
             document.getElementById('instanceConfigSection').style.display = 'block';
             document.getElementById('saveInstanceBtn').disabled = false;
 
-            // Set default display name
-            if (!document.getElementById('instanceDisplayName').value) {
+            // Set default display name if user hasn't manually edited it
+            if (!instanceNameUserEdited) {
                 document.getElementById('instanceDisplayName').value = plugin.name;
             }
 
@@ -941,7 +942,6 @@
                 return;
             }
 
-            const instanceId = document.getElementById('instanceId').value.trim() || null;
             const autoStart = document.getElementById('instanceAutoStart').checked;
 
             // Collect config values
@@ -968,7 +968,6 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         plugin_type: selectedPluginType,
-                        instance_id: instanceId,
                         display_name: displayName,
                         config: config,
                         auto_start: autoStart
@@ -1062,17 +1061,73 @@
             hideError();
         }
 
-        // Polling for asset updates
-        function startPolling() {
-            if (refreshInterval) return;
+        // WebSocket connection
+        function connectWebSocket() {
+            if (socket) return;
 
+            socket = io({
+                transports: ['websocket', 'polling'],
+                reconnection: true,
+                reconnectionDelay: 1000,
+                reconnectionDelayMax: 5000
+            });
+
+            socket.on('connect', function() {
+                console.log('WebSocket connected');
+                useWebSocket = true;
+                // Stop polling fallback since WebSocket is active
+                if (refreshInterval) {
+                    clearInterval(refreshInterval);
+                    refreshInterval = null;
+                }
+            });
+
+            socket.on('assets_update', function(data) {
+                if (data && data.assets) {
+                    assets = data.assets;
+                    renderStats(data.totals);
+                    renderAssets();
+                }
+            });
+
+            socket.on('status_update', function(data) {
+                _applyStatusUpdate(data);
+            });
+
+            socket.on('disconnect', function() {
+                console.log('WebSocket disconnected, falling back to polling');
+                useWebSocket = false;
+                _startPollingFallback();
+            });
+
+            socket.on('connect_error', function(err) {
+                console.warn('WebSocket connect error:', err.message);
+                useWebSocket = false;
+                _startPollingFallback();
+            });
+        }
+
+        function _startPollingFallback() {
+            if (refreshInterval) return;
+            if (!instances.some(i => i.status === 'running')) return;
             refreshInterval = setInterval(() => {
                 refreshAssets();
                 updateStatus();
             }, 3000);
+        }
 
-            // Immediate refresh
+        // Polling for asset updates
+        function startPolling() {
+            // Connect WebSocket if not yet connected
+            connectWebSocket();
+
+            // Always do one immediate refresh
             refreshAssets();
+
+            // Only start interval polling if WebSocket is not active
+            if (!useWebSocket) {
+                _startPollingFallback();
+            }
         }
 
         function stopPolling() {
@@ -1080,9 +1135,10 @@
                 clearInterval(refreshInterval);
                 refreshInterval = null;
             }
+            // Keep WebSocket alive for status updates
         }
 
-        // Refresh assets
+        // Refresh assets (HTTP fallback)
         async function refreshAssets() {
             try {
                 const response = await fetch('/api/assets');
@@ -1098,45 +1154,49 @@
             }
         }
 
-        // Update status
+        // Apply status update to DOM (used by both WebSocket and HTTP)
+        function _applyStatusUpdate(status) {
+            const indicator = document.getElementById('statusIndicator');
+            const statusText = document.getElementById('statusText');
+            const pluginsActive = document.getElementById('pluginsActive');
+            const progressContainer = document.getElementById('progressContainer');
+
+            if (status.running) {
+                const hasInProgress = status.progress?.some(p => p.status === 'in_progress');
+                indicator.className = hasInProgress ? 'status-indicator loading' : 'status-indicator running';
+                statusText.textContent = status.current_status || 'Running';
+                pluginsActive.textContent = `Active: ${status.plugins_enabled?.join(', ') || 'none'}`;
+            } else {
+                indicator.className = 'status-indicator stopped';
+                statusText.textContent = status.current_status || 'Stopped';
+                pluginsActive.textContent = '';
+            }
+
+            // Update progress display
+            if (status.progress?.length > 0) {
+                progressContainer.style.display = 'block';
+                progressContainer.innerHTML = status.progress.map(p => {
+                    const icon = p.status === 'success' ? '✓' :
+                                p.status === 'error' ? '✗' :
+                                '<div class="spinner"></div>';
+                    return `
+                        <div class="progress-item ${p.status}">
+                            <span>${icon}</span>
+                            <span>${p.message}</span>
+                        </div>
+                    `;
+                }).join('');
+            } else {
+                progressContainer.style.display = 'none';
+            }
+        }
+
+        // Update status (HTTP fallback)
         async function updateStatus() {
             try {
                 const response = await fetch('/api/status');
                 const status = await response.json();
-
-                const indicator = document.getElementById('statusIndicator');
-                const statusText = document.getElementById('statusText');
-                const pluginsActive = document.getElementById('pluginsActive');
-                const progressContainer = document.getElementById('progressContainer');
-
-                if (status.running) {
-                    const hasInProgress = status.progress?.some(p => p.status === 'in_progress');
-                    indicator.className = hasInProgress ? 'status-indicator loading' : 'status-indicator running';
-                    statusText.textContent = status.current_status || 'Running';
-                    pluginsActive.textContent = `Active: ${status.plugins_enabled?.join(', ') || 'none'}`;
-                } else {
-                    indicator.className = 'status-indicator stopped';
-                    statusText.textContent = status.current_status || 'Stopped';
-                    pluginsActive.textContent = '';
-                }
-
-                // Update progress display
-                if (status.progress?.length > 0) {
-                    progressContainer.style.display = 'block';
-                    progressContainer.innerHTML = status.progress.map(p => {
-                        const icon = p.status === 'success' ? '✓' :
-                                    p.status === 'error' ? '✗' :
-                                    '<div class="spinner"></div>';
-                        return `
-                            <div class="progress-item ${p.status}">
-                                <span>${icon}</span>
-                                <span>${p.message}</span>
-                            </div>
-                        `;
-                    }).join('');
-                } else {
-                    progressContainer.style.display = 'none';
-                }
+                _applyStatusUpdate(status);
             } catch (error) {
                 console.error('Error updating status:', error);
             }
@@ -1154,6 +1214,8 @@
             const stats = [
                 { label: 'Tools', value: totals.tools || 0, tab: 'tools' },
                 { label: 'Models', value: totalModels, tab: 'models' },
+                { label: 'Agents', value: totals.agents || 0, tab: 'agents', show: (totals.agents || 0) > 0 },
+                { label: 'Downstream', value: totals.downstream_systems || 0, tab: 'downstream', show: (totals.downstream_systems || 0) > 0 },
                 { label: 'MCP Servers', value: totals.mcp_servers || 0, tab: 'mcp' },
                 { label: 'Data Assets', value: totals.data_assets || 0, tab: 'data_assets', show: totals.data_assets > 0 }
             ];
@@ -1179,16 +1241,25 @@
                 html = renderTools();
             } else if (currentTab === 'models') {
                 html = renderModels();
+            } else if (currentTab === 'agents') {
+                html = renderAgents();
+            } else if (currentTab === 'downstream') {
+                html = renderDownstream();
             } else if (currentTab === 'mcp') {
                 html = renderMCP();
             } else if (currentTab === 'data_assets') {
                 html = renderDataAssets();
             }
 
+            const tabLabels = {
+                'all': 'assets', 'tools': 'tools', 'models': 'models',
+                'agents': 'agents', 'downstream': 'downstream systems',
+                'mcp': 'MCP resources', 'data_assets': 'data assets'
+            };
             container.innerHTML = html || `
                 <div class="empty-state">
                     <div class="empty-state-icon">📭</div>
-                    <h3>No ${currentTab === 'data_assets' ? 'data assets' : currentTab} found</h3>
+                    <h3>No ${tabLabels[currentTab] || currentTab} found</h3>
                     <p>Assets will appear here as they are discovered</p>
                 </div>
             `;
@@ -1225,6 +1296,37 @@
                         <div class="asset-title">🤖 ${model.name}</div>
                         <div class="asset-meta">Provider: ${model.provider}</div>
                         <span class="badge badge-green">Model</span>
+                    </div>
+                `;
+            });
+
+            // Agents
+            (assets.agents || []).forEach(agent => {
+                count++;
+                const agentSourceName = agent.agent_source_name || '';
+                const isAgentUnknown = !agentSourceName;
+                html += `
+                    <div class="asset-card ${isAgentUnknown ? 'unknown' : ''}">
+                        <div class="asset-title">🤖 ${agent.name}</div>
+                        <div class="asset-meta">Confidence: ${agent.confidence}</div>
+                        ${agentSourceName ? `<div class="asset-meta"><b>Identified:</b> ${agentSourceName}</div>` :
+                            `<span class="badge" style="background: #fef3c7; color: #92400e;">Mapping Required</span>`}
+                        <div class="asset-meta">Tools: ${agent.tools_used?.length || 0}</div>
+                        <span class="badge badge-purple">Agent</span>
+                        ${isAgentUnknown ? `<br><button class="btn-map" onclick="openAgentMapModal('${agent.name.replace(/'/g, "\\'")}')">Map Source</button>` : ''}
+                    </div>
+                `;
+            });
+
+            // Downstream Systems
+            (assets.downstream_systems || []).forEach(system => {
+                count++;
+                html += `
+                    <div class="asset-card">
+                        <div class="asset-title">🔗 ${system.name}</div>
+                        <div class="asset-meta">Type: ${system.type}</div>
+                        ${system.endpoint ? `<div class="asset-meta">Endpoint: ${system.endpoint}</div>` : ''}
+                        <span class="badge badge-green">Downstream</span>
                     </div>
                 `;
             });
@@ -1300,6 +1402,51 @@
                     <div class="asset-card">
                         <div class="asset-title">🤖 ${model.display_name || model.name}</div>
                         <span class="badge badge-green">Vertex AI</span>
+                    </div>
+                `;
+            });
+            html += '</div>';
+            return html;
+        }
+
+        function renderAgents() {
+            if (!assets.agents?.length) return '';
+            let html = '<div class="asset-grid">';
+            assets.agents.forEach(agent => {
+                const agentSourceName = agent.agent_source_name || '';
+                const isAgentUnknown = !agentSourceName;
+                html += `
+                    <div class="asset-card ${isAgentUnknown ? 'unknown' : ''}">
+                        <div class="asset-title">🤖 ${agent.name}</div>
+                        <div class="asset-meta">Confidence: ${agent.confidence}</div>
+                        ${agentSourceName ? `<div class="asset-meta"><b>Identified:</b> ${agentSourceName}</div>` :
+                            `<span class="badge" style="background: #fef3c7; color: #92400e;">Mapping Required</span>`}
+                        <div class="asset-meta">Tools: ${agent.tools_used?.join(', ') || 'none'}</div>
+                        <div class="asset-meta">Models: ${agent.models_used?.join(', ') || 'none'}</div>
+                        ${agent.first_seen ? `<div class="asset-meta">First seen: ${new Date(agent.first_seen).toLocaleString()}</div>` : ''}
+                        ${agent.last_seen ? `<div class="asset-meta">Last seen: ${new Date(agent.last_seen).toLocaleString()}</div>` : ''}
+                        <span class="badge badge-purple">Agent</span>
+                        ${isAgentUnknown ? `<button class="btn-map" onclick="openAgentMapModal('${agent.name.replace(/'/g, "\\'")}')">Map Source</button>` : ''}
+                    </div>
+                `;
+            });
+            html += '</div>';
+            return html;
+        }
+
+        function renderDownstream() {
+            if (!assets.downstream_systems?.length) return '';
+            let html = '<div class="asset-grid">';
+            assets.downstream_systems.forEach(system => {
+                html += `
+                    <div class="asset-card">
+                        <div class="asset-title">🔗 ${system.name}</div>
+                        <div class="asset-meta">Type: ${system.type}</div>
+                        ${system.endpoint ? `<div class="asset-meta">Endpoint: ${system.endpoint}</div>` : ''}
+                        <div class="asset-meta">Connected tools: ${system.tools_connecting?.join(', ') || 'none'}</div>
+                        ${system.first_seen ? `<div class="asset-meta">First seen: ${new Date(system.first_seen).toLocaleString()}</div>` : ''}
+                        ${system.last_seen ? `<div class="asset-meta">Last seen: ${new Date(system.last_seen).toLocaleString()}</div>` : ''}
+                        <span class="badge badge-green">Downstream</span>
                     </div>
                 `;
             });
@@ -1385,16 +1532,17 @@
             }
         }
 
-        // Tool mapping functions
+        // Asset mapping functions (tools and agents)
         let currentMappingTool = null;
+        let currentMappingType = 'tool'; // 'tool' or 'agent'
 
         function openMapModal(toolName) {
             const tool = assets.tools?.find(t => t.name === toolName);
             if (!tool) return;
 
             currentMappingTool = tool;
+            currentMappingType = 'tool';
             document.getElementById('mapSourceName').value = tool.name;
-            document.getElementById('mapSourceId').value = (tool.id || '').replace('otel-', '');
 
             const attrList = document.getElementById('attributeList');
             const metadata = tool.metadata || {};
@@ -1409,7 +1557,42 @@
                     const value = metadata[key];
                     if (value === null || value === undefined || typeof value === 'object') return '';
                     return `
-                        <div class="attribute-item" onclick="this.querySelector('input').click()">
+                        <div class="attribute-item" onclick="if(event.target.tagName!=='INPUT')this.querySelector('input').click()">
+                            <input type="checkbox" data-key="${key}" data-value="${value}">
+                            <div style="flex-grow: 1;">
+                                <span style="color: #6b7280;">${key}:</span>
+                                <span style="font-weight: 600;">${value}</span>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            }
+
+            document.getElementById('mapToolModal').style.display = 'block';
+        }
+
+        function openAgentMapModal(agentName) {
+            const agent = assets.agents?.find(a => a.name === agentName);
+            if (!agent) return;
+
+            currentMappingTool = agent;
+            currentMappingType = 'agent';
+            document.getElementById('mapSourceName').value = agent.name;
+
+            const attrList = document.getElementById('attributeList');
+            const metadata = agent.metadata || {};
+            const keys = Object.keys(metadata).filter(k =>
+                !['last_seen', 'agent_source_name', 'agent_source_id', 'discovery_source'].includes(k)
+            );
+
+            if (keys.length === 0) {
+                attrList.innerHTML = '<p style="color: #666;">No metadata attributes available.</p>';
+            } else {
+                attrList.innerHTML = keys.map(key => {
+                    const value = metadata[key];
+                    if (value === null || value === undefined || typeof value === 'object') return '';
+                    return `
+                        <div class="attribute-item" onclick="if(event.target.tagName!=='INPUT')this.querySelector('input').click()">
                             <input type="checkbox" data-key="${key}" data-value="${value}">
                             <div style="flex-grow: 1;">
                                 <span style="color: #6b7280;">${key}:</span>
@@ -1426,15 +1609,15 @@
         function closeMapModal() {
             document.getElementById('mapToolModal').style.display = 'none';
             currentMappingTool = null;
+            currentMappingType = 'tool';
         }
 
         async function submitMapping() {
             const sourceName = document.getElementById('mapSourceName').value;
-            const sourceId = document.getElementById('mapSourceId').value;
             const matchType = document.getElementById('mapMatchType').value;
 
-            if (!sourceName || !sourceId) {
-                alert('Please provide both a Source Name and Source Identifier.');
+            if (!sourceName) {
+                alert('Please provide an Asset Name.');
                 return;
             }
 
@@ -1455,7 +1638,7 @@
                     body: JSON.stringify({
                         plugin_name: currentMappingTool.discovery_source,
                         attributes: selectedAttrs,
-                        identity: { source_name: sourceName, source_id: sourceId },
+                        identity: { source_name: sourceName },
                         match_type: matchType
                     })
                 });

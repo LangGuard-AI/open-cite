@@ -12,10 +12,54 @@ logger = logging.getLogger(__name__)
 class ZscalerPlugin(BaseDiscoveryPlugin):
     """
     Zscaler ZIA discovery plugin.
-    
+
     Detects Shadow MCP usage by querying ZIA DLP incidents
     and listening for real-time logs via NSS.
     """
+
+    plugin_type = "zscaler"
+
+    @classmethod
+    def plugin_metadata(cls):
+        return {
+            "name": "Zscaler",
+            "description": "Detects Shadow MCP usage via ZIA DLP incidents and NSS logs",
+            "required_fields": {
+                "api_key": {"label": "API Key", "default": "", "required": False, "type": "password"},
+                "username": {"label": "Username", "default": "", "required": False},
+                "password": {"label": "Password", "default": "", "required": False, "type": "password"},
+                "cloud_name": {"label": "Cloud Name", "default": "zscaler.net", "required": False},
+                "nss_port": {"label": "NSS Port (optional)", "default": "", "required": False},
+            },
+            "env_vars": ["ZSCALER_API_KEY", "ZSCALER_USERNAME", "ZSCALER_PASSWORD", "ZSCALER_CLOUD_NAME", "ZSCALER_NSS_PORT"],
+        }
+
+    @classmethod
+    def from_config(cls, config, instance_id=None, display_name=None, dependencies=None):
+        dependencies = dependencies or {}
+        return cls(
+            api_key=config.get('api_key'),
+            username=config.get('username'),
+            password=config.get('password'),
+            cloud_name=config.get('cloud_name', 'zscaler.net'),
+            nss_port=config.get('nss_port'),
+            http_client=dependencies.get('http_client'),
+            instance_id=instance_id,
+            display_name=display_name,
+        )
+
+    def start(self):
+        """Start the Zscaler plugin (start NSS receiver if port configured)."""
+        if self.nss_port:
+            self.start_nss_receiver(port=self.nss_port)
+        self._status = "running"
+        logger.info(f"Started Zscaler plugin {self.instance_id}")
+
+    def stop(self):
+        """Stop the Zscaler plugin (stop NSS receiver)."""
+        self.stop_nss_receiver()
+        self._status = "stopped"
+        logger.info(f"Stopped Zscaler plugin {self.instance_id}")
 
     def __init__(
         self,
@@ -45,10 +89,6 @@ class ZscalerPlugin(BaseDiscoveryPlugin):
         self.nss_thread = None
         self.nss_running = False
         self.shadow_mcp_logs = []
-
-    @property
-    def plugin_type(self) -> str:
-        return "zscaler"
 
     def get_config(self) -> Dict[str, Any]:
         """Return plugin configuration (sensitive values masked)."""

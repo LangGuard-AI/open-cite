@@ -672,8 +672,8 @@ client_gcp = OpenCiteClient(enable_google_cloud=True)
 deployed_servers = client_gcp.list_gcp_mcp_servers()
 deployed_names = {s['name'] for s in deployed_servers}
 
-# Get active servers (from traces)
-client_traces = OpenCiteClient(enable_otel=True, enable_mcp=True)
+# Get active servers (from traces via OTel plugin)
+client_traces = OpenCiteClient(enable_otel=True)
 active_servers = client_traces.list_mcp_servers()
 active_names = {s['name'] for s in active_servers}
 
@@ -898,30 +898,28 @@ otel_tools = client.list_otel_tools()
 print(f"Active tools: {len(otel_tools)}")
 ```
 
-### With MCP Plugin
+### With MCP Discovery
 
-Discover both GCP models and MCP servers:
+MCP discovery is built into the OpenTelemetry plugin. Combine GCP and OTel to discover both deployed infrastructure and active MCP usage:
 
 ```python
 client = OpenCiteClient(
-    enable_mcp=True,
+    enable_otel=True,
     enable_google_cloud=True
 )
 
-# Export everything
-client.export_to_json(
-    include_mcp=True,
-    include_google_cloud=True,
-    filepath="complete_discovery.json"
-)
+# GCP discovers MCP servers from Compute Engine labels
+gcp_mcp = client.list_gcp_mcp_servers()
+
+# OTel discovers MCP servers actually being used in traces
+otel_mcp = client.list_mcp_servers()
 ```
 
 ## Related Documentation
 
-- [OpenCITE README](README.md)
 - [OpenTelemetry Plugin](OPENTELEMETRY_PLUGIN.md)
-- [MCP Plugin](MCP_PLUGIN.md)
-- [Schema Documentation](SCHEMA_DOCUMENTATION.md)
+- [MCP Discovery](MCP_PLUGIN.md)
+- [Schema Documentation](../SCHEMA_DOCUMENTATION.md)
 - [Vertex AI Documentation](https://cloud.google.com/vertex-ai/docs)
 - [Google Cloud Python SDK](https://github.com/googleapis/python-aiplatform)
 

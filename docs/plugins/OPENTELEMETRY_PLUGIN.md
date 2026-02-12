@@ -1,14 +1,14 @@
-# OpenTelemetry Plugin for Open Cite
+# OpenTelemetry Plugin for OpenCITE
 
-The OpenTelemetry plugin enables automatic discovery of tools that use AI models through OpenRouter by receiving and analyzing OpenTelemetry traces.
+The OpenTelemetry plugin enables automatic discovery of AI tools, models, agents, downstream systems, and MCP servers by receiving and analyzing OpenTelemetry traces.
 
 ## Overview
 
 This plugin acts as an OTLP (OpenTelemetry Protocol) receiver that:
 1. Receives traces via HTTP (OTLP/HTTP protocol)
-2. Analyzes traces to detect OpenRouter API calls
-3. Discovers tools and the models they use
-4. Provides insights into model usage across your infrastructure
+2. Analyzes traces to detect AI model usage from any LLM provider
+3. Discovers tools, models, agents, downstream systems, and MCP usage
+4. Pushes updates to the GUI in real time via WebSocket
 
 ## Installation
 
@@ -250,32 +250,45 @@ client.stop_otel_receiver()
 
 ## Detection Logic
 
-The plugin detects OpenRouter usage by analyzing span attributes:
+The plugin analyzes span attributes to discover AI usage from any LLM provider:
 
-### Required Indicators
-The plugin looks for spans that meet these criteria:
+### Model Detection
+The plugin looks for a model name in (checked in order):
+- `gen_ai.request.model`
+- `gen_ai.response.model`
+- `llm.model`
+- `model`
 
-1. **OpenRouter Host Detection**: One of:
-   - `http.url` contains `openrouter.ai`
-   - `http.host` equals `openrouter.ai`
+### Provider Detection
+Provider is extracted from:
+- `gen_ai.system` (e.g., `"openai"`, `"anthropic"`)
+- `gen_ai.provider.name`
+- Falls back to parsing the model name (e.g., `"openai/gpt-4"` → `"openai"`)
 
-2. **Model Information**: One of:
-   - `gen_ai.request.model` attribute (OpenTelemetry semantic convention)
-   - `llm.model` attribute (common LLM tracing convention)
-   - `model` attribute (generic)
+### Tool/Service Name
+Extracted from (in priority order):
+1. `gen_ai.tool.name` or `tool.name`
+2. Span name when the span has `gen_ai.tool.call.id`
+3. `service.name` or `app.name` (but not when it equals the agent name)
+4. Span name as fallback
 
-3. **Tool/Service Name**: From resource attributes:
-   - `service.name` (recommended)
-   - Falls back to span name if not provided
+### Agent Detection
+Agents are detected from:
+- `gen_ai.agent.name`, `agent_name`, or `agent.name`
+
+### Downstream System Detection
+HTTP spans to external hosts (not LLM providers) are tracked as downstream systems.
+
+### MCP Detection
+MCP servers, tools, and resources are detected from `mcp.*` attributes. See [MCP Discovery](MCP_PLUGIN.md).
 
 ### Recommended Span Attributes
 
 For best results, include these attributes in your spans:
 
 ```python
-span.set_attribute("http.url", "https://openrouter.ai/api/v1/chat/completions")
-span.set_attribute("http.host", "openrouter.ai")
-span.set_attribute("gen_ai.request.model", "openai/gpt-4")
+span.set_attribute("gen_ai.request.model", "gpt-4")
+span.set_attribute("gen_ai.system", "openai")
 ```
 
 And in your resource:
@@ -406,7 +419,6 @@ The plugin stores traces in memory. For production use with high trace volume:
 
 - **In-memory storage**: Traces are stored in memory and lost on restart
 - **JSON only**: Currently only supports OTLP/JSON format
-- **OpenRouter specific**: Detection logic is optimized for OpenRouter patterns
 - **No authentication**: The receiver accepts all incoming traces
 
 ## Future Enhancements
@@ -415,10 +427,4 @@ The plugin stores traces in memory. For production use with high trace volume:
 - [ ] Protobuf format support
 - [ ] Authentication/authorization
 - [ ] Trace retention policies
-- [ ] Dashboard/visualization
 - [ ] Metrics and alerting
-- [ ] Support for other LLM providers (OpenAI direct, Anthropic, etc.)
-
-## Contributing
-
-To extend the detection logic for other LLM providers, modify the `_detect_openrouter_usage()` method in `opentelemetry.py`.

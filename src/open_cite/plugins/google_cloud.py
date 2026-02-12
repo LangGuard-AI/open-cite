@@ -30,6 +30,76 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
     - Model deployments and versions
     """
 
+    plugin_type = "google_cloud"
+
+    @classmethod
+    def plugin_metadata(cls):
+        return {
+            "name": "Google Cloud",
+            "description": "Discovers Vertex AI models and endpoints",
+            "required_fields": {
+                "project_id": {"label": "Project ID", "default": "", "required": True},
+                "location": {"label": "Location", "default": "us-central1", "required": False},
+                "service_account_key": {"label": "Service Account Key (JSON)", "default": "", "required": False, "type": "password"},
+            },
+            "env_vars": ["GCP_PROJECT_ID", "GOOGLE_APPLICATION_CREDENTIALS"],
+        }
+
+    @classmethod
+    def from_config(cls, config, instance_id=None, display_name=None, dependencies=None):
+        credentials = config.get('credentials')
+        service_account_key = config.get('service_account_key')
+
+        # Convert a JSON service account key string into a credentials object
+        if not credentials and service_account_key:
+            credentials = cls._credentials_from_key(service_account_key)
+
+        return cls(
+            project_id=config.get('project_id'),
+            location=config.get('location', 'us-central1'),
+            credentials=credentials,
+            instance_id=instance_id,
+            display_name=display_name,
+        )
+
+    @staticmethod
+    def _credentials_from_key(service_account_key):
+        """
+        Build a google.oauth2 Credentials object from a service account key.
+
+        Args:
+            service_account_key: Either a JSON string or a dict containing
+                the service account key.
+
+        Returns:
+            google.oauth2.service_account.Credentials
+
+        Raises:
+            ValueError: If the key cannot be parsed.
+            ImportError: If google-auth is not installed.
+        """
+        try:
+            from google.oauth2 import service_account
+        except ImportError:
+            raise ImportError(
+                "google-auth is required for service account key authentication. "
+                "Install with: pip install google-auth"
+            )
+
+        if isinstance(service_account_key, str):
+            try:
+                key_info = json.loads(service_account_key)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"service_account_key is not valid JSON: {e}")
+        elif isinstance(service_account_key, dict):
+            key_info = service_account_key
+        else:
+            raise ValueError(
+                "service_account_key must be a JSON string or dict"
+            )
+
+        return service_account.Credentials.from_service_account_info(key_info)
+
     def __init__(
         self,
         project_id: Optional[str] = None,
@@ -68,16 +138,12 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
         import threading
         self._lock = threading.Lock()
 
-    @property
-    def plugin_type(self) -> str:
-        """Type identifier for this plugin."""
-        return "google_cloud"
-
     def get_config(self) -> Dict[str, Any]:
         """Return plugin configuration (sensitive values masked)."""
         return {
             "project_id": self.project_id,
             "location": self.location,
+            "service_account_key": "****" if self.credentials else None,
         }
 
     @property

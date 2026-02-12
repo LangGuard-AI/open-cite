@@ -4,7 +4,10 @@ OpenCITE Core - Base classes and interfaces.
 
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Set
+import logging
 import warnings
+
+logger = logging.getLogger(__name__)
 
 
 class BaseDiscoveryPlugin(ABC):
@@ -12,13 +15,22 @@ class BaseDiscoveryPlugin(ABC):
     Abstract base class for Open Cite discovery plugins.
 
     Each plugin must implement:
-    - plugin_type: Type identifier (e.g., 'databricks')
+    - plugin_type: Type identifier (e.g., 'databricks') - class attribute
     - supported_asset_types: Set of asset types this plugin can discover
     - supports_multiple_instances: Whether multiple instances are allowed
     - verify_connection: Check connectivity to the data source
     - list_assets: List assets of a given type
     - get_identification_attributes: Attributes used for tool identification
+
+    Plugins should also provide:
+    - plugin_metadata(): classmethod returning display name, description, config fields
+    - from_config(): classmethod factory to create instance from config dict
+    - start() / stop(): lifecycle methods for plugins that need initialization/cleanup
     """
+
+    # Subclasses should set this as a class attribute, e.g. plugin_type = "databricks"
+    # For backward compat, it can also be a @property.
+    plugin_type: str = ""
 
     def __init__(
         self,
@@ -35,16 +47,90 @@ class BaseDiscoveryPlugin(ABC):
         self._instance_id = instance_id or self.plugin_type
         self._display_name = display_name or self.plugin_type.replace('_', ' ').title()
         self._status = "stopped"  # running, stopped, error
+        self._on_data_changed = None
+
+    @classmethod
+    def plugin_metadata(cls) -> Dict[str, Any]:
+        """
+        Return metadata describing this plugin type.
+
+        Subclasses should override to provide specific metadata.
+
+        Returns:
+            Dict with keys:
+            - name: Human-readable plugin name
+            - description: What this plugin discovers
+            - required_fields: Dict of config field name -> {label, default, required, type}
+            - env_vars: List of environment variable names used
+            - (optional) trace_endpoints: endpoint info for trace-based plugins
+        """
+        return {
+            "name": cls.plugin_type.replace('_', ' ').title() if cls.plugin_type else cls.__name__,
+            "description": "Discovery plugin",
+            "required_fields": {},
+            "env_vars": [],
+        }
+
+    @classmethod
+    def from_config(
+        cls,
+        config: Dict[str, Any],
+        instance_id: Optional[str] = None,
+        display_name: Optional[str] = None,
+        dependencies: Optional[Dict[str, Any]] = None,
+    ) -> 'BaseDiscoveryPlugin':
+        """
+        Factory method to create an instance from a config dict.
+
+        Subclasses should override to handle their specific config fields.
+
+        Args:
+            config: Plugin-specific configuration dict
+            instance_id: Unique instance identifier
+            display_name: Human-readable name
+            dependencies: Optional dict of dependencies (e.g., mcp_plugin, http_client)
+
+        Returns:
+            New plugin instance
+        """
+        return cls(instance_id=instance_id, display_name=display_name)
+
+    def start(self):
+        """
+        Start the plugin (lifecycle method).
+
+        Override in subclasses that need initialization (e.g., start a receiver).
+        Default implementation just sets status to 'running'.
+        """
+        self._status = "running"
+        logger.info(f"Started plugin {self.instance_id}")
+
+    def stop(self):
+        """
+        Stop the plugin (lifecycle method).
+
+        Override in subclasses that need cleanup (e.g., stop a receiver).
+        Default implementation just sets status to 'stopped'.
+        """
+        self._status = "stopped"
+        logger.info(f"Stopped plugin {self.instance_id}")
+
+    def notify_data_changed(self):
+        """Notify that plugin data has changed (e.g., new traces ingested)."""
+        if self._on_data_changed:
+            try:
+                self._on_data_changed(self)
+            except Exception:
+                pass
 
     @property
-    @abstractmethod
-    def plugin_type(self) -> str:
-        """
-        Type identifier for this plugin (e.g., 'databricks').
+    def on_data_changed(self):
+        """Callback invoked when plugin data changes."""
+        return self._on_data_changed
 
-        This is immutable and the same for all instances of a plugin class.
-        """
-        pass
+    @on_data_changed.setter
+    def on_data_changed(self, callback):
+        self._on_data_changed = callback
 
     @property
     def instance_id(self) -> str:

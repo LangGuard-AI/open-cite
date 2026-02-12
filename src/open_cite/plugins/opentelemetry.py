@@ -20,6 +20,23 @@ from open_cite.core import BaseDiscoveryPlugin
 
 logger = logging.getLogger(__name__)
 
+
+def _get_local_ip() -> str:
+    """Get the local IP address for display purposes."""
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0)
+        try:
+            s.connect(('8.8.8.8', 80))
+            return s.getsockname()[0]
+        except Exception:
+            return '127.0.0.1'
+        finally:
+            s.close()
+    except Exception:
+        return '127.0.0.1'
+
 # Configure regex patterns here to capture additional attributes
 # Example: [r"^custom\..*", r"^app\.metadata\..*"]
 DEFAULT_ATTRIBUTE_PATTERNS = []
@@ -96,11 +113,48 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
     Supports standard GenAI semantic conventions for LLM observability.
     """
 
+    plugin_type = "opentelemetry"
+
+    @classmethod
+    def plugin_metadata(cls):
+        import socket
+        local_ip = _get_local_ip()
+        return {
+            "name": "OpenTelemetry",
+            "description": "Discovers AI tools using models via OTLP traces",
+            "required_fields": {},
+            "env_vars": [],
+            "trace_endpoints": {
+                "localhost": "http://localhost:4318/v1/traces",
+                "network": f"http://{local_ip}:4318/v1/traces" if local_ip != '127.0.0.1' else None,
+            },
+        }
+
+    @classmethod
+    def from_config(cls, config, instance_id=None, display_name=None, dependencies=None):
+        return cls(
+            host=config.get('host', '0.0.0.0'),
+            port=config.get('port', 4318),
+            instance_id=instance_id,
+            display_name=display_name,
+        )
+
+    def start(self):
+        """Start the OTLP trace receiver."""
+        self.start_receiver()
+        self._status = "running"
+        logger.info(f"Started OpenTelemetry plugin {self.instance_id}")
+
+    def stop(self):
+        """Stop the OTLP trace receiver."""
+        self.stop_receiver()
+        self._status = "stopped"
+        logger.info(f"Stopped OpenTelemetry plugin {self.instance_id}")
+
     def __init__(
         self,
         host: str = "localhost",
         port: int = 4318,
-        mcp_plugin=None,
         attribute_patterns: List[str] = None,
         instance_id: Optional[str] = None,
         display_name: Optional[str] = None,
@@ -111,7 +165,6 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         Args:
             host: Host to bind the OTLP receiver to
             port: Port to bind the OTLP receiver to (default: 4318, standard OTLP/HTTP)
-            mcp_plugin: Optional MCP plugin instance for MCP discovery integration
             attribute_patterns: Optional list of regex patterns to match attributes to collect
             instance_id: Unique identifier for this plugin instance
             display_name: Human-readable name for this instance
@@ -121,8 +174,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         self.port = port
         self.server: Optional[HTTPServer] = None
         self.server_thread: Optional[threading.Thread] = None
-        self.mcp_plugin = mcp_plugin
-        
+
         # Use provided patterns or fallback to default configuration
         patterns = attribute_patterns if attribute_patterns is not None else DEFAULT_ATTRIBUTE_PATTERNS
         self.attribute_patterns = [re.compile(p) for p in patterns]
@@ -168,17 +220,23 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             lambda: {"input_tokens": 0, "output_tokens": 0}
         )
 
+        # Provider per model: {model_name: provider_string}
+        self.model_providers: Dict[str, str] = {}
+
+        # MCP storage (discovered from traces)
+        self.mcp_servers: Dict[str, Dict[str, Any]] = {}
+        self.mcp_tools: Dict[str, Dict[str, Any]] = {}
+        self.mcp_resources: Dict[str, Dict[str, Any]] = {}
+        self.mcp_usage_stats: Dict[str, Dict[str, int]] = defaultdict(
+            lambda: {"tool_calls": 0, "resource_accesses": 0}
+        )
+
         # Lock for thread-safe operations
         self._lock = threading.Lock()
 
         # Identifier for tool source identification
         from ..identifier import ToolIdentifier
         self.identifier = ToolIdentifier()
-
-    @property
-    def plugin_type(self) -> str:
-        """Type identifier for this plugin."""
-        return "opentelemetry"
 
     def get_config(self) -> Dict[str, Any]:
         """Return plugin configuration."""
@@ -190,14 +248,16 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
     @property
     def supported_asset_types(self) -> Set[str]:
         """Asset types supported by this plugin."""
-        return {"tool", "model", "agent", "downstream_system"}
+        return {"tool", "model", "agent", "downstream_system", "mcp_server", "mcp_tool", "mcp_resource"}
 
     def get_identification_attributes(self) -> List[str]:
         """Return a list of attribute keys used for tool identification."""
         return [
             "trace.metadata.openrouter.entity_id",
             "trace.metadata.openrouter.api_key_name",
-            "trace.metadata.openrouter.creator_user_id"
+            "trace.metadata.openrouter.creator_user_id",
+            "mcp.server.name",
+            "mcp.server.endpoint",
         ]
 
     def verify_connection(self) -> Dict[str, Any]:
@@ -216,6 +276,9 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             "endpoint": f"http://{self.host}:{self.port}/v1/traces",
             "traces_received": len(self.traces),
             "tools_discovered": len(self.discovered_tools),
+            "mcp_servers_discovered": len(self.mcp_servers),
+            "mcp_tools_discovered": len(self.mcp_tools),
+            "mcp_resources_discovered": len(self.mcp_resources),
         }
 
     def start_receiver(self):
@@ -266,8 +329,8 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         Args:
             otlp_data: OTLP JSON payload
         """
-        with self._lock:
-            try:
+        try:
+            with self._lock:
                 # OTLP format: {"resourceSpans": [...]}
                 resource_spans = otlp_data.get("resourceSpans", [])
 
@@ -356,8 +419,11 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 self._correlate_agent_models(span_agents, span_models, span_parents)
 
                 logger.info(f"Ingested traces. Total traces: {len(self.traces)}")
-            except Exception as e:
-                logger.error(f"Error ingesting traces: {e}")
+
+            # Notify after releasing the lock to avoid holding it during push
+            self.notify_data_changed()
+        except Exception as e:
+            logger.error(f"Error ingesting traces: {e}")
 
     def _detect_openrouter_usage(
         self,
@@ -485,10 +551,12 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 or ""
             )
             provider = (
-                merged_attrs.get("gen_ai.system") 
+                merged_attrs.get("gen_ai.system")
                 or merged_attrs.get("gen_ai.provider.name")
                 or ""
             )
+            if provider and model_name:
+                self.model_providers[model_name] = provider
             source = (
                 merged_attrs.get("trace.metadata.source")
                 or merged_attrs.get("source")
@@ -503,11 +571,37 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                     "tool_source_id": identification.get("source_id")
                 })
 
-            # Always store identification attributes in metadata so they are visible in GUI mapping modal
-            id_attrs = self.get_identification_attributes()
-            for attr_key in id_attrs:
+            # Store useful attributes in metadata for identification mapping
+            _TOOL_METADATA_KEYS = (
+                # OpenTelemetry semantic conventions
+                "service.name", "service.version", "service.namespace",
+                "gen_ai.system", "gen_ai.request.model", "gen_ai.response.model",
+                "gen_ai.tool.name", "gen_ai.tool.call.id",
+                # HTTP context
+                "http.host", "http.url", "url.full", "server.address",
+                # OpenRouter trace metadata
+                "trace.metadata.openrouter.entity_id",
+                "trace.metadata.openrouter.api_key_name",
+                "trace.metadata.openrouter.creator_user_id",
+                # MCP context
+                "mcp.server.name", "mcp.server.endpoint",
+                # Operation context
+                "gen_ai.operation.name",
+                # Common app-level attributes
+                "app.name", "app.version",
+            )
+            for attr_key in _TOOL_METADATA_KEYS:
                 if attr_key in merged_attrs:
                     self.discovered_tools[tool_name]["metadata"][attr_key] = merged_attrs[attr_key]
+
+            # Store span name
+            if span_name:
+                self.discovered_tools[tool_name]["metadata"]["span.name"] = span_name
+
+            # Also store any trace.metadata.* keys (provider-specific metadata)
+            for attr_key, attr_val in merged_attrs.items():
+                if attr_key.startswith("trace.metadata.") and attr_val is not None and not isinstance(attr_val, (dict, list)):
+                    self.discovered_tools[tool_name]["metadata"][attr_key] = attr_val
 
             self.discovered_tools[tool_name]["metadata"].update({
                 "last_seen": datetime.utcnow().isoformat(),
@@ -516,14 +610,13 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 "source": source,
                 "discovery_source": "opentelemetry"
             })
-            
+
             # Check for attributes matching configured patterns
             if self.attribute_patterns:
                 for key, value in merged_attrs.items():
-                    # Skip if already in metadata
                     if key in self.discovered_tools[tool_name]["metadata"]:
                         continue
-                        
+
                     for pattern in self.attribute_patterns:
                         if pattern.match(key):
                             self.discovered_tools[tool_name]["metadata"][key] = value
@@ -558,10 +651,17 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 return self._list_agents(**kwargs)
             elif asset_type == "downstream_system":
                 return self._list_downstream_systems(**kwargs)
+            elif asset_type == "mcp_server":
+                return self._list_mcp_servers(**kwargs)
+            elif asset_type == "mcp_tool":
+                return self._list_mcp_tools(**kwargs)
+            elif asset_type == "mcp_resource":
+                return self._list_mcp_resources(**kwargs)
             else:
                 raise ValueError(
                     f"Unsupported asset type: {asset_type}. "
-                    f"Supported types: tool, model, agent, downstream_system"
+                    f"Supported types: tool, model, agent, downstream_system, "
+                    f"mcp_server, mcp_tool, mcp_resource"
                 )
 
     def _list_tools(self, **kwargs) -> List[Dict[str, Any]]:
@@ -613,8 +713,11 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
         models = []
         for model_name, data in model_usage.items():
-            # Extract provider from model name (e.g., "openai/gpt-4" -> "openai")
-            provider = model_name.split("/")[0] if "/" in model_name else "unknown"
+            # Use explicit gen_ai.system provider, fall back to model name prefix
+            provider = (
+                self.model_providers.get(model_name)
+                or (model_name.split("/")[0] if "/" in model_name else "unknown")
+            )
 
             token_data = self.model_token_usage.get(model_name, {})
             models.append({
@@ -632,15 +735,29 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         """List all discovered agents."""
         agents = []
         for agent_name, agent_data in self.discovered_agents.items():
+            metadata = agent_data.get("metadata", {})
+
+            # Re-identify if currently unknown to pick up new mappings immediately
+            if not metadata.get("agent_source_name"):
+                identification = self.identifier.identify("opentelemetry", metadata)
+                if identification:
+                    metadata.update({
+                        "agent_source_name": identification.get("source_name"),
+                        "agent_source_id": identification.get("source_id"),
+                    })
+
             agents.append({
                 "id": agent_name,
                 "name": agent_name,
+                "discovery_source": "opentelemetry",
                 "confidence": agent_data["confidence"],
                 "tools_used": list(agent_data["tools_used"]),
                 "models_used": list(agent_data["models_used"]),
                 "first_seen": agent_data["first_seen"],
                 "last_seen": agent_data["last_seen"],
-                "metadata": agent_data["metadata"],
+                "agent_source_name": metadata.get("agent_source_name"),
+                "agent_source_id": metadata.get("agent_source_id"),
+                "metadata": metadata,
             })
         return agents
 
@@ -734,6 +851,29 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         if model_name:
             agent["models_used"].add(model_name)
             self._add_lineage(agent_name, "agent", model_name, "model", "uses")
+
+        # Perform agent identification
+        identification = self.identifier.identify("opentelemetry", merged)
+        if identification:
+            agent["metadata"].update({
+                "agent_source_name": identification.get("source_name"),
+                "agent_source_id": identification.get("source_id"),
+            })
+
+        # Store identification attributes in metadata for mapping modal
+        id_attrs = self.get_identification_attributes()
+        for attr_key in id_attrs:
+            if attr_key in merged:
+                agent["metadata"][attr_key] = merged[attr_key]
+
+        # Store additional useful attributes
+        agent["metadata"].update({
+            "last_seen": now,
+            "discovery_source": "opentelemetry",
+        })
+        for key in ("service.name", "service.version", "gen_ai.system"):
+            if key in merged:
+                agent["metadata"][key] = merged[key]
 
         return agent_name
 
@@ -971,9 +1111,6 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         - mcp_tool or mcp_resource span names
         - tools://... or resource://... URIs
         """
-        if not self.mcp_plugin:
-            return  # MCP plugin not available
-
         # Convert attributes list to dict
         attr_dict = {}
         for attr in attributes:
@@ -1005,14 +1142,14 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
         # If we detected MCP server usage, register it
         if mcp_server:
-            self.mcp_plugin.register_server_from_trace(
+            self._register_mcp_server(
                 server_name=mcp_server,
                 trace_id=trace_id,
                 span_id=span_id,
                 attributes=attr_dict,
             )
 
-            server_id = self.mcp_plugin._generate_server_id(mcp_server)
+            server_id = self._generate_mcp_server_id(mcp_server)
 
             # Register tool if present
             if mcp_tool:
@@ -1021,7 +1158,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 if attr_dict.get("error") or attr_dict.get("exception"):
                     status = "error"
 
-                self.mcp_plugin.register_tool(
+                self._register_mcp_tool(
                     server_id=server_id,
                     tool_name=mcp_tool,
                     trace_id=trace_id,
@@ -1034,7 +1171,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 resource_type = attr_dict.get("mcp.resource.type")
                 mime_type = attr_dict.get("mcp.resource.mime_type")
 
-                self.mcp_plugin.register_resource(
+                self._register_mcp_resource(
                     server_id=server_id,
                     resource_uri=mcp_resource,
                     trace_id=trace_id,
@@ -1047,4 +1184,254 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 f"Registered MCP usage: server={mcp_server}, "
                 f"tool={mcp_tool}, resource={mcp_resource}"
             )
+
+    # =========================================================================
+    # MCP registration and listing methods (absorbed from former MCP plugin)
+    # =========================================================================
+
+    def _generate_mcp_server_id(self, name: str) -> str:
+        """Generate a unique server ID from name."""
+        safe_name = re.sub(r"[^a-z0-9-]", "-", name.lower())
+        return safe_name
+
+    def _register_mcp_server(
+        self,
+        server_name: str,
+        trace_id: str,
+        span_id: str,
+        attributes: Dict[str, Any],
+    ):
+        """Register an MCP server discovered from a trace."""
+        server_id = self._generate_mcp_server_id(server_name)
+
+        if server_id not in self.mcp_servers:
+            self.mcp_servers[server_id] = {
+                "id": server_id,
+                "name": server_name,
+                "discovery_source": "trace_analysis",
+                "first_seen": datetime.utcnow().isoformat(),
+                "traces": [],
+                "metadata": {},
+            }
+            logger.info(f"Discovered MCP server from trace: {server_name}")
+
+        server = self.mcp_servers[server_id]
+        server["last_seen"] = datetime.utcnow().isoformat()
+
+        if trace_id not in [t["trace_id"] for t in server["traces"]]:
+            server["traces"].append({
+                "trace_id": trace_id,
+                "span_id": span_id,
+                "timestamp": datetime.utcnow().isoformat(),
+            })
+
+        if "mcp.server.version" in attributes:
+            server["metadata"]["version"] = attributes["mcp.server.version"]
+        if "mcp.server.protocol_version" in attributes:
+            server["metadata"]["protocol_version"] = attributes["mcp.server.protocol_version"]
+
+        if "mcp.server.transport" in attributes:
+            server["transport"] = attributes["mcp.server.transport"]
+        elif "http.url" in attributes or "mcp.server.endpoint" in attributes:
+            endpoint = attributes.get("mcp.server.endpoint") or attributes.get("http.url")
+            server["transport"] = "http" if endpoint else "unknown"
+            if endpoint:
+                server["endpoint"] = endpoint
+        else:
+            server["transport"] = "stdio"
+
+        if "mcp.server.endpoint" in attributes:
+            server["endpoint"] = attributes["mcp.server.endpoint"]
+
+    def _register_mcp_tool(
+        self,
+        server_id: str,
+        tool_name: str,
+        trace_id: str,
+        span_id: str,
+        tool_schema: Optional[Dict[str, Any]] = None,
+        status: str = "success",
+    ):
+        """Register an MCP tool discovered from a trace."""
+        tool_id = f"{server_id}-{tool_name}"
+
+        if tool_id not in self.mcp_tools:
+            self.mcp_tools[tool_id] = {
+                "id": tool_id,
+                "name": tool_name,
+                "server_id": server_id,
+                "discovery_source": "trace_analysis",
+                "first_used": datetime.utcnow().isoformat(),
+                "usage": {
+                    "call_count": 0,
+                    "success_count": 0,
+                    "error_count": 0,
+                },
+                "traces": [],
+            }
+
+            if tool_schema:
+                self.mcp_tools[tool_id]["schema"] = tool_schema
+                if "description" in tool_schema:
+                    self.mcp_tools[tool_id]["description"] = tool_schema["description"]
+
+            logger.info(f"Discovered MCP tool: {tool_name} on server {server_id}")
+
+        tool = self.mcp_tools[tool_id]
+        tool["last_used"] = datetime.utcnow().isoformat()
+        tool["usage"]["call_count"] += 1
+
+        if status == "success":
+            tool["usage"]["success_count"] += 1
+        else:
+            tool["usage"]["error_count"] += 1
+
+        tool["traces"].append({
+            "trace_id": trace_id,
+            "span_id": span_id,
+            "timestamp": datetime.utcnow().isoformat(),
+            "status": status,
+        })
+
+        self.mcp_usage_stats[server_id]["tool_calls"] += 1
+
+    def _register_mcp_resource(
+        self,
+        server_id: str,
+        resource_uri: str,
+        trace_id: str,
+        span_id: str,
+        resource_type: Optional[str] = None,
+        mime_type: Optional[str] = None,
+    ):
+        """Register an MCP resource discovered from a trace."""
+        resource_id = f"{server_id}-{abs(hash(resource_uri)) % 10000}"
+
+        if resource_id not in self.mcp_resources:
+            self.mcp_resources[resource_id] = {
+                "id": resource_id,
+                "uri": resource_uri,
+                "server_id": server_id,
+                "discovery_source": "trace_analysis",
+                "first_accessed": datetime.utcnow().isoformat(),
+                "usage": {
+                    "access_count": 0,
+                },
+                "traces": [],
+            }
+
+            if resource_type:
+                self.mcp_resources[resource_id]["type"] = resource_type
+            if mime_type:
+                self.mcp_resources[resource_id]["mime_type"] = mime_type
+
+            logger.info(f"Discovered MCP resource: {resource_uri} on server {server_id}")
+
+        resource = self.mcp_resources[resource_id]
+        resource["last_accessed"] = datetime.utcnow().isoformat()
+        resource["usage"]["access_count"] += 1
+
+        resource["traces"].append({
+            "trace_id": trace_id,
+            "span_id": span_id,
+            "timestamp": datetime.utcnow().isoformat(),
+        })
+
+        self.mcp_usage_stats[server_id]["resource_accesses"] += 1
+
+    def _list_mcp_servers(self, **kwargs) -> List[Dict[str, Any]]:
+        """List all discovered MCP servers."""
+        servers = []
+
+        for server_id, server_info in self.mcp_servers.items():
+            server = {
+                "id": server_info["id"],
+                "name": server_info["name"],
+                "discovery_source": server_info["discovery_source"],
+                "transport": server_info.get("transport", "unknown"),
+                "first_seen": server_info["first_seen"],
+                "last_seen": server_info.get("last_seen"),
+                "trace_count": len(server_info["traces"]),
+            }
+
+            if "endpoint" in server_info:
+                server["endpoint"] = server_info["endpoint"]
+            if server_info.get("metadata"):
+                server["metadata"] = server_info["metadata"]
+
+            server["tools_count"] = len([
+                t for t in self.mcp_tools.values()
+                if t.get("server_id") == server_id
+            ])
+            server["resources_count"] = len([
+                r for r in self.mcp_resources.values()
+                if r.get("server_id") == server_id
+            ])
+
+            if server_id in self.mcp_usage_stats:
+                server["usage_stats"] = self.mcp_usage_stats[server_id]
+
+            servers.append(server)
+
+        return servers
+
+    def _list_mcp_tools(self, **kwargs) -> List[Dict[str, Any]]:
+        """List all discovered MCP tools."""
+        server_id = kwargs.get("server_id")
+
+        tools = []
+        for tool_id, tool_info in self.mcp_tools.items():
+            if server_id and tool_info.get("server_id") != server_id:
+                continue
+
+            tool = {
+                "id": tool_info["id"],
+                "name": tool_info["name"],
+                "server_id": tool_info["server_id"],
+                "discovery_source": tool_info["discovery_source"],
+                "first_used": tool_info["first_used"],
+                "last_used": tool_info.get("last_used"),
+                "usage": tool_info["usage"],
+                "call_count": tool_info["usage"]["call_count"],
+                "trace_count": len(tool_info["traces"]),
+            }
+
+            if "description" in tool_info:
+                tool["description"] = tool_info["description"]
+            if "schema" in tool_info:
+                tool["schema"] = tool_info["schema"]
+
+            tools.append(tool)
+
+        return tools
+
+    def _list_mcp_resources(self, **kwargs) -> List[Dict[str, Any]]:
+        """List all discovered MCP resources."""
+        server_id = kwargs.get("server_id")
+
+        resources = []
+        for resource_id, resource_info in self.mcp_resources.items():
+            if server_id and resource_info.get("server_id") != server_id:
+                continue
+
+            resource = {
+                "id": resource_info["id"],
+                "uri": resource_info["uri"],
+                "server_id": resource_info["server_id"],
+                "discovery_source": resource_info["discovery_source"],
+                "first_accessed": resource_info["first_accessed"],
+                "last_accessed": resource_info.get("last_accessed"),
+                "usage": resource_info["usage"],
+                "access_count": resource_info["usage"]["access_count"],
+                "trace_count": len(resource_info["traces"]),
+            }
+
+            if "type" in resource_info:
+                resource["type"] = resource_info["type"]
+            if "mime_type" in resource_info:
+                resource["mime_type"] = resource_info["mime_type"]
+
+            resources.append(resource)
+
+        return resources
 
