@@ -8,16 +8,17 @@ import os
 import json
 import logging
 import socket
-from datetime import datetime
+import time
+import uuid
+from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 from flask import Flask, render_template, request, jsonify, send_from_directory
+from flask_socketio import SocketIO, emit
 from threading import Thread, Lock
 
 from open_cite.client import OpenCiteClient
-import importlib
-import inspect
-import pkgutil
-import open_cite.plugins
+from open_cite.identifier import ToolIdentifier
+from open_cite.plugins.registry import get_all_plugin_metadata, create_plugin_instance as registry_create_plugin
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ def get_local_ip():
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.urandom(24)
+socketio = SocketIO(app, async_mode='threading', cors_allowed_origins='*')
 
 # Enable DEBUG logging for this session
 logging.basicConfig(
@@ -74,97 +76,99 @@ state_lock = Lock()
 discovering_assets = False  # Flag to prevent concurrent asset discovery
 asset_cache = None  # Cache for discovered assets
 asset_cache_time = None  # Last time assets were discovered
+tool_identifier = ToolIdentifier()  # Shared identifier for tool/agent mapping
+
+
+# Debounce state for WebSocket pushes (max 2 pushes/second)
+_last_assets_push = 0.0
+_PUSH_MIN_INTERVAL = 0.5  # seconds
+
+
+def _push_assets_update(source_plugin=None):
+    """Push current assets to all connected WebSocket clients (debounced)."""
+    global _last_assets_push, asset_cache, asset_cache_time
+
+    now = time.monotonic()
+    if now - _last_assets_push < _PUSH_MIN_INTERVAL:
+        return
+    _last_assets_push = now
+
+    try:
+        if not client:
+            return
+
+        assets = {
+            "tools": [],
+            "models": [],
+            "agents": [],
+            "downstream_systems": [],
+            "mcp_servers": [],
+            "mcp_tools": [],
+            "mcp_resources": [],
+            "data_assets": [],
+            "gcp_models": [],
+            "gcp_endpoints": []
+        }
+
+        # Collect OTel-based assets (fast, in-memory)
+        if "opentelemetry" in discovery_status.get("plugins_enabled", []):
+            assets["tools"] = client.list_otel_tools()
+            assets["models"] = client.list_otel_models()
+            assets["agents"] = client.list_agents()
+            assets["downstream_systems"] = client.list_downstream_systems()
+            assets["mcp_servers"] = client.list_mcp_servers()
+            assets["mcp_tools"] = client.list_mcp_tools()
+            assets["mcp_resources"] = client.list_mcp_resources()
+
+        # Use cached values for expensive Databricks/GCP calls
+        if asset_cache:
+            if "databricks" in discovery_status.get("plugins_enabled", []):
+                assets["data_assets"] = asset_cache.get("assets", {}).get("data_assets", [])
+            if "google_cloud" in discovery_status.get("plugins_enabled", []):
+                assets["gcp_models"] = asset_cache.get("assets", {}).get("gcp_models", [])
+                assets["gcp_endpoints"] = asset_cache.get("assets", {}).get("gcp_endpoints", [])
+
+        totals = {k: len(v) for k, v in assets.items()}
+
+        result = {
+            "assets": assets,
+            "totals": totals,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+        # Update cache as side effect
+        asset_cache = result
+        asset_cache_time = datetime.utcnow()
+
+        socketio.emit('assets_update', result)
+    except Exception as e:
+        logger.error(f"Error pushing assets update: {e}")
+
+
+def _push_status_update():
+    """Push current discovery status to all connected WebSocket clients."""
+    try:
+        socketio.emit('status_update', discovery_status)
+    except Exception as e:
+        logger.error(f"Error pushing status update: {e}")
+
+
+@socketio.on('connect')
+def handle_connect():
+    """Send current state to newly connected client."""
+    logger.info("WebSocket client connected")
+    emit('status_update', discovery_status)
+
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Log client disconnection."""
+    logger.info("WebSocket client disconnected")
 
 
 def discover_available_plugins():
-    """
-    Dynamically discover all available plugins.
-
-    Returns a dictionary mapping plugin names to their metadata.
-    """
-    plugins = {}
-
-    # Discover all plugin modules
-    plugin_package = open_cite.plugins
-    for importer, modname, ispkg in pkgutil.iter_modules(plugin_package.__path__):
-        try:
-            # Import the plugin module
-            module = importlib.import_module(f'open_cite.plugins.{modname}')
-
-            # Find plugin classes (classes that inherit from BaseDiscoveryPlugin)
-            for name, obj in inspect.getmembers(module, inspect.isclass):
-                # Skip imported base classes
-                if obj.__module__ != module.__name__:
-                    continue
-
-                # Check if it's a plugin (has 'plugin_type' or 'name' property and inherits from BaseDiscoveryPlugin)
-                if (hasattr(obj, 'plugin_type') or hasattr(obj, 'name')) and hasattr(obj, 'list_assets'):
-                    # Get plugin metadata
-                    plugin_info = get_plugin_metadata(modname, obj)
-                    if plugin_info:
-                        plugins[modname] = plugin_info
-                        logger.info(f"Discovered plugin: {modname}")
-                    break  # Only take first plugin class from module
-
-        except Exception as e:
-            logger.warning(f"Failed to load plugin module {modname}: {e}")
-            continue
-
-    return plugins
-
-
-def get_plugin_metadata(plugin_name, plugin_class):
-    """
-    Extract metadata for a plugin based on its name and class.
-
-    Returns plugin configuration including required fields and env vars.
-    """
-    metadata = {
-        "name": plugin_name.replace('_', ' ').title(),
-        "description": "Plugin for discovering assets",
-        "required_fields": {},
-        "env_vars": []
-    }
-
-    # Customize metadata based on plugin name
-    if plugin_name == "opentelemetry":
-        local_ip = get_local_ip()
-        metadata["name"] = "OpenTelemetry"
-        metadata["description"] = "Discovers AI tools using models via OTLP traces"
-        # No configuration needed - trace receiver always starts when plugin is enabled
-        metadata["required_fields"] = {}
-        # Store endpoint info for display
-        metadata["trace_endpoints"] = {
-            "localhost": "http://localhost:4318/v1/traces",
-            "network": f"http://{local_ip}:4318/v1/traces" if local_ip != '127.0.0.1' else None
-        }
-
-
-
-    elif plugin_name == "mcp":
-        metadata["name"] = "MCP (Model Context Protocol)"
-        metadata["description"] = "Discovers MCP servers, tools, and resources from OTLP traces"
-
-    elif plugin_name == "databricks":
-        metadata["name"] = "Databricks"
-        metadata["description"] = "Discovers AI/ML tables from MLflow experiments"
-        metadata["required_fields"] = {
-            "host": {"label": "Host", "default": "https://dbc-xxx.cloud.databricks.com", "required": True},
-            "token": {"label": "Token", "default": "", "required": True, "type": "password"},
-            "warehouse_id": {"label": "Warehouse ID (optional)", "default": "", "required": False}
-        }
-        metadata["env_vars"] = ["DATABRICKS_HOST", "DATABRICKS_TOKEN", "DATABRICKS_WAREHOUSE_ID"]
-
-    elif plugin_name == "google_cloud":
-        metadata["name"] = "Google Cloud"
-        metadata["description"] = "Discovers Vertex AI models and endpoints"
-        metadata["required_fields"] = {
-            "project_id": {"label": "Project ID", "default": "", "required": True},
-            "location": {"label": "Location", "default": "us-central1", "required": False}
-        }
-        metadata["env_vars"] = ["GCP_PROJECT_ID", "GOOGLE_APPLICATION_CREDENTIALS"]
-
-    return metadata
+    """Dynamically discover all available plugins via the registry."""
+    return get_all_plugin_metadata()
 
 
 @app.route('/')
@@ -225,21 +229,14 @@ def create_plugin_instance():
         if not client:
             client = OpenCiteClient()
 
-        # Auto-generate instance_id if not provided
-        if not instance_id:
-            base_id = plugin_type
-            counter = 1
-            instance_id = base_id
-            existing_ids = [p.instance_id for p in client.plugins.values()]
-            while instance_id in existing_ids:
-                counter += 1
-                instance_id = f"{base_id}-{counter}"
+        # Always generate instance_id as UUIDv5 (namespace: plugin_type, name: display_name)
+        OPENCITE_NS = uuid.UUID('a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d')
+        id_name = f"{plugin_type}:{display_name or plugin_type}"
+        instance_id = str(uuid.uuid5(OPENCITE_NS, id_name))
 
         # Auto-generate display_name if not provided
         if not display_name:
             display_name = plugin_type.replace('_', ' ').title()
-            if instance_id != plugin_type:
-                display_name = f"{display_name} ({instance_id})"
 
         # Create the plugin instance
         plugin_instance = _create_plugin_instance(plugin_type, instance_id, display_name, config)
@@ -254,6 +251,7 @@ def create_plugin_instance():
                 if plugin_type not in discovery_status["plugins_enabled"]:
                     discovery_status["plugins_enabled"].append(plugin_type)
                 discovery_status["running"] = True
+            _push_status_update()
 
         return jsonify({
             "success": True,
@@ -306,6 +304,7 @@ def start_plugin_instance(instance_id: str):
             if plugin_type not in discovery_status["plugins_enabled"]:
                 discovery_status["plugins_enabled"].append(plugin_type)
             discovery_status["running"] = True
+        _push_status_update()
 
         return jsonify({"success": True, "message": f"Instance '{instance_id}' started"})
 
@@ -326,6 +325,7 @@ def stop_plugin_instance(instance_id: str):
 
         plugin = client.plugins[instance_id]
         _stop_plugin_instance(plugin)
+        _push_status_update()
 
         return jsonify({"success": True, "message": f"Instance '{instance_id}' stopped"})
 
@@ -334,88 +334,25 @@ def stop_plugin_instance(instance_id: str):
         return jsonify({"error": str(e)}), 500
 
 
-def _create_plugin_instance(plugin_type: str, instance_id: str, display_name: str, config: dict):
-    """Create a new plugin instance of the specified type."""
-    if plugin_type == 'opentelemetry':
-        from open_cite.plugins.opentelemetry import OpenTelemetryPlugin
-        mcp_plugin = client.plugins.get('mcp') if client else None
-        return OpenTelemetryPlugin(
-            host=config.get('host', '0.0.0.0'),
-            port=config.get('port', 4318),
-            mcp_plugin=mcp_plugin,
-            instance_id=instance_id,
-            display_name=display_name,
-        )
-    elif plugin_type == 'mcp':
-        from open_cite.plugins.mcp import MCPPlugin
-        return MCPPlugin(
-            instance_id=instance_id,
-            display_name=display_name,
-        )
-    elif plugin_type == 'databricks':
-        from open_cite.plugins.databricks import DatabricksPlugin
-        return DatabricksPlugin(
-            host=config.get('host'),
-            token=config.get('token'),
-            warehouse_id=config.get('warehouse_id'),
-            instance_id=instance_id,
-            display_name=display_name,
-        )
-    elif plugin_type == 'google_cloud':
-        from open_cite.plugins.google_cloud import GoogleCloudPlugin
-        return GoogleCloudPlugin(
-            project_id=config.get('project_id'),
-            location=config.get('location', 'us-central1'),
-            instance_id=instance_id,
-            display_name=display_name,
-        )
-    elif plugin_type == 'zscaler':
-        from open_cite.plugins.zscaler import ZscalerPlugin
-        return ZscalerPlugin(
-            api_key=config.get('api_key'),
-            username=config.get('username'),
-            password=config.get('password'),
-            cloud_name=config.get('cloud_name', 'zscaler.net'),
-            nss_port=config.get('nss_port'),
-            instance_id=instance_id,
-            display_name=display_name,
-        )
-    else:
-        raise ValueError(f"Unknown plugin type: {plugin_type}")
+def _create_plugin_instance(plugin_type_name: str, instance_id: str, display_name: str, config: dict):
+    """Create a new plugin instance of the specified type via the registry."""
+    return registry_create_plugin(
+        plugin_type=plugin_type_name,
+        config=config,
+        instance_id=instance_id,
+        display_name=display_name,
+    )
 
 
 def _start_plugin_instance(plugin):
-    """Start a plugin instance (plugin-specific initialization)."""
-    plugin_type = plugin.plugin_type
-
-    if plugin_type == 'opentelemetry':
-        if hasattr(plugin, 'start_receiver'):
-            plugin.start_receiver()
-            logger.info(f"Started OpenTelemetry receiver for {plugin.instance_id}")
-    elif plugin_type == 'zscaler':
-        if hasattr(plugin, 'nss_port') and plugin.nss_port:
-            plugin.start_nss_receiver(port=plugin.nss_port)
-            logger.info(f"Started Zscaler NSS receiver for {plugin.instance_id}")
-
-    # Set plugin status to running
-    plugin.status = 'running'
+    """Start a plugin instance via its lifecycle method."""
+    plugin.on_data_changed = lambda p: _push_assets_update(p)
+    plugin.start()
 
 
 def _stop_plugin_instance(plugin):
-    """Stop a plugin instance (plugin-specific cleanup)."""
-    plugin_type = plugin.plugin_type
-
-    if plugin_type == 'opentelemetry':
-        if hasattr(plugin, 'stop_receiver'):
-            plugin.stop_receiver()
-            logger.info(f"Stopped OpenTelemetry receiver for {plugin.instance_id}")
-    elif plugin_type == 'zscaler':
-        if hasattr(plugin, 'stop_nss_receiver'):
-            plugin.stop_nss_receiver()
-            logger.info(f"Stopped Zscaler NSS receiver for {plugin.instance_id}")
-
-    # Set plugin status to stopped
-    plugin.status = 'stopped'
+    """Stop a plugin instance via its lifecycle method."""
+    plugin.stop()
 
 
 @app.route('/api/plugins/configure', methods=['POST'])
@@ -442,136 +379,54 @@ def configure_plugins():
             config = plugin_config.get('config', {})
 
             try:
-                if plugin_name == 'opentelemetry':
-                    with state_lock:
-                        discovery_status["current_status"] = f"Configuring OpenTelemetry plugin..."
-                        discovery_status["progress"].append({"step": plugin_name, "message": "Initializing OpenTelemetry plugin", "status": "in_progress"})
+                with state_lock:
+                    discovery_status["current_status"] = f"Configuring {plugin_name} plugin..."
+                    discovery_status["progress"].append({
+                        "step": plugin_name,
+                        "message": f"Initializing {plugin_name} plugin",
+                        "status": "in_progress",
+                    })
+                _push_status_update()
 
-                    # Always bind to 0.0.0.0 to accept connections from any interface
-                    host = '0.0.0.0'
-                    port = 4318
+                # Check if plugin is already registered (reuse existing instance)
+                existing_plugin = client.plugins.get(plugin_name)
+                if existing_plugin is not None:
+                    logger.info(f"Reusing existing {plugin_name} plugin")
+                else:
+                    # Unregister any auto-registered bare instance (e.g. from OpenCiteClient())
+                    if plugin_name in client.plugins:
+                        client.unregister_plugin(plugin_name)
 
-                    # Get local IP for display
+                    # Create and register via registry
+                    plugin_instance = registry_create_plugin(
+                        plugin_type=plugin_name,
+                        config=config,
+                    )
+                    client.register_plugin(plugin_instance)
+
+                    # Start the plugin
+                    plugin_instance.start()
+                    logger.info(f"Configured and started {plugin_name} plugin")
+
+                # Build success message with plugin-specific details
+                success_msg = f"{plugin_name.replace('_', ' ').title()} plugin configured"
+                plugin_obj = client.plugins.get(plugin_name)
+                if plugin_obj and plugin_obj.plugin_type == 'opentelemetry':
                     local_ip = get_local_ip()
-
-                    # Get MCP plugin if already registered for integration
-                    mcp_plugin = client.plugins.get('mcp')
-
-                    # Check if OpenTelemetry plugin is already registered and running
-                    otel_plugin = client.plugins.get('opentelemetry')
-                    if otel_plugin is None:
-                        # Create new plugin instance only if one doesn't exist
-                        from open_cite.plugins.opentelemetry import OpenTelemetryPlugin
-                        otel_plugin = OpenTelemetryPlugin(
-                            host=host,
-                            port=port,
-                            mcp_plugin=mcp_plugin
+                    port = getattr(plugin_obj, 'port', 4318)
+                    if local_ip != '127.0.0.1':
+                        success_msg = (
+                            f"Trace receiver ready - Send to http://localhost:{port}/v1/traces "
+                            f"(same machine) or http://{local_ip}:{port}/v1/traces (other machines)"
                         )
-                        client.register_plugin(otel_plugin)
-
-                        with state_lock:
-                            if local_ip != '127.0.0.1':
-                                discovery_status["progress"][-1]["message"] = f"Starting trace receiver (accessible from http://localhost:{port}/v1/traces or http://{local_ip}:{port}/v1/traces)..."
-                            else:
-                                discovery_status["progress"][-1]["message"] = f"Starting trace receiver (http://localhost:{port}/v1/traces)..."
-
-                        otel_plugin.start_receiver()
-                        logger.info(f"Started OpenTelemetry plugin on {host}:{port}")
                     else:
-                        # Reuse existing plugin instance
-                        logger.info(f"Reusing existing OpenTelemetry plugin on {host}:{port}")
-
-                    with state_lock:
-                        discovery_status["progress"][-1]["status"] = "success"
-                        if local_ip != '127.0.0.1':
-                            discovery_status["progress"][-1]["message"] = f"✓ Trace receiver ready - Send to http://localhost:{port}/v1/traces (same machine) or http://{local_ip}:{port}/v1/traces (other machines)"
-                        else:
-                            discovery_status["progress"][-1]["message"] = f"✓ Trace receiver ready at http://localhost:{port}/v1/traces"
-
-                elif plugin_name == 'mcp':
-                    with state_lock:
-                        discovery_status["current_status"] = f"Configuring MCP plugin..."
-                        discovery_status["progress"].append({"step": plugin_name, "message": "Registering MCP plugin", "status": "in_progress"})
-
-                    # Dynamically import MCPPlugin
-                    from open_cite.plugins.mcp import MCPPlugin
-                    mcp_plugin = MCPPlugin()
-                    client.register_plugin(mcp_plugin)
-                    logger.info("Registered MCP plugin")
-
-                    with state_lock:
-                        discovery_status["progress"][-1]["status"] = "success"
-                        discovery_status["progress"][-1]["message"] = "MCP plugin registered successfully"
-
-                elif plugin_name == 'databricks':
-                    with state_lock:
-                        discovery_status["current_status"] = f"Configuring Databricks plugin..."
-                        discovery_status["progress"].append({"step": plugin_name, "message": "Initializing Databricks plugin", "status": "in_progress"})
-
-                    # Get config values (None if not provided, allowing fallback to env vars)
-                    host = config.get('host') or None
-                    token = config.get('token') or None
-                    warehouse_id = config.get('warehouse_id') or None
-
-                    # Debug logging
-                    logger.info(f"[Databricks Config] host={'SET' if host else 'NONE'}, token={'SET' if token else 'NONE'}, warehouse_id={'SET' if warehouse_id else 'NONE'}")
-                    logger.info(f"[Databricks Config] config keys: {list(config.keys())}")
-
-                    with state_lock:
-                        discovery_status["progress"][-1]["message"] = "Connecting to Databricks workspace..."
-
-                    # Dynamically import DatabricksPlugin
-                    # Plugin will validate and fall back to environment variables if needed
-                    from open_cite.plugins.databricks import DatabricksPlugin
-                    databricks_plugin = DatabricksPlugin(
-                        host=host,
-                        token=token,
-                        warehouse_id=warehouse_id
-                    )
-
-                    with state_lock:
-                        discovery_status["progress"][-1]["message"] = "Registering Databricks plugin..."
-
-                    client.register_plugin(databricks_plugin)
-                    logger.info("Registered Databricks plugin")
-
-                    with state_lock:
-                        discovery_status["progress"][-1]["status"] = "success"
-                        if warehouse_id:
-                            discovery_status["progress"][-1]["message"] = f"Databricks plugin configured with warehouse {warehouse_id}"
-                        else:
-                            discovery_status["progress"][-1]["message"] = "Databricks plugin configured (warehouse will be auto-discovered)"
-
-                elif plugin_name == 'google_cloud':
-                    with state_lock:
-                        discovery_status["current_status"] = f"Configuring Google Cloud plugin..."
-                        discovery_status["progress"].append({"step": plugin_name, "message": "Initializing Google Cloud plugin", "status": "in_progress"})
-
-                    project_id = config.get('project_id')
-                    location = config.get('location', 'us-central1')
-
-                    if not project_id:
-                        raise ValueError("Google Cloud requires project_id")
-
-                    with state_lock:
-                        discovery_status["progress"][-1]["message"] = f"Connecting to GCP project {project_id}..."
-
-                    # Dynamically import GoogleCloudPlugin
-                    from open_cite.plugins.google_cloud import GoogleCloudPlugin
-                    gcp_plugin = GoogleCloudPlugin(
-                        project_id=project_id,
-                        location=location
-                    )
-                    client.register_plugin(gcp_plugin)
-                    logger.info("Registered Google Cloud plugin")
-
-                    with state_lock:
-                        discovery_status["progress"][-1]["status"] = "success"
-                        discovery_status["progress"][-1]["message"] = f"Google Cloud plugin configured for project {project_id}"
-
+                        success_msg = f"Trace receiver ready at http://localhost:{port}/v1/traces"
 
                 with state_lock:
+                    discovery_status["progress"][-1]["status"] = "success"
+                    discovery_status["progress"][-1]["message"] = success_msg
                     discovery_status["plugins_enabled"].append(plugin_name)
+                _push_status_update()
 
             except Exception as e:
                 logger.error(f"Failed to configure {plugin_name}: {e}")
@@ -579,6 +434,7 @@ def configure_plugins():
                     discovery_status["progress"].append({"step": plugin_name, "message": f"Failed: {str(e)}", "status": "error"})
                     discovery_status["error"] = f"Failed to configure {plugin_name}: {str(e)}"
                     discovery_status["current_status"] = f"Error configuring {plugin_name}"
+                _push_status_update()
                 return jsonify({"error": f"Failed to configure {plugin_name}: {str(e)}"}), 400
 
         with state_lock:
@@ -586,6 +442,7 @@ def configure_plugins():
             discovery_status["running"] = True
             discovery_status["current_status"] = "Plugins configured - ready to discover assets"
             discovery_status["progress"].append({"step": "complete", "message": f"All plugins configured successfully ({len(discovery_status['plugins_enabled'])} active)", "status": "success"})
+        _push_status_update()
 
         return jsonify({
             "success": True,
@@ -622,6 +479,8 @@ def get_assets():
                     "assets": {
                         "tools": [],
                         "models": [],
+                        "agents": [],
+                        "downstream_systems": [],
                         "mcp_servers": [],
                         "mcp_tools": [],
                         "mcp_resources": [],
@@ -634,10 +493,9 @@ def get_assets():
                     "discovering": True
                 })
 
-        # Check cache (refresh every 2 seconds for real-time OTLP discoveries)
-        from datetime import timedelta
+        # Check cache (WebSocket clients get instant pushes; REST fallback uses cache)
         if asset_cache and asset_cache_time:
-            if datetime.utcnow() - asset_cache_time < timedelta(seconds=2):
+            if datetime.utcnow() - asset_cache_time < timedelta(seconds=30):
                 return jsonify(asset_cache)
 
         # Mark as discovering
@@ -646,6 +504,8 @@ def get_assets():
         assets = {
             "tools": [],
             "models": [],
+            "agents": [],
+            "downstream_systems": [],
             "mcp_servers": [],
             "mcp_tools": [],
             "mcp_resources": [],
@@ -660,9 +520,13 @@ def get_assets():
                 assets["tools"] = client.list_otel_tools()
             if asset_type in ['all', 'models']:
                 assets["models"] = client.list_otel_models()
+            if asset_type in ['all', 'agents']:
+                assets["agents"] = client.list_agents()
+            if asset_type in ['all', 'downstream_systems']:
+                assets["downstream_systems"] = client.list_downstream_systems()
 
-        # MCP assets
-        if "mcp" in discovery_status["plugins_enabled"]:
+        # MCP assets (discovered via OpenTelemetry traces)
+        if "opentelemetry" in discovery_status["plugins_enabled"]:
             if asset_type in ['all', 'mcp_servers']:
                 assets["mcp_servers"] = client.list_mcp_servers()
             if asset_type in ['all', 'mcp_tools']:
@@ -768,9 +632,6 @@ def export_data():
 @app.route('/api/map-tool', methods=['POST'])
 def map_tool():
     """Save a new tool mapping."""
-    if not client:
-        return jsonify({"error": "No client initialized"}), 400
-
     try:
         data = request.json
         plugin_name = data.get('plugin_name')
@@ -781,18 +642,13 @@ def map_tool():
         if not all([plugin_name, attributes, identity]):
             return jsonify({"error": "Missing required fields"}), 400
 
-        # Find the plugin with this name
-        plugin = client.plugins.get(plugin_name)
-        if not plugin:
-            return jsonify({"error": f"Plugin {plugin_name} not found"}), 404
+        # Generate a stable source_id as UUIDv5
+        OPENCITE_NS = uuid.UUID('a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d')
+        source_name = identity.get('source_name', '')
+        identity['source_id'] = str(uuid.uuid5(OPENCITE_NS, f"{plugin_name}:{source_name}"))
 
-        # Check if the plugin has an identifier
-        if not hasattr(plugin, 'identifier'):
-            return jsonify({"error": f"Plugin {plugin_name} does not support mapping"}), 400
+        success = tool_identifier.add_mapping(plugin_name, attributes, identity, match_type=match_type)
 
-        # Save the mapping
-        success = plugin.identifier.add_mapping(plugin_name, attributes, identity, match_type=match_type)
-        
         if success:
             # Clear asset cache to show the updated identification immediately
             global asset_cache, asset_cache_time
@@ -814,15 +670,13 @@ def stop_discovery():
 
     try:
         if client:
-            # Stop OpenTelemetry receiver if running
-            if 'opentelemetry' in discovery_status.get("plugins_enabled", []):
-                otel_plugin = client.plugins.get('opentelemetry')
-                if otel_plugin and hasattr(otel_plugin, 'stop_receiver'):
+            # Stop all running plugins via lifecycle methods
+            for plugin in list(client.plugins.values()):
+                if plugin.status == 'running':
                     try:
-                        otel_plugin.stop_receiver()
+                        plugin.stop()
                     except Exception as e:
-                        logger.warning(f"Error stopping OpenTelemetry receiver: {e}")
-
+                        logger.warning(f"Error stopping plugin {plugin.instance_id}: {e}")
 
             client = None
 
@@ -833,6 +687,7 @@ def stop_discovery():
             discovery_status["current_status"] = "Idle"
             discovery_status["progress"] = []
             discovery_status["error"] = None
+        _push_status_update()
 
         return jsonify({"success": True})
 
@@ -855,7 +710,7 @@ def run_gui(host='127.0.0.1', port=5000, debug=False):
     print(f"  Access the GUI at: http://{host}:{port}")
     print(f"{'='*60}\n")
 
-    app.run(host=host, port=port, debug=debug)
+    socketio.run(app, host=host, port=port, debug=debug, allow_unsafe_werkzeug=True)
 
 
 if __name__ == '__main__':

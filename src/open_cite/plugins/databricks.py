@@ -12,6 +12,33 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
     Databricks discovery plugin.
     """
 
+    plugin_type = "databricks"
+
+    @classmethod
+    def plugin_metadata(cls):
+        return {
+            "name": "Databricks",
+            "description": "Discovers AI/ML tables from MLflow experiments",
+            "required_fields": {
+                "host": {"label": "Host", "default": "https://dbc-xxx.cloud.databricks.com", "required": True},
+                "token": {"label": "Token", "default": "", "required": True, "type": "password"},
+                "warehouse_id": {"label": "Warehouse ID (optional)", "default": "", "required": False},
+            },
+            "env_vars": ["DATABRICKS_HOST", "DATABRICKS_TOKEN", "DATABRICKS_WAREHOUSE_ID"],
+        }
+
+    @classmethod
+    def from_config(cls, config, instance_id=None, display_name=None, dependencies=None):
+        dependencies = dependencies or {}
+        return cls(
+            host=config.get('host'),
+            token=config.get('token'),
+            warehouse_id=config.get('warehouse_id'),
+            http_client=dependencies.get('http_client'),
+            instance_id=instance_id,
+            display_name=display_name,
+        )
+
     def __init__(
         self,
         host: Optional[str] = None,
@@ -51,10 +78,6 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                 logger.warning("Could not inject custom HTTP session into Databricks WorkspaceClient")
         
         self.mlflow_client = mlflow.tracking.MlflowClient()
-
-    @property
-    def plugin_type(self) -> str:
-        return "databricks"
 
     def get_config(self) -> Dict[str, Any]:
         """Return plugin configuration (sensitive values masked)."""

@@ -37,6 +37,8 @@ class AWSSageMakerPlugin(AWSClientMixin, BaseDiscoveryPlugin):
     (invocation counts, latency metrics) through CloudWatch.
     """
 
+    plugin_type = "aws_sagemaker"
+
     def __init__(
         self,
         region: Optional[str] = None,
@@ -45,6 +47,8 @@ class AWSSageMakerPlugin(AWSClientMixin, BaseDiscoveryPlugin):
         secret_access_key: Optional[str] = None,
         session_token: Optional[str] = None,
         role_arn: Optional[str] = None,
+        instance_id: Optional[str] = None,
+        display_name: Optional[str] = None,
     ):
         """
         Initialize the AWS SageMaker plugin.
@@ -56,6 +60,8 @@ class AWSSageMakerPlugin(AWSClientMixin, BaseDiscoveryPlugin):
             secret_access_key: AWS secret access key
             session_token: AWS session token (for temporary credentials)
             role_arn: IAM role ARN to assume
+            instance_id: Unique identifier for this plugin instance
+            display_name: Human-readable name for this instance
         """
         AWSClientMixin.__init__(
             self,
@@ -66,6 +72,11 @@ class AWSSageMakerPlugin(AWSClientMixin, BaseDiscoveryPlugin):
             session_token=session_token,
             role_arn=role_arn,
         )
+        BaseDiscoveryPlugin.__init__(
+            self,
+            instance_id=instance_id,
+            display_name=display_name,
+        )
 
         # Cache for discovered data
         self._endpoints_cache: Dict[str, Dict[str, Any]] = {}
@@ -74,9 +85,47 @@ class AWSSageMakerPlugin(AWSClientMixin, BaseDiscoveryPlugin):
         self._lock = threading.Lock()
 
     @property
-    def name(self) -> str:
-        """Name of the plugin."""
-        return "aws_sagemaker"
+    def supported_asset_types(self):
+        return {"endpoint", "model", "model_package", "training_job"}
+
+    def get_identification_attributes(self) -> List[str]:
+        return ["aws.sagemaker.endpoint_name", "aws.sagemaker.region", "aws.account_id"]
+
+    def get_config(self) -> Dict[str, Any]:
+        """Return plugin configuration (sensitive values masked)."""
+        return {
+            "region": self.region,
+            "profile": self.profile,
+            "access_key_id": "****" if self.access_key_id else None,
+        }
+
+    @classmethod
+    def plugin_metadata(cls) -> Dict[str, Any]:
+        return {
+            "name": "AWS SageMaker",
+            "description": "Discovers endpoints, models, model packages, and training jobs in AWS SageMaker",
+            "required_fields": {
+                "region": {"label": "AWS Region", "default": "us-east-1", "required": False},
+                "profile": {"label": "AWS Profile", "default": "", "required": False},
+                "access_key_id": {"label": "Access Key ID", "default": "", "required": False},
+                "secret_access_key": {"label": "Secret Access Key", "default": "", "required": False, "type": "password"},
+                "role_arn": {"label": "Role ARN (optional)", "default": "", "required": False},
+            },
+            "env_vars": ["AWS_REGION", "AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
+        }
+
+    @classmethod
+    def from_config(cls, config, instance_id=None, display_name=None, dependencies=None):
+        return cls(
+            region=config.get('region'),
+            profile=config.get('profile'),
+            access_key_id=config.get('access_key_id'),
+            secret_access_key=config.get('secret_access_key'),
+            session_token=config.get('session_token'),
+            role_arn=config.get('role_arn'),
+            instance_id=instance_id,
+            display_name=display_name,
+        )
 
     def verify_connection(self) -> Dict[str, Any]:
         """

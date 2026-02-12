@@ -11,8 +11,11 @@ import sys
 # Default base URL - change if your app runs on a different port
 BASE_URL = "http://127.0.0.1:5000"
 
-def test_endpoint(method: str, endpoint: str, data: dict = None, description: str = None, expected_status: int = 200) -> bool:
-    """Test an API endpoint and print results."""
+def check_endpoint(method: str, endpoint: str, data: dict = None, description: str = None, expected_status: int = 200) -> bool:
+    """Test an API endpoint and print results.
+
+    This is a helper for the manual integration test script, not a pytest test.
+    """
     url = f"{BASE_URL}{endpoint}"
     print(f"\n{'='*60}")
     if description:
@@ -93,13 +96,13 @@ def main():
         results.append(False)
     
     # Test 2: Status endpoint
-    results.append(test_endpoint("GET", "/api/status", description="Get discovery status"))
+    results.append(check_endpoint("GET", "/api/status", description="Get discovery status"))
     
     # Test 3: List available plugins
-    results.append(test_endpoint("GET", "/api/plugins", description="List available plugins"))
+    results.append(check_endpoint("GET", "/api/plugins", description="List available plugins"))
     
     # Test 4: Get assets (should return 400 when no plugins configured)
-    results.append(test_endpoint("GET", "/api/assets", description="Get discovered assets (expects 400 when no plugins)", expected_status=400))
+    results.append(check_endpoint("GET", "/api/assets", description="Get discovered assets (expects 400 when no plugins)", expected_status=400))
     
     # Test 5: Configure OpenTelemetry plugin (no config needed)
     print("\n" + "="*60)
@@ -114,24 +117,24 @@ def main():
             }
         ]
     }
-    results.append(test_endpoint("POST", "/api/plugins/configure", data=otel_config, 
+    results.append(check_endpoint("POST", "/api/plugins/configure", data=otel_config, 
                                  description="Configure OpenTelemetry plugin"))
     
     # Test 6: Check status after configuration
-    results.append(test_endpoint("GET", "/api/status", description="Check status after plugin configuration"))
+    results.append(check_endpoint("GET", "/api/status", description="Check status after plugin configuration"))
     
     # Test 7: Get assets again (should show OpenTelemetry endpoint info)
-    results.append(test_endpoint("GET", "/api/assets", description="Get assets after plugin configuration"))
+    results.append(check_endpoint("GET", "/api/assets", description="Get assets after plugin configuration"))
     
     # Test 8: Export data
     export_config = {
         "plugins": ["opentelemetry"]
     }
-    results.append(test_endpoint("POST", "/api/export", data=export_config, 
+    results.append(check_endpoint("POST", "/api/export", data=export_config, 
                                 description="Export discovered data to JSON"))
     
     # Test 9: Stop discovery
-    results.append(test_endpoint("POST", "/api/stop", description="Stop discovery and cleanup"))
+    results.append(check_endpoint("POST", "/api/stop", description="Stop discovery and cleanup"))
     
     # Summary
     print("\n" + "="*60)

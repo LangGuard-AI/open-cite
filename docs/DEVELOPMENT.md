@@ -54,16 +54,21 @@ src/open_cite/gui/
 
 ### 1. Add a New Plugin
 
-**Step 1: Update plugin list in `app.py`**
+Plugins are auto-discovered via `plugins/registry.py`. Create a single file in `src/open_cite/plugins/` and the GUI, API, and client pick it up automatically — no other files need editing.
+
+**Step 1: Create `src/open_cite/plugins/your_plugin.py`**
 
 ```python
-@app.route('/api/plugins', methods=['GET'])
-def list_available_plugins():
-    plugins = {
-        # ... existing plugins ...
-        "your_plugin": {
+from open_cite.core import BaseDiscoveryPlugin
+
+class YourPlugin(BaseDiscoveryPlugin):
+    plugin_type = "your_plugin"
+
+    @classmethod
+    def plugin_metadata(cls):
+        return {
             "name": "Your Plugin",
-            "description": "What your plugin does",
+            "description": "What your plugin discovers",
             "required_fields": {
                 "api_key": {
                     "label": "API Key",
@@ -72,66 +77,41 @@ def list_available_plugins():
                     "type": "password"
                 }
             },
-            "env_vars": ["YOUR_PLUGIN_API_KEY"]
+            "env_vars": ["YOUR_PLUGIN_API_KEY"],
         }
-    }
-    return jsonify(plugins)
+
+    @classmethod
+    def from_config(cls, config, instance_id=None, display_name=None, dependencies=None):
+        return cls(
+            api_key=config.get("api_key"),
+            instance_id=instance_id,
+            display_name=display_name,
+        )
+
+    def __init__(self, api_key=None, instance_id=None, display_name=None):
+        super().__init__(instance_id=instance_id, display_name=display_name)
+        self.api_key = api_key
+
+    @property
+    def supported_asset_types(self):
+        return {"your_asset"}
+
+    @property
+    def supports_multiple_instances(self):
+        return True
+
+    def verify_connection(self):
+        return {"success": True}
+
+    def list_assets(self, asset_type=None):
+        # Return discovered assets
+        return []
+
+    def get_identification_attributes(self):
+        return []
 ```
 
-**Step 2: Add configuration handling**
-
-```python
-@app.route('/api/plugins/configure', methods=['POST'])
-def configure_plugins():
-    # ... existing code ...
-
-    elif plugin_name == 'your_plugin':
-        api_key = config.get('api_key')
-        if not api_key:
-            raise ValueError("Your plugin requires api_key")
-
-        client.register_your_plugin(api_key=api_key)
-        logger.info("Registered Your Plugin")
-```
-
-**Step 3: Add asset listing**
-
-```python
-@app.route('/api/assets', methods=['GET'])
-def get_assets():
-    # ... existing code ...
-
-    if "your_plugin" in discovery_status["plugins_enabled"]:
-        if asset_type in ['all', 'your_assets']:
-            try:
-                assets["your_assets"] = client.list_your_assets()
-            except Exception as e:
-                logger.warning(f"Could not list your assets: {e}")
-```
-
-**Step 4: Add UI rendering in `index.html`**
-
-```javascript
-// Add tab
-<button class="tab" onclick="switchTab('your_plugin')">Your Plugin</button>
-
-// Add rendering function
-function renderYourPlugin() {
-    if (!assets.your_assets || assets.your_assets.length === 0) return '';
-
-    let html = '<div class="asset-grid">';
-    assets.your_assets.forEach(asset => {
-        html += `
-            <div class="asset-card">
-                <div class="asset-title">🔌 ${asset.name}</div>
-                <div class="asset-meta">Type: ${asset.type}</div>
-            </div>
-        `;
-    });
-    html += '</div>';
-    return html;
-}
-```
+That's it. The registry auto-discovers the class, the GUI shows it as a configurable plugin, and the API serves its assets.
 
 ### 3. Debug Issues
 
@@ -251,9 +231,9 @@ opencite gui --debug  # ← Must have --debug flag
 - Verify credentials are correct
 - Test plugin manually first:
   ```python
-  from open_cite.client import OpenCiteClient
-  client = OpenCiteClient()
-  client.register_databricks_plugin(host="...", token="...")
+  from open_cite.plugins.registry import create_plugin_instance
+  plugin = create_plugin_instance("databricks", {"host": "...", "token": "..."})
+  print(plugin.verify_connection())
   ```
 
 ## Development Workflow Example
@@ -302,31 +282,11 @@ opencite gui --debug  # ← Must have --debug flag
 
 ## Performance Tips
 
-### Reduce Auto-Refresh Frequency
-In `index.html`, change refresh interval:
-```javascript
-// Default: 2 seconds
-refreshInterval = setInterval(refreshAssets, 2000);
-
-// For development: 5 seconds (less network traffic)
-refreshInterval = setInterval(refreshAssets, 5000);
-```
-
-### Disable Auto-Refresh
-Comment out the auto-refresh:
-```javascript
-// refreshInterval = setInterval(refreshAssets, 2000);
-
-// Add manual refresh button instead
-<button onclick="refreshAssets()">Refresh</button>
-```
+### Real-Time Updates
+The GUI uses WebSocket (Flask-SocketIO) for push-based updates. When traces arrive, assets appear immediately. If WebSocket is unavailable, the browser falls back to 3-second polling automatically.
 
 ### Limit Plugin Output
-For development, start with just one plugin:
-```python
-# In app.py, limit asset count
-assets["tools"] = client.list_otel_tools()[:10]  # Only first 10
-```
+For development, start with just one plugin to reduce noise.
 
 ## Environment Variables
 

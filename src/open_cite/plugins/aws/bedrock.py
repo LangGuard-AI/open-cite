@@ -36,6 +36,8 @@ class AWSBedrockPlugin(AWSClientMixin, BaseDiscoveryPlugin):
     (what's actually being used) through CloudTrail and CloudWatch.
     """
 
+    plugin_type = "aws_bedrock"
+
     def __init__(
         self,
         region: Optional[str] = None,
@@ -45,6 +47,8 @@ class AWSBedrockPlugin(AWSClientMixin, BaseDiscoveryPlugin):
         session_token: Optional[str] = None,
         role_arn: Optional[str] = None,
         cloudwatch_log_group: Optional[str] = None,
+        instance_id: Optional[str] = None,
+        display_name: Optional[str] = None,
     ):
         """
         Initialize the AWS Bedrock plugin.
@@ -57,6 +61,8 @@ class AWSBedrockPlugin(AWSClientMixin, BaseDiscoveryPlugin):
             session_token: AWS session token (for temporary credentials)
             role_arn: IAM role ARN to assume
             cloudwatch_log_group: CloudWatch log group for Bedrock invocation logs
+            instance_id: Unique identifier for this plugin instance
+            display_name: Human-readable name for this instance
         """
         AWSClientMixin.__init__(
             self,
@@ -66,6 +72,11 @@ class AWSBedrockPlugin(AWSClientMixin, BaseDiscoveryPlugin):
             secret_access_key=secret_access_key,
             session_token=session_token,
             role_arn=role_arn,
+        )
+        BaseDiscoveryPlugin.__init__(
+            self,
+            instance_id=instance_id,
+            display_name=display_name,
         )
 
         self.cloudwatch_log_group = cloudwatch_log_group
@@ -77,9 +88,49 @@ class AWSBedrockPlugin(AWSClientMixin, BaseDiscoveryPlugin):
         self._lock = threading.Lock()
 
     @property
-    def name(self) -> str:
-        """Name of the plugin."""
-        return "aws_bedrock"
+    def supported_asset_types(self):
+        return {"model", "custom_model", "provisioned_throughput", "invocation"}
+
+    def get_identification_attributes(self) -> List[str]:
+        return ["aws.bedrock.model_id", "aws.bedrock.region", "aws.account_id"]
+
+    def get_config(self) -> Dict[str, Any]:
+        """Return plugin configuration (sensitive values masked)."""
+        return {
+            "region": self.region,
+            "profile": self.profile,
+            "access_key_id": "****" if self.access_key_id else None,
+            "cloudwatch_log_group": self.cloudwatch_log_group,
+        }
+
+    @classmethod
+    def plugin_metadata(cls) -> Dict[str, Any]:
+        return {
+            "name": "AWS Bedrock",
+            "description": "Discovers foundation models, custom models, and invocations in AWS Bedrock",
+            "required_fields": {
+                "region": {"label": "AWS Region", "default": "us-east-1", "required": False},
+                "profile": {"label": "AWS Profile", "default": "", "required": False},
+                "access_key_id": {"label": "Access Key ID", "default": "", "required": False},
+                "secret_access_key": {"label": "Secret Access Key", "default": "", "required": False, "type": "password"},
+                "role_arn": {"label": "Role ARN (optional)", "default": "", "required": False},
+            },
+            "env_vars": ["AWS_REGION", "AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
+        }
+
+    @classmethod
+    def from_config(cls, config, instance_id=None, display_name=None, dependencies=None):
+        return cls(
+            region=config.get('region'),
+            profile=config.get('profile'),
+            access_key_id=config.get('access_key_id'),
+            secret_access_key=config.get('secret_access_key'),
+            session_token=config.get('session_token'),
+            role_arn=config.get('role_arn'),
+            cloudwatch_log_group=config.get('cloudwatch_log_group'),
+            instance_id=instance_id,
+            display_name=display_name,
+        )
 
     def verify_connection(self) -> Dict[str, Any]:
         """

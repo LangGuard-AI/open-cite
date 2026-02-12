@@ -4,13 +4,8 @@ from collections import defaultdict
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Type, Set
 from .core import BaseDiscoveryPlugin
-from .plugins.databricks import DatabricksPlugin
-from .plugins.opentelemetry import OpenTelemetryPlugin
-from .plugins.mcp import MCPPlugin
-from .plugins.google_cloud import GoogleCloudPlugin
-from .plugins.zscaler import ZscalerPlugin
+from .plugins.registry import create_plugin_instance
 from .http_client import get_http_client, OpenCiteHttpClient
-from .plugins.aws import AWSBedrockPlugin, AWSSageMakerPlugin
 
 from .schema import (
     OpenCiteExporter,
@@ -39,43 +34,11 @@ class OpenCiteClient:
     Client for Open Cite. Manages discovery plugins.
     """
 
-    def __init__(
-        self,
-        enable_otel: bool = False,
-        otel_host: str = "localhost",
-        otel_port: int = 4318,
-        enable_mcp: bool = True,
-        enable_google_cloud: bool = False,
-        gcp_project_id: Optional[str] = None,
-        gcp_location: str = "us-central1",
-        gcp_credentials: Optional[Any] = None,
-        enable_aws_bedrock: bool = False,
-        enable_aws_sagemaker: bool = False,
-        aws_region: Optional[str] = None,
-        aws_profile: Optional[str] = None,
-        aws_access_key_id: Optional[str] = None,
-        aws_secret_access_key: Optional[str] = None,
-        aws_role_arn: Optional[str] = None,
-    ):
+    def __init__(self):
         """
         Initialize the OpenCite client.
 
-        Args:
-            enable_otel: If True, register and start the OpenTelemetry plugin
-            otel_host: Host for the OTLP receiver (default: localhost)
-            otel_port: Port for the OTLP receiver (default: 4318)
-            enable_mcp: If True, register the MCP discovery plugin (default: True)
-            enable_google_cloud: If True, register the Google Cloud plugin
-            gcp_project_id: Google Cloud project ID (if None, uses default)
-            gcp_location: Google Cloud location (default: us-central1)
-            gcp_credentials: Google Cloud credentials (if None, uses default)
-            enable_aws_bedrock: If True, register the AWS Bedrock plugin
-            enable_aws_sagemaker: If True, register the AWS SageMaker plugin
-            aws_region: AWS region (default: from env or us-east-1)
-            aws_profile: AWS profile name from ~/.aws/credentials
-            aws_access_key_id: AWS access key ID (if None, uses env/default)
-            aws_secret_access_key: AWS secret access key (if None, uses env/default)
-            aws_role_arn: Optional IAM role ARN to assume
+        Plugins are registered explicitly via register_plugin() or through the GUI.
         """
         # Plugin registry: instance_id -> plugin instance
         self.plugins: Dict[str, BaseDiscoveryPlugin] = {}
@@ -84,101 +47,6 @@ class OpenCiteClient:
 
         # Initialize central HTTP client
         self.http_client = get_http_client()
-
-        # Auto-register default plugins
-        # In a real plugin system, this might use entry points
-        try:
-            # Pass central http_client
-            self.register_plugin(DatabricksPlugin(http_client=self.http_client))
-        except Exception as e:
-            logger.warning(f"Failed to auto-register Databricks plugin: {e}")
-
-        # Register MCP plugin first (if enabled)
-        mcp_plugin = None
-        if enable_mcp:
-            try:
-                mcp_plugin = MCPPlugin()
-                self.register_plugin(mcp_plugin)
-                logger.info(f"MCP plugin registered (trace-based discovery)")
-            except Exception as e:
-                logger.warning(f"Failed to auto-register MCP plugin: {e}")
-
-        # Register OpenTelemetry plugin with MCP integration
-        if enable_otel:
-            try:
-                otel_plugin = OpenTelemetryPlugin(
-                    host=otel_host,
-                    port=otel_port,
-                    mcp_plugin=mcp_plugin  # Pass MCP plugin for integration
-                )
-                self.register_plugin(otel_plugin)
-                otel_plugin.start_receiver()
-                logger.info(f"OpenTelemetry plugin started on {otel_host}:{otel_port}")
-            except Exception as e:
-                logger.warning(f"Failed to auto-register OpenTelemetry plugin: {e}")
-
-        # Register Google Cloud plugin (if enabled)
-        if enable_google_cloud:
-            try:
-                gcp_plugin = GoogleCloudPlugin(
-                    project_id=gcp_project_id,
-                    location=gcp_location,
-                    credentials=gcp_credentials,
-                )
-                self.register_plugin(gcp_plugin)
-                logger.info(f"Google Cloud plugin registered for project {gcp_project_id or 'default'}")
-            except Exception as e:
-                logger.warning(f"Failed to auto-register Google Cloud plugin: {e}")
-
-        # Register Zscaler plugin (default auto-register if env vars present)
-        try:
-            # Pass http_client dependency injection
-            zscaler_plugin = ZscalerPlugin(http_client=self.http_client)
-            self.register_plugin(zscaler_plugin)
-            logger.debug("Zscaler plugin registered")
-            
-            # Auto-start NSS receiver if port is configured
-            import os
-            nss_port = os.getenv("ZSCALER_NSS_PORT")
-            if nss_port:
-                try:
-                    port_int = int(nss_port)
-                    zscaler_plugin.start_nss_receiver(port=port_int)
-                except ValueError:
-                    logger.warning(f"Invalid ZSCALER_NSS_PORT: {nss_port}")
-                    
-        except Exception as e:
-            logger.debug(f"Zscaler plugin skipped: {e}")
-
-        # Register AWS Bedrock plugin (if enabled)
-        if enable_aws_bedrock:
-            try:
-                bedrock_plugin = AWSBedrockPlugin(
-                    region=aws_region,
-                    profile=aws_profile,
-                    access_key_id=aws_access_key_id,
-                    secret_access_key=aws_secret_access_key,
-                    role_arn=aws_role_arn,
-                )
-                self.register_plugin(bedrock_plugin)
-                logger.info(f"AWS Bedrock plugin registered for region {bedrock_plugin.region}")
-            except Exception as e:
-                logger.warning(f"Failed to auto-register AWS Bedrock plugin: {e}")
-
-        # Register AWS SageMaker plugin (if enabled)
-        if enable_aws_sagemaker:
-            try:
-                sagemaker_plugin = AWSSageMakerPlugin(
-                    region=aws_region,
-                    profile=aws_profile,
-                    access_key_id=aws_access_key_id,
-                    secret_access_key=aws_secret_access_key,
-                    role_arn=aws_role_arn,
-                )
-                self.register_plugin(sagemaker_plugin)
-                logger.info(f"AWS SageMaker plugin registered for region {sagemaker_plugin.region}")
-            except Exception as e:
-                logger.warning(f"Failed to auto-register AWS SageMaker plugin: {e}")
 
     def register_plugin(self, plugin: BaseDiscoveryPlugin):
         """
@@ -555,7 +423,7 @@ class OpenCiteClient:
     # =========================================================================
 
     @property
-    def _opentelemetry(self) -> OpenTelemetryPlugin:
+    def _opentelemetry(self) -> 'OpenTelemetryPlugin':
         """Get the OpenTelemetry plugin."""
         return self.get_plugin("opentelemetry")  # type: ignore
 
@@ -568,7 +436,7 @@ class OpenCiteClient:
         self._opentelemetry.stop_receiver()
 
     @property
-    def _google_cloud(self) -> GoogleCloudPlugin:
+    def _google_cloud(self) -> 'GoogleCloudPlugin':
         """Get the Google Cloud plugin."""
         return self.get_plugin("google_cloud")  # type: ignore
 
@@ -608,14 +476,9 @@ class OpenCiteClient:
     # =========================================================================
 
     @property
-    def _databricks(self) -> DatabricksPlugin:
+    def _databricks(self) -> 'DatabricksPlugin':
         """Get the Databricks plugin."""
         return self.get_plugin("databricks")  # type: ignore
-
-    @property
-    def _mcp(self) -> MCPPlugin:
-        """Get the MCP plugin."""
-        return self.get_plugin("mcp")  # type: ignore
 
     def verify_connection(self) -> Dict[str, Any]:
         """
@@ -634,15 +497,6 @@ class OpenCiteClient:
         """
         _deprecated("verify_otel_connection() is deprecated. Use verify_all_connections()['opentelemetry'] instead.")
         return self._opentelemetry.verify_connection()
-
-    def verify_mcp_discovery(self) -> Dict[str, Any]:
-        """
-        Verify MCP discovery is working.
-
-        Deprecated: Use verify_all_connections()['mcp'] instead.
-        """
-        _deprecated("verify_mcp_discovery() is deprecated. Use verify_all_connections()['mcp'] instead.")
-        return self._mcp.verify_connection()
 
     def verify_gcp_connection(self) -> Dict[str, Any]:
         """
@@ -719,7 +573,7 @@ class OpenCiteClient:
 
     # Convenience methods for the AWS Bedrock plugin
     @property
-    def _aws_bedrock(self) -> AWSBedrockPlugin:
+    def _aws_bedrock(self) -> 'AWSBedrockPlugin':
         """Get the AWS Bedrock plugin."""
         return self.get_plugin("aws_bedrock")  # type: ignore
 
@@ -803,7 +657,7 @@ class OpenCiteClient:
 
     # Convenience methods for the AWS SageMaker plugin
     @property
-    def _aws_sagemaker(self) -> AWSSageMakerPlugin:
+    def _aws_sagemaker(self) -> 'AWSSageMakerPlugin':
         """Get the AWS SageMaker plugin."""
         return self.get_plugin("aws_sagemaker")  # type: ignore
 
@@ -964,17 +818,11 @@ class OpenCiteClient:
                 "version": "1.0.0",
             })
 
-        # Gather MCP data (aggregate from all plugins that support MCP)
+        # Gather MCP data (aggregate from all plugins that support MCP asset types)
         if include_mcp:
             mcp_servers = self._export_mcp_servers()
             mcp_tools = self._export_mcp_tools()
             mcp_resources = self._export_mcp_resources()
-
-            if "mcp" in self.plugins:
-                plugins_info.append({
-                    "name": "mcp",
-                    "version": "1.0.0",
-                })
 
         # Gather Databricks data (if requested)
         if include_databricks and "databricks" in self.plugins:
