@@ -4,7 +4,6 @@ Base AWS plugin functionality for OpenCITE.
 Provides shared authentication and client management for AWS plugins.
 """
 
-import os
 import logging
 from typing import Any, Optional
 
@@ -18,9 +17,7 @@ class AWSClientMixin:
     Supports multiple authentication methods:
     1. Explicit credentials (access_key_id, secret_access_key)
     2. AWS profile name
-    3. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
-    4. IAM role (when running on AWS infrastructure)
-    5. AWS SSO / credential process
+    3. IAM role (when running on AWS infrastructure)
     """
 
     def __init__(
@@ -36,18 +33,18 @@ class AWSClientMixin:
         Initialize AWS client mixin.
 
         Args:
-            region: AWS region (default: from env or us-east-1)
+            region: AWS region (default: us-east-1)
             profile: AWS profile name from ~/.aws/credentials
             access_key_id: Explicit AWS access key ID
             secret_access_key: Explicit AWS secret access key
             session_token: Optional session token for temporary credentials
             role_arn: Optional IAM role ARN to assume
         """
-        self.region = region or os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "us-east-1"))
-        self.profile = profile or os.getenv("AWS_PROFILE")
-        self.access_key_id = access_key_id or os.getenv("AWS_ACCESS_KEY_ID")
-        self.secret_access_key = secret_access_key or os.getenv("AWS_SECRET_ACCESS_KEY")
-        self.session_token = session_token or os.getenv("AWS_SESSION_TOKEN")
+        self.region = region or "us-east-1"
+        self.profile = profile
+        self.access_key_id = access_key_id
+        self.secret_access_key = secret_access_key
+        self.session_token = session_token
         self.role_arn = role_arn
 
         self._session = None

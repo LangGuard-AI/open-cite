@@ -115,7 +115,6 @@ class AWSBedrockPlugin(AWSClientMixin, BaseDiscoveryPlugin):
                 "secret_access_key": {"label": "Secret Access Key", "default": "", "required": False, "type": "password"},
                 "role_arn": {"label": "Role ARN (optional)", "default": "", "required": False},
             },
-            "env_vars": ["AWS_REGION", "AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
         }
 
     @classmethod

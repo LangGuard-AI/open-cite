@@ -22,6 +22,20 @@ from open_cite.plugins.registry import get_all_plugin_metadata, create_plugin_in
 
 logger = logging.getLogger(__name__)
 
+# Downstream types that are really data assets, not generic downstream systems
+_DATA_ASSET_TYPES = {"database", "dataset", "document_store"}
+
+
+def _reclassify_downstream(assets):
+    """Move data-oriented downstream items into data_assets."""
+    remaining = []
+    for item in assets.get("downstream_systems", []):
+        if item.get("type") in _DATA_ASSET_TYPES:
+            assets["data_assets"].append(item)
+        else:
+            remaining.append(item)
+    assets["downstream_systems"] = remaining
+
 
 def get_local_ip():
     """
@@ -51,6 +65,7 @@ def get_local_ip():
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.urandom(24)
+app.json.sort_keys = False  # Preserve dict insertion order (e.g. plugin config fields)
 socketio = SocketIO(app, async_mode='threading', cors_allowed_origins='*')
 
 # Enable DEBUG logging for this session
@@ -110,15 +125,14 @@ def _push_assets_update(source_plugin=None):
             "gcp_endpoints": []
         }
 
-        # Collect OTel-based assets (fast, in-memory)
-        if "opentelemetry" in discovery_status.get("plugins_enabled", []):
-            assets["tools"] = client.list_otel_tools()
-            assets["models"] = client.list_otel_models()
-            assets["agents"] = client.list_agents()
-            assets["downstream_systems"] = client.list_downstream_systems()
-            assets["mcp_servers"] = client.list_mcp_servers()
-            assets["mcp_tools"] = client.list_mcp_tools()
-            assets["mcp_resources"] = client.list_mcp_resources()
+        # Collect assets from ALL plugins (fast, in-memory aggregation)
+        assets["tools"] = client.list_tools()
+        assets["models"] = client.list_models()
+        assets["agents"] = client.list_agents()
+        assets["downstream_systems"] = client.list_downstream_systems()
+        assets["mcp_servers"] = client.list_mcp_servers()
+        assets["mcp_tools"] = client.list_mcp_tools()
+        assets["mcp_resources"] = client.list_mcp_resources()
 
         # Use cached values for expensive Databricks/GCP calls
         if asset_cache:
@@ -128,6 +142,7 @@ def _push_assets_update(source_plugin=None):
                 assets["gcp_models"] = asset_cache.get("assets", {}).get("gcp_models", [])
                 assets["gcp_endpoints"] = asset_cache.get("assets", {}).get("gcp_endpoints", [])
 
+        _reclassify_downstream(assets)
         totals = {k: len(v) for k, v in assets.items()}
 
         result = {
@@ -345,9 +360,25 @@ def _create_plugin_instance(plugin_type_name: str, instance_id: str, display_nam
 
 
 def _start_plugin_instance(plugin):
-    """Start a plugin instance via its lifecycle method."""
+    """Start a plugin instance in a background thread.
+
+    Sets the data-changed callback and launches plugin.start() off the
+    request thread so the HTTP response returns immediately.  Status
+    updates are pushed over WebSocket when the background work finishes
+    (or fails).
+    """
     plugin.on_data_changed = lambda p: _push_assets_update(p)
-    plugin.start()
+
+    def _run():
+        try:
+            plugin.start()
+        except Exception as e:
+            logger.error(f"Background start failed for {plugin.instance_id}: {e}")
+            plugin.status = "error"
+        _push_status_update()
+        _push_assets_update(plugin)
+
+    Thread(target=_run, daemon=True).start()
 
 
 def _stop_plugin_instance(plugin):
@@ -404,8 +435,8 @@ def configure_plugins():
                     )
                     client.register_plugin(plugin_instance)
 
-                    # Start the plugin
-                    plugin_instance.start()
+                    # Start the plugin (background thread for heavy plugins)
+                    _start_plugin_instance(plugin_instance)
                     logger.info(f"Configured and started {plugin_name} plugin")
 
                 # Build success message with plugin-specific details
@@ -514,25 +545,21 @@ def get_assets():
             "gcp_endpoints": []
         }
 
-        # OpenTelemetry assets
-        if "opentelemetry" in discovery_status["plugins_enabled"]:
-            if asset_type in ['all', 'tools']:
-                assets["tools"] = client.list_otel_tools()
-            if asset_type in ['all', 'models']:
-                assets["models"] = client.list_otel_models()
-            if asset_type in ['all', 'agents']:
-                assets["agents"] = client.list_agents()
-            if asset_type in ['all', 'downstream_systems']:
-                assets["downstream_systems"] = client.list_downstream_systems()
-
-        # MCP assets (discovered via OpenTelemetry traces)
-        if "opentelemetry" in discovery_status["plugins_enabled"]:
-            if asset_type in ['all', 'mcp_servers']:
-                assets["mcp_servers"] = client.list_mcp_servers()
-            if asset_type in ['all', 'mcp_tools']:
-                assets["mcp_tools"] = client.list_mcp_tools()
-            if asset_type in ['all', 'mcp_resources']:
-                assets["mcp_resources"] = client.list_mcp_resources()
+        # Collect assets from all plugins (aggregated)
+        if asset_type in ['all', 'tools']:
+            assets["tools"] = client.list_tools()
+        if asset_type in ['all', 'models']:
+            assets["models"] = client.list_models()
+        if asset_type in ['all', 'agents']:
+            assets["agents"] = client.list_agents()
+        if asset_type in ['all', 'downstream_systems']:
+            assets["downstream_systems"] = client.list_downstream_systems()
+        if asset_type in ['all', 'mcp_servers']:
+            assets["mcp_servers"] = client.list_mcp_servers()
+        if asset_type in ['all', 'mcp_tools']:
+            assets["mcp_tools"] = client.list_mcp_tools()
+        if asset_type in ['all', 'mcp_resources']:
+            assets["mcp_resources"] = client.list_mcp_resources()
 
         # Databricks data assets - use export to get what will actually be exported
         if "databricks" in discovery_status["plugins_enabled"]:
@@ -580,6 +607,9 @@ def get_assets():
                 except Exception as e:
                     logger.warning(f"Could not list GCP endpoints: {e}")
 
+
+        # Move data-oriented downstream items into data_assets
+        _reclassify_downstream(assets)
 
         # Count totals
         totals = {k: len(v) for k, v in assets.items()}
@@ -661,6 +691,194 @@ def map_tool():
     except Exception as e:
         logger.error(f"Failed to map tool: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/instances/<instance_id>/webhooks', methods=['GET'])
+def list_webhooks(instance_id: str):
+    """List subscribed webhook URLs for a plugin instance."""
+    if not client or instance_id not in client.plugins:
+        return jsonify({"error": f"Instance '{instance_id}' not found"}), 404
+    plugin = client.plugins[instance_id]
+    return jsonify({"webhooks": plugin.list_webhooks()})
+
+
+@app.route('/api/instances/<instance_id>/webhooks', methods=['POST'])
+def subscribe_webhook(instance_id: str):
+    """Subscribe a webhook URL to receive OTLP trace payloads."""
+    if not client or instance_id not in client.plugins:
+        return jsonify({"error": f"Instance '{instance_id}' not found"}), 404
+
+    data = request.json or {}
+    url = data.get("url", "").strip()
+    if not url or not url.startswith(("http://", "https://")):
+        return jsonify({"error": "A valid http:// or https:// URL is required"}), 400
+
+    plugin = client.plugins[instance_id]
+    added = plugin.subscribe_webhook(url)
+    return jsonify({"success": True, "added": added, "webhooks": plugin.list_webhooks()})
+
+
+@app.route('/api/instances/<instance_id>/webhooks', methods=['DELETE'])
+def unsubscribe_webhook(instance_id: str):
+    """Unsubscribe a webhook URL."""
+    if not client or instance_id not in client.plugins:
+        return jsonify({"error": f"Instance '{instance_id}' not found"}), 404
+
+    data = request.json or {}
+    url = data.get("url", "").strip()
+    if not url:
+        return jsonify({"error": "url is required"}), 400
+
+    plugin = client.plugins[instance_id]
+    removed = plugin.unsubscribe_webhook(url)
+    return jsonify({"success": True, "removed": removed, "webhooks": plugin.list_webhooks()})
+
+
+@app.route('/api/lineage-graph')
+def lineage_graph():
+    """Generate a pyvis lineage graph as embeddable HTML."""
+    from pyvis.network import Network
+
+    if not client:
+        return "<html><body><p>No data yet</p></body></html>", 200, {'Content-Type': 'text/html'}
+
+    net = Network(
+        height="350",
+        width="100%",
+        directed=True,
+        bgcolor="#ffffff",
+        font_color="#333333",
+    )
+
+    net.set_options("""{
+        "layout": {
+            "hierarchical": {
+                "enabled": true,
+                "direction": "LR",
+                "sortMethod": "directed",
+                "levelSeparation": 250,
+                "nodeSpacing": 120
+            }
+        },
+        "physics": {
+            "hierarchicalRepulsion": {
+                "nodeDistance": 150
+            }
+        },
+        "edges": {
+            "arrows": { "to": { "enabled": true } },
+            "smooth": { "type": "cubicBezier" }
+        },
+        "interaction": {
+            "hover": true,
+            "tooltipDelay": 100
+        }
+    }""")
+
+    # Collect current assets
+    agents = client.list_agents()
+    tools = client.list_tools()
+    models = client.list_models()
+    downstream = client.list_downstream_systems()
+
+    data_assets_list = []
+    if asset_cache:
+        data_assets_list = asset_cache.get("assets", {}).get("data_assets", [])
+
+    temp = {"downstream_systems": downstream, "data_assets": data_assets_list}
+    _reclassify_downstream(temp)
+    downstream = temp["downstream_systems"]
+    data_assets_list = temp["data_assets"]
+
+    added = set()
+
+    # type -> (color, shape, level)
+    STYLES = {
+        "agent":      ("#8b5cf6", "diamond",  0),
+        "tool":       ("#3b82f6", "dot",       1),
+        "model":      ("#10b981", "star",      2),
+        "data_asset": ("#f59e0b", "database",  3),
+        "downstream": ("#ef4444", "triangle",  3),
+    }
+
+    def add_node(nid, label, ntype, title=None):
+        if nid in added:
+            return
+        added.add(nid)
+        color, shape, level = STYLES.get(ntype, ("#6b7280", "dot", 1))
+        net.add_node(nid, label=label, color=color, shape=shape, level=level,
+                     title=title or f"{ntype}: {label}", size=20)
+
+    # Agent nodes + edges
+    for a in agents:
+        nid = f"agent:{a['name']}"
+        add_node(nid, a["name"], "agent", f"Agent: {a['name']}")
+        for t in (a.get("tools_used") or []):
+            tid = f"tool:{t}"
+            add_node(tid, t, "tool")
+            net.add_edge(nid, tid)
+        for m in (a.get("models_used") or []):
+            mid = f"model:{m}"
+            add_node(mid, m, "model")
+            net.add_edge(nid, mid)
+
+    # Tool nodes + model edges
+    for t in tools:
+        tid = f"tool:{t['name']}"
+        add_node(tid, t["name"], "tool")
+        for m in (t.get("models") or []):
+            mid = f"model:{m}"
+            add_node(mid, m, "model")
+            net.add_edge(tid, mid)
+
+    # Model nodes (ensure present even if no edges)
+    for m in models:
+        mid = f"model:{m['name']}"
+        add_node(mid, m["name"], "model", f"Model: {m['name']}\nProvider: {m.get('provider','')}")
+
+    # Data assets + edges from tools_connecting
+    for d in data_assets_list:
+        did = f"data:{d['name']}"
+        add_node(did, d["name"], "data_asset", f"Data: {d['name']}\nType: {d.get('type','')}")
+        for t in (d.get("tools_connecting") or []):
+            tid = f"tool:{t}"
+            add_node(tid, t, "tool")
+            net.add_edge(tid, did)
+
+    # Downstream + edges from tools_connecting
+    for d in downstream:
+        did = f"ds:{d['name']}"
+        add_node(did, d["name"], "downstream", f"Downstream: {d['name']}\nType: {d.get('type','')}")
+        for t in (d.get("tools_connecting") or []):
+            tid = f"tool:{t}"
+            add_node(tid, t, "tool")
+            net.add_edge(tid, did)
+
+    if not added:
+        return ("<html><body style='display:flex;align-items:center;justify-content:center;"
+                "height:100%;color:#6b7280;font-family:sans-serif'>"
+                "<p>No lineage data yet</p></body></html>"), 200, {'Content-Type': 'text/html'}
+
+    html = net.generate_html()
+
+    # Inject postMessage listener so parent page can focus/select nodes
+    focus_script = """<script>
+window.addEventListener('message', function(e) {
+    if (e.data && e.data.type === 'focusNode' && typeof network !== 'undefined') {
+        var nid = e.data.nodeId;
+        try {
+            var ids = network.body.data.nodes.getIds();
+            if (ids.indexOf(nid) !== -1) {
+                network.focus(nid, {scale: 1.5, animation: {duration: 800, easingFunction: 'easeInOutQuad'}});
+                network.selectNodes([nid]);
+            }
+        } catch(err) {}
+    }
+});
+</script>"""
+    html = html.replace('</body>', focus_script + '</body>')
+
+    return html, 200, {'Content-Type': 'text/html'}
 
 
 @app.route('/api/stop', methods=['POST'])

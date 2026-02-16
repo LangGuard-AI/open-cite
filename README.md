@@ -1,6 +1,6 @@
 # OpenCITE
 
-OpenCITE (**C**ataloging **I**ntelligent **T**ools in the **E**nterprise) is a Python library and application designed to facilitate the discovery and management of AI/ML Assets (including tools, models, and infrastructure) across multiple cloud platforms and protocols.
+OpenCITE (**C**ataloging **I**ntelligent **T**ools in the **E**nterprise), pronounced like "Open-Sight", is a Python library, service, and application designed to facilitate the discovery and management of AI/ML Assets (including tools, models, and infrastructure) across multiple cloud platforms and protocols.
 
 ## Overview
 
@@ -21,7 +21,6 @@ OpenCITE provides a unified interface for discovering and cataloging AI/ML resou
 - Unity Catalog integration for catalogs, schemas, tables, and volumes
 - MLflow trace search and retrieval for observability
 - Data lineage and metadata management
-- Requires: `DATABRICKS_HOST` and `DATABRICKS_TOKEN` environment variables
 
 ### Google Cloud Plugin
 - Vertex AI model and endpoint discovery
@@ -49,7 +48,7 @@ OpenCITE provides a unified interface for discovering and cataloging AI/ML resou
 
 ## Architecture
 
-Open Cite uses a plugin-based architecture that allows you to:
+OpenCITE uses a plugin-based architecture that allows you to:
 - Enable only the discovery sources you need
 - Add custom plugins for proprietary systems
 - Combine multiple discovery methods for comprehensive coverage
