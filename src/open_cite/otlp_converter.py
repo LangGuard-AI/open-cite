@@ -6,6 +6,7 @@ semantic conventions, suitable for forwarding to any OTLP-compatible backend.
 """
 
 import hashlib
+import json
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -247,6 +248,11 @@ def genie_trace_to_otlp(trace_dict: Dict[str, Any]) -> Dict[str, Any]:
         agent_attrs.append(_make_attr("genie.conversation_id", conv_id))
     if user_prompt:
         agent_attrs.append(_make_attr("gen_ai.prompt", user_prompt[:1000]))
+
+    # Include the original Databricks API response as a JSON string attribute
+    raw_response = trace_dict.get("raw_response")
+    if raw_response:
+        agent_attrs.append(_make_attr("databricks.raw_response", json.dumps(raw_response, default=str)))
 
     root_span = {
         "traceId": trace_id,
