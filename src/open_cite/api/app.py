@@ -825,6 +825,48 @@ def register_api_routes(app: Flask):
             logger.error(f"Failed to stop instance: {e}")
             return jsonify({"error": str(e)}), 500
 
+    # =========================================================================
+    # Webhook Management API endpoints
+    # =========================================================================
+
+    @app.route('/api/v1/instances/<instance_id>/webhooks', methods=['GET'])
+    def api_list_webhooks(instance_id: str):
+        """List subscribed webhook URLs for a plugin instance."""
+        if not client or instance_id not in client.plugins:
+            return jsonify({"error": f"Instance '{instance_id}' not found"}), 404
+        plugin = client.plugins[instance_id]
+        return jsonify({"webhooks": plugin.list_webhooks()})
+
+    @app.route('/api/v1/instances/<instance_id>/webhooks', methods=['POST'])
+    def api_subscribe_webhook(instance_id: str):
+        """Subscribe a webhook URL to receive OTLP trace payloads."""
+        if not client or instance_id not in client.plugins:
+            return jsonify({"error": f"Instance '{instance_id}' not found"}), 404
+
+        data = request.json or {}
+        url = data.get("url", "").strip()
+        if not url or not url.startswith(("http://", "https://")):
+            return jsonify({"error": "A valid http:// or https:// URL is required"}), 400
+
+        plugin = client.plugins[instance_id]
+        added = plugin.subscribe_webhook(url)
+        return jsonify({"success": True, "added": added, "webhooks": plugin.list_webhooks()})
+
+    @app.route('/api/v1/instances/<instance_id>/webhooks', methods=['DELETE'])
+    def api_unsubscribe_webhook(instance_id: str):
+        """Unsubscribe a webhook URL."""
+        if not client or instance_id not in client.plugins:
+            return jsonify({"error": f"Instance '{instance_id}' not found"}), 404
+
+        data = request.json or {}
+        url = data.get("url", "").strip()
+        if not url:
+            return jsonify({"error": "url is required"}), 400
+
+        plugin = client.plugins[instance_id]
+        removed = plugin.unsubscribe_webhook(url)
+        return jsonify({"success": True, "removed": removed, "webhooks": plugin.list_webhooks()})
+
 
 def _create_plugin_instance(
     plugin_type_name: str,
@@ -1136,24 +1178,21 @@ def _collect_assets(asset_type: str) -> Dict[str, List]:
 
     assets = _empty_assets()
 
-    if "opentelemetry" in discovery_status["plugins_enabled"]:
-        if asset_type in ['all', 'tools']:
-            assets["tools"] = client.list_otel_tools()
-        if asset_type in ['all', 'models']:
-            assets["models"] = client.list_otel_models()
-        if asset_type in ['all', 'agents']:
-            assets["agents"] = client.list_agents()
-        if asset_type in ['all', 'downstream_systems']:
-            assets["downstream_systems"] = client.list_downstream_systems()
-
-    # MCP assets (discovered via OpenTelemetry traces)
-    if "opentelemetry" in discovery_status["plugins_enabled"]:
-        if asset_type in ['all', 'mcp_servers']:
-            assets["mcp_servers"] = client.list_mcp_servers()
-        if asset_type in ['all', 'mcp_tools']:
-            assets["mcp_tools"] = client.list_mcp_tools()
-        if asset_type in ['all', 'mcp_resources']:
-            assets["mcp_resources"] = client.list_mcp_resources()
+    # Collect assets from all plugins (aggregated)
+    if asset_type in ['all', 'tools']:
+        assets["tools"] = client.list_tools()
+    if asset_type in ['all', 'models']:
+        assets["models"] = client.list_models()
+    if asset_type in ['all', 'agents']:
+        assets["agents"] = client.list_agents()
+    if asset_type in ['all', 'downstream_systems']:
+        assets["downstream_systems"] = client.list_downstream_systems()
+    if asset_type in ['all', 'mcp_servers']:
+        assets["mcp_servers"] = client.list_mcp_servers()
+    if asset_type in ['all', 'mcp_tools']:
+        assets["mcp_tools"] = client.list_mcp_tools()
+    if asset_type in ['all', 'mcp_resources']:
+        assets["mcp_resources"] = client.list_mcp_resources()
 
     if "databricks" in discovery_status["plugins_enabled"]:
         if asset_type in ['all', 'data_assets']:

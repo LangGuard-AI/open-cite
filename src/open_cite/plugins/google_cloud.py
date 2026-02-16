@@ -42,7 +42,6 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
                 "location": {"label": "Location", "default": "us-central1", "required": False},
                 "service_account_key": {"label": "Service Account Key (JSON)", "default": "", "required": False, "type": "password"},
             },
-            "env_vars": ["GCP_PROJECT_ID", "GOOGLE_APPLICATION_CREDENTIALS"],
         }
 
     @classmethod

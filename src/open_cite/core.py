@@ -4,8 +4,12 @@ OpenCITE Core - Base classes and interfaces.
 
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Set
+from concurrent.futures import ThreadPoolExecutor
 import logging
+import time
 import warnings
+
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +52,8 @@ class BaseDiscoveryPlugin(ABC):
         self._display_name = display_name or self.plugin_type.replace('_', ' ').title()
         self._status = "stopped"  # running, stopped, error
         self._on_data_changed = None
+        self._webhook_urls: Set[str] = set()
+        self._webhook_executor: Optional[ThreadPoolExecutor] = None
 
     @classmethod
     def plugin_metadata(cls) -> Dict[str, Any]:
@@ -113,6 +119,9 @@ class BaseDiscoveryPlugin(ABC):
         Default implementation just sets status to 'stopped'.
         """
         self._status = "stopped"
+        if self._webhook_executor:
+            self._webhook_executor.shutdown(wait=False)
+            self._webhook_executor = None
         logger.info(f"Stopped plugin {self.instance_id}")
 
     def notify_data_changed(self):
@@ -282,4 +291,84 @@ class BaseDiscoveryPlugin(ABC):
             "supports_multiple_instances": self.supports_multiple_instances,
             "supported_asset_types": list(self.supported_asset_types),
             "config": self.get_config(),
+            "webhooks": self.list_webhooks(),
         }
+
+    # =========================================================================
+    # Webhook Trace Forwarding
+    # =========================================================================
+
+    def subscribe_webhook(self, url: str) -> bool:
+        """
+        Subscribe a webhook URL to receive OTLP trace payloads.
+
+        Args:
+            url: HTTP(S) URL to POST OTLP JSON to
+
+        Returns:
+            True if newly added, False if already subscribed
+        """
+        if url in self._webhook_urls:
+            return False
+        self._webhook_urls.add(url)
+        if self._webhook_executor is None:
+            self._webhook_executor = ThreadPoolExecutor(max_workers=2)
+        logger.info(f"Webhook subscribed: {url} (plugin={self.instance_id})")
+        return True
+
+    def unsubscribe_webhook(self, url: str) -> bool:
+        """
+        Unsubscribe a webhook URL.
+
+        Args:
+            url: URL to remove
+
+        Returns:
+            True if found and removed, False if not found
+        """
+        if url not in self._webhook_urls:
+            return False
+        self._webhook_urls.discard(url)
+        logger.info(f"Webhook unsubscribed: {url} (plugin={self.instance_id})")
+        return True
+
+    def list_webhooks(self) -> List[str]:
+        """Return list of subscribed webhook URLs."""
+        return list(self._webhook_urls)
+
+    def _deliver_to_webhooks(self, otlp_payload: dict):
+        """
+        Deliver an OTLP payload to all subscribed webhooks (fire-and-forget).
+
+        Each delivery is submitted to a thread pool so it doesn't block
+        the discovery loop.
+        """
+        if not self._webhook_urls:
+            return
+        if self._webhook_executor is None:
+            self._webhook_executor = ThreadPoolExecutor(max_workers=2)
+        for url in list(self._webhook_urls):
+            self._webhook_executor.submit(self._send_webhook, url, otlp_payload)
+
+    def _send_webhook(self, url: str, otlp_payload: dict):
+        """POST an OTLP JSON payload to a webhook URL with retries."""
+        backoffs = [0.5, 1.0]
+        for attempt in range(3):
+            try:
+                resp = requests.post(
+                    url,
+                    json=otlp_payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=10,
+                )
+                if resp.status_code < 400:
+                    return
+                logger.warning(
+                    f"Webhook {url} returned {resp.status_code} (attempt {attempt + 1}/3)"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Webhook {url} failed (attempt {attempt + 1}/3): {e}"
+                )
+            if attempt < len(backoffs):
+                time.sleep(backoffs[attempt])

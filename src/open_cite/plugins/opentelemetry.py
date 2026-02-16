@@ -123,7 +123,6 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             "name": "OpenTelemetry",
             "description": "Discovers AI tools using models via OTLP traces",
             "required_fields": {},
-            "env_vars": [],
             "trace_endpoints": {
                 "localhost": "http://localhost:4318/v1/traces",
                 "network": f"http://{local_ip}:4318/v1/traces" if local_ip != '127.0.0.1' else None,

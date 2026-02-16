@@ -205,10 +205,10 @@ class OpenCiteClient:
         for plugin in plugins:
             try:
                 assets = plugin.list_assets(asset_type, **kwargs)
-                # Ensure each asset has discovery_source set to the plugin instance_id
+                # Ensure each asset has discovery_source set to a readable name
                 for asset in assets:
                     if "discovery_source" not in asset:
-                        asset["discovery_source"] = plugin.instance_id
+                        asset["discovery_source"] = plugin.display_name
                 results.extend(assets)
             except Exception as e:
                 logger.warning(f"Failed to list {asset_type} from plugin {plugin.instance_id}: {e}")

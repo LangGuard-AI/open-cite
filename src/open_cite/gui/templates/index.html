@@ -73,6 +73,7 @@
             display: flex;
             align-items: center;
             gap: 10px;
+            text-overflow: ellipsis;
         }
 
         .status-indicator {
@@ -102,8 +103,15 @@
         }
 
         @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.5;
+            }
         }
 
         .progress-container {
@@ -147,7 +155,9 @@
         }
 
         @keyframes spin {
-            to { transform: rotate(360deg); }
+            to {
+                transform: rotate(360deg);
+            }
         }
 
         /* Instance Card Styles */
@@ -170,6 +180,7 @@
             align-items: center;
             gap: 10px;
             margin-bottom: 8px;
+            text-overflow: ellipsis;
         }
 
         .instance-name {
@@ -177,6 +188,7 @@
             color: #333;
             font-size: 1.1em;
             flex-grow: 1;
+            text-overflow: ellipsis;
         }
 
         .instance-type {
@@ -209,6 +221,7 @@
             background: #e5e7eb;
             color: #374151;
         }
+
         .btn-edit:hover {
             background: #d1d5db;
         }
@@ -217,6 +230,7 @@
             background: #10b981;
             color: white;
         }
+
         .btn-start:hover {
             background: #059669;
         }
@@ -225,6 +239,7 @@
             background: #f59e0b;
             color: white;
         }
+
         .btn-stop:hover {
             background: #d97706;
         }
@@ -233,6 +248,7 @@
             background: #ef4444;
             color: white;
         }
+
         .btn-remove:hover {
             background: #dc2626;
         }
@@ -267,7 +283,6 @@
         .btn-secondary {
             background: #6b7280;
             color: white;
-            margin-top: 8px;
         }
 
         .btn-secondary:hover {
@@ -348,6 +363,9 @@
             border-radius: 8px;
             padding: 16px;
             transition: all 0.2s;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            cursor: pointer;
         }
 
         .asset-card:hover {
@@ -365,6 +383,7 @@
             color: #333;
             margin-bottom: 8px;
             font-size: 1.1em;
+            text-overflow: ellipsis;
         }
 
         .asset-meta {
@@ -383,9 +402,20 @@
             margin-top: 4px;
         }
 
-        .badge-blue { background: #dbeafe; color: #1e40af; }
-        .badge-green { background: #d1fae5; color: #065f46; }
-        .badge-purple { background: #ede9fe; color: #5b21b6; }
+        .badge-blue {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+
+        .badge-green {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .badge-purple {
+            background: #ede9fe;
+            color: #5b21b6;
+        }
 
         .empty-state {
             text-align: center;
@@ -402,7 +432,8 @@
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
             gap: 12px;
-            margin-bottom: 20px;
+            margin-left: 6rem;
+            min-width: 768px;
         }
 
         .stat-card {
@@ -616,9 +647,15 @@
 
 <body>
     <div class="container">
-        <div class="header">
-            <h1><img src="static/OpenCiteBear.png" /> OpenCITE</h1>
-            <p class="subtitle"><b>Open C</b>atalog of <b>I</b>ntelligent <b>T</b>ools in the <b>E</b>nterprise</p>
+        <div class="header" style="display:flex;align-items:center;">
+            <div style="float:left">
+                <h1><img src="static/OpenCiteBear.png" /> OpenCITE</h1>
+                <p class="subtitle"><b>Open C</b>atalog of <b>I</b>ntelligent <b>T</b>ools in the <b>E</b>nterprise</p>
+            </div>
+            <div style="float:right;">
+                <div class="stats" id="statsContainer" style="display: none;"></div>
+            </div>
+            <div style="clear:both"></div>
         </div>
 
         <div class="main-grid">
@@ -650,9 +687,17 @@
 
             <!-- Main Content -->
             <div class="content-area">
-                <div class="card">
-                    <div class="stats" id="statsContainer" style="display: none;"></div>
+                <!-- Lineage Graph (above tabs) -->
+                <div class="card" id="lineageCard" style="display: none; margin-bottom: 20px;">
+                    <h2 style="cursor: pointer;" onclick="toggleLineageGraph()">
+                        Lineage Graph <span id="lineageToggle" style="font-size: 0.7em;">&#9660;</span>
+                    </h2>
+                    <div id="lineageContainer">
+                        <iframe id="lineageFrame" src="" scrolling="no" seamless="seamless" style="width:100%; height:350px; border:none; overflow:none;"></iframe>
+                    </div>
+                </div>
 
+                <div class="card">
                     <div class="tabs">
                         <button class="tab active" onclick="switchTab('all')">All Assets</button>
                         <button class="tab" onclick="switchTab('tools')">Tools</button>
@@ -661,8 +706,7 @@
                         <button class="tab" onclick="switchTab('downstream')">Downstream</button>
                         <button class="tab" onclick="switchTab('mcp')">MCP</button>
                         <button class="tab" onclick="switchTab('data_assets')">Data Assets</button>
-                        <button class="btn-export-inline" id="exportBtnInline" onclick="exportData()"
-                            style="display: none;" title="Download Discovered Assets in JSON">
+                        <button class="btn-export-inline" id="exportBtnInline" onclick="exportData()" style="display: none;" title="Download Discovered Assets in JSON">
                             Download JSON
                         </button>
                     </div>
@@ -775,7 +819,7 @@
                 await updateStatus();
 
                 // Track manual edits to instance name field
-                document.getElementById('instanceDisplayName').addEventListener('input', function() {
+                document.getElementById('instanceDisplayName').addEventListener('input', function () {
                     instanceNameUserEdited = true;
                 });
 
@@ -851,9 +895,9 @@
                         ${instance.config?.port ? `<div class="instance-info">Port: ${instance.config.port}</div>` : ''}
                         <div class="instance-actions">
                             ${isRunning
-                                ? `<button class="btn-stop" onclick="stopInstance('${instance.instance_id}')">Stop</button>`
-                                : `<button class="btn-start" onclick="startInstance('${instance.instance_id}')">Start</button>`
-                            }
+                        ? `<button class="btn-stop" onclick="stopInstance('${instance.instance_id}')">Stop</button>`
+                        : `<button class="btn-start" onclick="startInstance('${instance.instance_id}')">Start</button>`
+                    }
                             <button class="btn-remove" onclick="removeInstance('${instance.instance_id}')">Remove</button>
                         </div>
                     </div>
@@ -918,15 +962,21 @@
             }
 
             configContainer.innerHTML = '<h4 style="margin-bottom: 12px; color: #374151;">Configuration</h4>' +
-                Object.entries(fields).map(([key, field]) => `
+                Object.entries(fields).map(([key, field]) => {
+                    const inputType = field.type || 'text';
+                    const useValue = inputType === 'number';
+                    return `
                     <div class="form-group">
                         <label>${field.label}${field.required ? ' *' : ''}</label>
-                        <input type="${field.type || 'text'}"
+                        <input type="${inputType}"
                                id="config-${key}"
-                               placeholder="${field.default || ''}"
+                               ${useValue && field.default ? `value="${field.default}"` : `placeholder="${field.default || ''}"`}
+                               ${field.min != null ? `min="${field.min}"` : ''}
+                               ${field.max != null ? `max="${field.max}"` : ''}
                                ${field.required ? 'required' : ''}>
                     </div>
-                `).join('');
+                    `;
+                }).join('');
         }
 
         // Save instance
@@ -1072,7 +1122,7 @@
                 reconnectionDelayMax: 5000
             });
 
-            socket.on('connect', function() {
+            socket.on('connect', function () {
                 console.log('WebSocket connected');
                 useWebSocket = true;
                 // Stop polling fallback since WebSocket is active
@@ -1082,25 +1132,26 @@
                 }
             });
 
-            socket.on('assets_update', function(data) {
+            socket.on('assets_update', function (data) {
                 if (data && data.assets) {
                     assets = data.assets;
                     renderStats(data.totals);
                     renderAssets();
+                    refreshLineageGraph();
                 }
             });
 
-            socket.on('status_update', function(data) {
+            socket.on('status_update', function (data) {
                 _applyStatusUpdate(data);
             });
 
-            socket.on('disconnect', function() {
+            socket.on('disconnect', function () {
                 console.log('WebSocket disconnected, falling back to polling');
                 useWebSocket = false;
                 _startPollingFallback();
             });
 
-            socket.on('connect_error', function(err) {
+            socket.on('connect_error', function (err) {
                 console.warn('WebSocket connect error:', err.message);
                 useWebSocket = false;
                 _startPollingFallback();
@@ -1148,6 +1199,7 @@
                     assets = data.assets;
                     renderStats(data.totals);
                     renderAssets();
+                    refreshLineageGraph();
                 }
             } catch (error) {
                 console.error('Error refreshing assets:', error);
@@ -1177,8 +1229,8 @@
                 progressContainer.style.display = 'block';
                 progressContainer.innerHTML = status.progress.map(p => {
                     const icon = p.status === 'success' ? '✓' :
-                                p.status === 'error' ? '✗' :
-                                '<div class="spinner"></div>';
+                        p.status === 'error' ? '✗' :
+                            '<div class="spinner"></div>';
                     return `
                         <div class="progress-item ${p.status}">
                             <span>${icon}</span>
@@ -1280,7 +1332,7 @@
                         <div class="asset-meta">Type: ${tool.type}</div>
                         <div class="asset-meta">Source: ${tool.discovery_source}</div>
                         ${sourceName ? `<div class="asset-meta"><b>Identified:</b> ${sourceName}</div>` :
-                            `<span class="badge" style="background: #fef3c7; color: #92400e;">Mapping Required</span>`}
+                        `<span class="badge" style="background: #fef3c7; color: #92400e;">Mapping Required</span>`}
                         <div class="asset-meta">Models: ${tool.models?.length || 0}</div>
                         <span class="badge badge-blue">Tool</span>
                         ${isUnknown ? `<br><button class="btn-map" onclick="openMapModal('${tool.name.replace(/'/g, "\\'")}')">Map Source</button>` : ''}
@@ -1310,7 +1362,7 @@
                         <div class="asset-title">🤖 ${agent.name}</div>
                         <div class="asset-meta">Confidence: ${agent.confidence}</div>
                         ${agentSourceName ? `<div class="asset-meta"><b>Identified:</b> ${agentSourceName}</div>` :
-                            `<span class="badge" style="background: #fef3c7; color: #92400e;">Mapping Required</span>`}
+                        `<span class="badge" style="background: #fef3c7; color: #92400e;">Mapping Required</span>`}
                         <div class="asset-meta">Tools: ${agent.tools_used?.length || 0}</div>
                         <span class="badge badge-purple">Agent</span>
                         ${isAgentUnknown ? `<br><button class="btn-map" onclick="openAgentMapModal('${agent.name.replace(/'/g, "\\'")}')">Map Source</button>` : ''}
@@ -1346,11 +1398,14 @@
             // Data Assets
             (assets.data_assets || []).forEach(asset => {
                 count++;
-                const icon = asset.type === 'catalog' ? '📚' : asset.type === 'schema' ? '📁' : '📊';
+                const icon = asset.type === 'catalog' ? '📚' : asset.type === 'schema' ? '📁'
+                    : asset.type === 'database' ? '🗄️' : asset.type === 'dataset' ? '📋'
+                        : asset.type === 'document_store' ? '📂' : '📊';
                 html += `
                     <div class="asset-card">
                         <div class="asset-title">${icon} ${asset.name}</div>
                         <div class="asset-meta">Type: ${asset.type}</div>
+                        ${asset.endpoint ? `<div class="asset-meta">Endpoint: ${asset.endpoint}</div>` : ''}
                         <span class="badge badge-green">Data Asset</span>
                     </div>
                 `;
@@ -1372,7 +1427,7 @@
                         <div class="asset-meta">Type: ${tool.type}</div>
                         <div class="asset-meta">Discovery: ${tool.discovery_source}</div>
                         ${sourceName ? `<div class="asset-meta"><b>Identified:</b> ${sourceName}</div>` :
-                            `<span class="badge" style="background: #fef3c7; color: #92400e;">Mapping Required</span>`}
+                        `<span class="badge" style="background: #fef3c7; color: #92400e;">Mapping Required</span>`}
                         <div class="asset-meta">Models: ${tool.models?.join(', ') || 'none'}</div>
                         ${isUnknown ? `<button class="btn-map" onclick="openMapModal('${tool.name.replace(/'/g, "\\'")}')">Map Source</button>` : ''}
                     </div>
@@ -1388,12 +1443,13 @@
 
             let html = '<div class="asset-grid">';
             (assets.models || []).forEach(model => {
+                const source = model.discovery_source || 'unknown';
                 html += `
                     <div class="asset-card">
                         <div class="asset-title">🤖 ${model.name}</div>
                         <div class="asset-meta">Provider: ${model.provider}</div>
                         <div class="asset-meta">Usage: ${model.usage_count || 0} calls</div>
-                        <span class="badge badge-blue">OpenTelemetry</span>
+                        <span class="badge badge-blue">${source}</span>
                     </div>
                 `;
             });
@@ -1420,7 +1476,7 @@
                         <div class="asset-title">🤖 ${agent.name}</div>
                         <div class="asset-meta">Confidence: ${agent.confidence}</div>
                         ${agentSourceName ? `<div class="asset-meta"><b>Identified:</b> ${agentSourceName}</div>` :
-                            `<span class="badge" style="background: #fef3c7; color: #92400e;">Mapping Required</span>`}
+                        `<span class="badge" style="background: #fef3c7; color: #92400e;">Mapping Required</span>`}
                         <div class="asset-meta">Tools: ${agent.tools_used?.join(', ') || 'none'}</div>
                         <div class="asset-meta">Models: ${agent.models_used?.join(', ') || 'none'}</div>
                         ${agent.first_seen ? `<div class="asset-meta">First seen: ${new Date(agent.first_seen).toLocaleString()}</div>` : ''}
@@ -1486,12 +1542,18 @@
 
             let html = '<div class="asset-grid">';
             assets.data_assets.forEach(asset => {
-                const icon = asset.type === 'catalog' ? '📚' : asset.type === 'schema' ? '📁' : '📊';
+                const icon = asset.type === 'catalog' ? '📚' : asset.type === 'schema' ? '📁'
+                    : asset.type === 'database' ? '🗄️' : asset.type === 'dataset' ? '📋'
+                        : asset.type === 'document_store' ? '📂' : '📊';
                 html += `
                     <div class="asset-card">
                         <div class="asset-title">${icon} ${asset.name}</div>
                         <div class="asset-meta">Type: ${asset.type}</div>
                         ${asset.owner ? `<div class="asset-meta">Owner: ${asset.owner}</div>` : ''}
+                        ${asset.endpoint ? `<div class="asset-meta">Endpoint: ${asset.endpoint}</div>` : ''}
+                        ${asset.tools_connecting?.length ? `<div class="asset-meta">Connected tools: ${asset.tools_connecting.join(', ')}</div>` : ''}
+                        ${asset.first_seen ? `<div class="asset-meta">First seen: ${new Date(asset.first_seen).toLocaleString()}</div>` : ''}
+                        ${asset.last_seen ? `<div class="asset-meta">Last seen: ${new Date(asset.last_seen).toLocaleString()}</div>` : ''}
                         <span class="badge badge-green">${asset.type}</span>
                     </div>
                 `;
@@ -1665,12 +1727,124 @@
             document.getElementById('errorMessage').style.display = 'none';
         }
 
-        // Close modals when clicking outside
-        window.onclick = function(event) {
-            if (event.target.classList.contains('modal')) {
+        // Close modals only when both mousedown and mouseup occur on the backdrop
+        let modalMouseDownTarget = null;
+        window.addEventListener('mousedown', function (event) {
+            modalMouseDownTarget = event.target;
+        });
+        window.addEventListener('mouseup', function (event) {
+            if (modalMouseDownTarget === event.target && event.target.classList.contains('modal')) {
                 event.target.style.display = 'none';
             }
-        };
+            modalMouseDownTarget = null;
+        });
+
+        // Lineage graph functions
+        let lineageCollapsed = false;
+
+        function refreshLineageGraph() {
+            const hasAssets = assets &&
+                ((assets.tools || []).length > 0 ||
+                    (assets.models || []).length > 0 ||
+                    (assets.agents || []).length > 0 ||
+                    (assets.downstream_systems || []).length > 0 ||
+                    (assets.data_assets || []).length > 0);
+
+            const card = document.getElementById('lineageCard');
+            if (!hasAssets) {
+                card.style.display = 'none';
+                return;
+            }
+            card.style.display = 'block';
+
+            if (!lineageCollapsed) {
+                const frame = document.getElementById('lineageFrame');
+                frame.src = '/api/lineage-graph?t=' + Date.now();
+            }
+        }
+
+        function toggleLineageGraph() {
+            lineageCollapsed = !lineageCollapsed;
+            const container = document.getElementById('lineageContainer');
+            const toggle = document.getElementById('lineageToggle');
+            if (lineageCollapsed) {
+                container.style.display = 'none';
+                toggle.innerHTML = '&#9654;';
+            } else {
+                container.style.display = 'block';
+                toggle.innerHTML = '&#9660;';
+                refreshLineageGraph();
+            }
+        }
+
+        function focusLineageNode(nodeId) {
+            const card = document.getElementById('lineageCard');
+            if (!card || card.style.display === 'none') return;
+
+            if (lineageCollapsed) {
+                toggleLineageGraph();
+                // iframe is reloading — wait for it before sending the message
+                const frame = document.getElementById('lineageFrame');
+                frame.addEventListener('load', function onLoad() {
+                    frame.removeEventListener('load', onLoad);
+                    setTimeout(function () {
+                        frame.contentWindow.postMessage({ type: 'focusNode', nodeId: nodeId }, '*');
+                    }, 300);
+                });
+            } else {
+                const frame = document.getElementById('lineageFrame');
+                if (frame && frame.contentWindow) {
+                    frame.contentWindow.postMessage({ type: 'focusNode', nodeId: nodeId }, '*');
+                }
+            }
+
+            card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
+        // Click-to-focus: clicking an asset card focuses its node in the lineage graph
+        document.getElementById('assetsContainer').addEventListener('click', function (e) {
+            // Don't intercept button clicks (Map Source, etc.)
+            if (e.target.closest('button')) return;
+            const card = e.target.closest('.asset-card');
+            if (!card) return;
+
+            const titleEl = card.querySelector('.asset-title');
+            if (!titleEl) return;
+            const fullText = titleEl.textContent;
+            const spaceIdx = fullText.indexOf(' ');
+            if (spaceIdx === -1) return;
+            const name = fullText.substring(spaceIdx + 1).trim();
+            if (!name) return;
+
+            // Determine asset type from badge text first
+            let type = null;
+            for (const badge of card.querySelectorAll('.badge')) {
+                const t = badge.textContent.trim().toLowerCase();
+                if (t === 'tool') { type = 'tool'; break; }
+                if (t === 'model') { type = 'model'; break; }
+                if (t === 'agent') { type = 'agent'; break; }
+                if (t === 'downstream') { type = 'downstream'; break; }
+                if (t === 'data asset') { type = 'data_asset'; break; }
+            }
+            // Fallback: infer from the active tab
+            if (!type) {
+                const tabMap = {
+                    tools: 'tool', models: 'model', agents: 'agent',
+                    downstream: 'downstream', data_assets: 'data_asset'
+                };
+                type = tabMap[currentTab];
+            }
+            if (!type) return;
+
+            const prefixMap = {
+                tool: 'tool', model: 'model', agent: 'agent',
+                downstream: 'ds', data_asset: 'data'
+            };
+            const prefix = prefixMap[type];
+            if (!prefix) return;
+
+            focusLineageNode(prefix + ':' + name);
+        });
 
         // Initialize on load
         initialize();
