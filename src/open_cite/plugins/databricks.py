@@ -781,22 +781,33 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
     # Lifecycle overrides
     # =========================================================================
 
-    def start(self):
-        """Start the plugin with initial trace and Genie discovery."""
-        self._status = "running"
+    def _run_discovery(self, days: int, label: str = "start"):
+        """Run all discovery steps. Intended to be called from a background thread."""
         try:
-            self.discover_from_traces(days=self.lookback_days)
+            self.discover_from_traces(days=days)
         except Exception as e:
-            logger.warning(f"Initial trace discovery failed: {e}")
+            logger.warning(f"Trace discovery failed ({label}): {e}")
         try:
-            self.discover_from_genie(days=self.lookback_days)
+            self.discover_from_genie(days=days)
         except Exception as e:
-            logger.warning(f"Initial Genie discovery failed: {e}")
+            logger.warning(f"Genie discovery failed ({label}): {e}")
         try:
             self.discover_mcp_servers()
         except Exception as e:
-            logger.warning(f"Initial MCP discovery failed: {e}")
-        logger.info(f"Started Databricks plugin {self.instance_id}")
+            logger.warning(f"MCP discovery failed ({label}): {e}")
+        logger.info(f"Discovery complete ({label}) for {self.instance_id}")
+
+    def start(self):
+        """Start the plugin — runs initial discovery in a background thread
+        so the API remains responsive (gunicorn single-worker safe)."""
+        self._status = "running"
+        thread = threading.Thread(
+            target=self._run_discovery,
+            args=(self.lookback_days, "start"),
+            daemon=True,
+        )
+        thread.start()
+        logger.info(f"Started Databricks plugin {self.instance_id} (discovery running in background)")
 
     # =========================================================================
     # MLflow Trace Discovery
@@ -966,6 +977,8 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         If _last_query_time is set, only looks back to that time (incremental).
         Otherwise falls back to lookback_days or the explicit days parameter.
 
+        Runs in a background thread so the API endpoint returns immediately.
+
         Args:
             days: Override number of days to look back (None = auto from last query)
         """
@@ -975,9 +988,13 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                 days = max(1, int(elapsed.total_seconds() / 86400) + 1)
             else:
                 days = self.lookback_days
-        self.discover_from_traces(days=days)
-        self.discover_from_genie(days=days)
-        self.discover_mcp_servers()
+        logger.info(f"Refreshing traces (lookback={days} days) for {self.instance_id}")
+        thread = threading.Thread(
+            target=self._run_discovery,
+            args=(days, f"refresh lookback={days}d"),
+            daemon=True,
+        )
+        thread.start()
 
     # =========================================================================
     # Genie Conversation Discovery
@@ -1248,6 +1265,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             "session_id": conv_id,
             "input": {"prompt": user_prompt},
             "output": {"generated_sql": generated_sql, "text_response": text_response},
+            "raw_response": message,
             "metadata": {
                 "genie_space_id": space_id,
                 "genie_space_name": space_title,

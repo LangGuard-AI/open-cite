@@ -650,12 +650,14 @@ def register_api_routes(app: Flask):
             client.register_plugin(plugin_instance)
 
             # Save to persistence if enabled
+            # Persist the raw config (not plugin.get_config() which masks tokens)
+            # so that the instance can be restored from persistence after restart.
             if persistence:
                 persistence.save_plugin_instance(
                     instance_id=instance_id,
                     plugin_type=plugin_type,
                     display_name=display_name,
-                    config=plugin_instance.get_config(),  # Use masked config
+                    config=config,
                     status='running' if auto_start else 'stopped',
                     auto_start=auto_start,
                 )
@@ -781,15 +783,21 @@ def register_api_routes(app: Flask):
 
     @app.route('/api/v1/instances/<instance_id>/start', methods=['POST'])
     def api_start_instance(instance_id: str):
-        """Start/enable a plugin instance."""
+        """Start/enable a plugin instance. Auto-restores from persistence if needed.
+        No-op if already running (avoids re-triggering full discovery)."""
         try:
-            if not client:
-                return jsonify({"error": "No client initialized"}), 400
-
-            if instance_id not in client.plugins:
+            plugin = _ensure_instance(instance_id)
+            if not plugin:
                 return jsonify({"error": f"Instance '{instance_id}' not found"}), 404
 
-            plugin = client.plugins[instance_id]
+            # No-op if already running — avoids re-triggering full 90-day discovery
+            if plugin.status == 'running':
+                return jsonify({
+                    "success": True,
+                    "message": f"Instance '{instance_id}' already running",
+                    "already_running": True,
+                })
+
             _start_plugin_instance(plugin)
 
             # Update status in persistence
@@ -804,15 +812,12 @@ def register_api_routes(app: Flask):
 
     @app.route('/api/v1/instances/<instance_id>/stop', methods=['POST'])
     def api_stop_instance(instance_id: str):
-        """Stop/disable a plugin instance."""
+        """Stop/disable a plugin instance. Auto-restores from persistence if needed."""
         try:
-            if not client:
-                return jsonify({"error": "No client initialized"}), 400
-
-            if instance_id not in client.plugins:
+            plugin = _ensure_instance(instance_id)
+            if not plugin:
                 return jsonify({"error": f"Instance '{instance_id}' not found"}), 404
 
-            plugin = client.plugins[instance_id]
             _stop_plugin_instance(plugin)
 
             # Update status in persistence
@@ -825,22 +830,74 @@ def register_api_routes(app: Flask):
             logger.error(f"Failed to stop instance: {e}")
             return jsonify({"error": str(e)}), 500
 
+    @app.route('/api/v1/instances/<instance_id>/refresh', methods=['POST'])
+    def api_refresh_instance(instance_id: str):
+        """
+        Trigger incremental trace re-discovery for a plugin instance.
+
+        Uses plugin.refresh_traces(days=N) if available (incremental fetch
+        based on _last_query_time), otherwise falls back to plugin.start()
+        (full discovery).
+
+        Request body (optional):
+        {
+            "days": 7  // Override lookback days (default: auto from last query)
+        }
+        """
+        try:
+            plugin = _ensure_instance(instance_id)
+            if not plugin:
+                return jsonify({"error": f"Instance '{instance_id}' not found"}), 404
+
+            data = request.json or {}
+            days = data.get('days')
+
+            if hasattr(plugin, 'refresh_traces') and callable(plugin.refresh_traces):
+                # Incremental refresh — uses _last_query_time internally
+                if days is not None:
+                    plugin.refresh_traces(days=int(days))
+                else:
+                    plugin.refresh_traces()
+                method = 'refresh_traces'
+            else:
+                # Fallback: full discovery via start()
+                _start_plugin_instance(plugin)
+                method = 'start'
+
+            # Update status in persistence
+            if persistence:
+                persistence.update_instance_status(instance_id, 'running')
+
+            return jsonify({
+                "success": True,
+                "message": f"Instance '{instance_id}' refreshed via {method}",
+                "method": method,
+                "days": days,
+            })
+
+        except Exception as e:
+            logger.error(f"Failed to refresh instance '{instance_id}': {e}")
+            return jsonify({"error": str(e)}), 500
+
     # =========================================================================
     # Webhook Management API endpoints
     # =========================================================================
 
     @app.route('/api/v1/instances/<instance_id>/webhooks', methods=['GET'])
     def api_list_webhooks(instance_id: str):
-        """List subscribed webhook URLs for a plugin instance."""
-        if not client or instance_id not in client.plugins:
+        """List subscribed webhook URLs for a plugin instance.
+        Auto-restores from persistence if needed."""
+        plugin = _ensure_instance(instance_id)
+        if not plugin:
             return jsonify({"error": f"Instance '{instance_id}' not found"}), 404
-        plugin = client.plugins[instance_id]
         return jsonify({"webhooks": plugin.list_webhooks()})
 
     @app.route('/api/v1/instances/<instance_id>/webhooks', methods=['POST'])
     def api_subscribe_webhook(instance_id: str):
-        """Subscribe a webhook URL to receive OTLP trace payloads."""
-        if not client or instance_id not in client.plugins:
+        """Subscribe a webhook URL to receive OTLP trace payloads.
+        Auto-restores from persistence if needed."""
+        plugin = _ensure_instance(instance_id)
+        if not plugin:
             return jsonify({"error": f"Instance '{instance_id}' not found"}), 404
 
         data = request.json or {}
@@ -848,14 +905,15 @@ def register_api_routes(app: Flask):
         if not url or not url.startswith(("http://", "https://")):
             return jsonify({"error": "A valid http:// or https:// URL is required"}), 400
 
-        plugin = client.plugins[instance_id]
         added = plugin.subscribe_webhook(url)
         return jsonify({"success": True, "added": added, "webhooks": plugin.list_webhooks()})
 
     @app.route('/api/v1/instances/<instance_id>/webhooks', methods=['DELETE'])
     def api_unsubscribe_webhook(instance_id: str):
-        """Unsubscribe a webhook URL."""
-        if not client or instance_id not in client.plugins:
+        """Unsubscribe a webhook URL.
+        Auto-restores from persistence if needed."""
+        plugin = _ensure_instance(instance_id)
+        if not plugin:
             return jsonify({"error": f"Instance '{instance_id}' not found"}), 404
 
         data = request.json or {}
@@ -863,7 +921,6 @@ def register_api_routes(app: Flask):
         if not url:
             return jsonify({"error": "url is required"}), 400
 
-        plugin = client.plugins[instance_id]
         removed = plugin.unsubscribe_webhook(url)
         return jsonify({"success": True, "removed": removed, "webhooks": plugin.list_webhooks()})
 
@@ -891,6 +948,46 @@ def _start_plugin_instance(plugin: 'BaseDiscoveryPlugin'):
 def _stop_plugin_instance(plugin: 'BaseDiscoveryPlugin'):
     """Stop a plugin instance via its lifecycle method."""
     plugin.stop()
+
+
+def _ensure_instance(instance_id: str) -> Optional['BaseDiscoveryPlugin']:
+    """
+    Ensure a plugin instance is in memory and return it.
+
+    Lookup order:
+    1. Already in client.plugins (in-memory) → return it
+    2. Found in persistence → restore (create from persisted config, register) → return it
+    3. Not found anywhere → return None
+    """
+    global client
+
+    # 1. Check in-memory
+    if client and instance_id in client.plugins:
+        return client.plugins[instance_id]
+
+    # 2. Try restoring from persistence
+    if persistence:
+        persisted = persistence.get_plugin_instance(instance_id)
+        if persisted:
+            try:
+                if not client:
+                    client = OpenCiteClient()
+
+                plugin_instance = _create_plugin_instance(
+                    plugin_type_name=persisted['plugin_type'],
+                    instance_id=instance_id,
+                    display_name=persisted['display_name'],
+                    config=persisted['config'],
+                )
+                client.register_plugin(plugin_instance)
+                logger.info(f"Restored instance '{instance_id}' from persistence")
+                return plugin_instance
+            except Exception as e:
+                logger.error(f"Failed to restore instance '{instance_id}' from persistence: {e}")
+                return None
+
+    # 3. Not found
+    return None
 
 
 def _configure_plugin(plugin_name: str, config: Dict[str, Any]):
