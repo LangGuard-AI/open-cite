@@ -11,6 +11,24 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 
+def _normalize_trace_id(raw_id: str) -> str:
+    """Normalize an MLflow trace ID to a valid OTLP trace ID (32 hex chars).
+
+    MLflow request_ids have format "tr-{32hex}" — strip prefix.
+    If the result is shorter than 32 chars, left-pad with zeros.
+    """
+    tid = raw_id[3:] if raw_id.startswith("tr-") else raw_id
+    return tid.zfill(32)[:32]
+
+
+def _normalize_span_id(raw_id: str) -> str:
+    """Normalize an MLflow span ID to a valid OTLP span ID (16 hex chars).
+
+    If the result is shorter than 16 chars, left-pad with zeros.
+    """
+    return raw_id.zfill(16)[:16]
+
+
 def _make_attr(key: str, value: str) -> Dict[str, Any]:
     """Build an OTLP string attribute dict."""
     return {"key": key, "value": {"stringValue": str(value)}}
@@ -61,11 +79,18 @@ def mlflow_trace_to_otlp(
     Returns:
         OTLP JSON dict: {"resourceSpans": [...]}
     """
+    # Preserve original MLflow request_id before normalizing to OTLP format
+    mlflow_request_id = ""
+    if hasattr(trace, "info") and hasattr(trace.info, "request_id"):
+        mlflow_request_id = trace.info.request_id or ""
+
     resource_attrs = [
         _make_attr("service.name", service_name),
         _make_attr("service.namespace", "databricks"),
         _make_attr("mlflow.experiment.name", experiment_name),
     ]
+    if mlflow_request_id:
+        resource_attrs.append(_make_attr("mlflow.request_id", mlflow_request_id))
 
     otlp_spans: List[Dict[str, Any]] = []
 
@@ -124,10 +149,13 @@ def mlflow_trace_to_otlp(
                 else:
                     otlp_attrs.append(_make_attr(prefixed_key, str(val)))
 
-        # Build span dict
+        # Build span dict — normalize IDs to OTLP standard lengths
+        raw_trace_id = span.trace_id if hasattr(span, "trace_id") else ""
+        raw_span_id = span.span_id if hasattr(span, "span_id") else ""
+
         otlp_span: Dict[str, Any] = {
-            "traceId": span.trace_id if hasattr(span, "trace_id") else "",
-            "spanId": span.span_id if hasattr(span, "span_id") else "",
+            "traceId": _normalize_trace_id(raw_trace_id) if raw_trace_id else "",
+            "spanId": _normalize_span_id(raw_span_id) if raw_span_id else "",
             "name": span.name or "",
             "kind": 1,  # SPAN_KIND_INTERNAL
             "startTimeUnixNano": str(span.start_time_ns) if hasattr(span, "start_time_ns") else "0",
@@ -137,7 +165,7 @@ def mlflow_trace_to_otlp(
         }
 
         if hasattr(span, "parent_id") and span.parent_id:
-            otlp_span["parentSpanId"] = span.parent_id
+            otlp_span["parentSpanId"] = _normalize_span_id(span.parent_id)
 
         otlp_spans.append(otlp_span)
 

@@ -892,6 +892,11 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                                 if self._webhook_urls:
                                     from open_cite.otlp_converter import mlflow_trace_to_otlp
                                     otlp = mlflow_trace_to_otlp(trace, exp_name)
+                                    logger.debug(
+                                        "Sending MLflow trace to webhooks: experiment=%s, spans=%d",
+                                        exp_name,
+                                        len(trace.data.spans) if trace.data and trace.data.spans else 0,
+                                    )
                                     self._deliver_to_webhooks(otlp)
                                 total_traces += 1
                             exp_traces += 1
@@ -1263,6 +1268,10 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         if self._webhook_urls:
             from open_cite.otlp_converter import genie_trace_to_otlp
             otlp = genie_trace_to_otlp(trace_dict)
+            logger.debug(
+                "Sending Genie trace to webhooks: conversation=%s",
+                trace_dict.get("trace_id", "unknown"),
+            )
             self._deliver_to_webhooks(otlp)
 
     # =========================================================================

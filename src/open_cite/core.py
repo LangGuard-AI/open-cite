@@ -345,6 +345,18 @@ class BaseDiscoveryPlugin(ABC):
         """
         if not self._webhook_urls:
             return
+        span_count = sum(
+            len(ss.get("spans", []))
+            for rs in otlp_payload.get("resourceSpans", [])
+            for ss in rs.get("scopeSpans", [])
+        )
+        logger.debug(
+            "Delivering OTLP payload to %d webhook(s): %d resourceSpans, %d spans (plugin=%s)",
+            len(self._webhook_urls),
+            len(otlp_payload.get("resourceSpans", [])),
+            span_count,
+            self.instance_id,
+        )
         if self._webhook_executor is None:
             self._webhook_executor = ThreadPoolExecutor(max_workers=2)
         for url in list(self._webhook_urls):
@@ -352,6 +364,8 @@ class BaseDiscoveryPlugin(ABC):
 
     def _send_webhook(self, url: str, otlp_payload: dict):
         """POST an OTLP JSON payload to a webhook URL with retries."""
+        # Mask token in debug output
+        masked_url = url.split("?")[0] + ("?token=***" if "token=" in url else "")
         backoffs = [0.5, 1.0]
         for attempt in range(3):
             try:
@@ -362,13 +376,27 @@ class BaseDiscoveryPlugin(ABC):
                     timeout=10,
                 )
                 if resp.status_code < 400:
+                    logger.debug(
+                        "Webhook delivered successfully: %s status=%d (plugin=%s)",
+                        masked_url,
+                        resp.status_code,
+                        self.instance_id,
+                    )
                     return
                 logger.warning(
-                    f"Webhook {url} returned {resp.status_code} (attempt {attempt + 1}/3)"
+                    "Webhook %s returned %d (attempt %d/3, plugin=%s)",
+                    masked_url,
+                    resp.status_code,
+                    attempt + 1,
+                    self.instance_id,
                 )
             except Exception as e:
                 logger.warning(
-                    f"Webhook {url} failed (attempt {attempt + 1}/3): {e}"
+                    "Webhook %s failed (attempt %d/3, plugin=%s): %s",
+                    masked_url,
+                    attempt + 1,
+                    self.instance_id,
+                    e,
                 )
             if attempt < len(backoffs):
                 time.sleep(backoffs[attempt])
