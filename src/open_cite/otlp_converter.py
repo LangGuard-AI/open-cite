@@ -93,6 +93,27 @@ def mlflow_trace_to_otlp(
     if mlflow_request_id:
         resource_attrs.append(_make_attr("mlflow.request_id", mlflow_request_id))
 
+    # Extract user identity — priority: trace tags > experiment path
+    # 1. trace.info.tags['mlflow.user'] — the actual user who ran the trace
+    # 2. experiment_name /Users/<email>/... — the experiment owner
+    user_id = None
+    if hasattr(trace, "info"):
+        tags = getattr(trace.info, "tags", None) or {}
+        if isinstance(tags, dict):
+            user_id = tags.get("mlflow.user")
+        # Also extract notebook path from request_metadata
+        req_meta = getattr(trace.info, "request_metadata", None) or {}
+        if isinstance(req_meta, dict):
+            notebook_path = req_meta.get("mlflow.databricks.notebookPath")
+            if notebook_path:
+                resource_attrs.append(_make_attr("mlflow.notebookPath", notebook_path))
+    if not user_id and experiment_name and experiment_name.startswith("/Users/"):
+        parts = experiment_name.split("/")
+        if len(parts) >= 3 and parts[2]:
+            user_id = parts[2]
+    if user_id:
+        resource_attrs.append(_make_attr("enduser.id", user_id))
+
     otlp_spans: List[Dict[str, Any]] = []
 
     for span in trace.data.spans:
@@ -237,6 +258,7 @@ def genie_trace_to_otlp(trace_dict: Dict[str, Any]) -> Dict[str, Any]:
     output_tokens = token_est.get("output_tokens", 0)
 
     user_prompt = (trace_dict.get("input") or {}).get("prompt", "")
+    output_data = trace_dict.get("output") or {}
 
     # Root AGENT span
     agent_attrs = [
@@ -246,8 +268,22 @@ def genie_trace_to_otlp(trace_dict: Dict[str, Any]) -> Dict[str, Any]:
         agent_attrs.append(_make_attr("genie.space_id", space_id))
     if conv_id:
         agent_attrs.append(_make_attr("genie.conversation_id", conv_id))
+
+    # User ID (mapped to enduser.id for OTLP convention)
+    user_id = trace_dict.get("user_id")
+    if user_id:
+        agent_attrs.append(_make_attr("enduser.id", user_id))
+
+    # Session ID (conversation maps to session for trace grouping)
+    session_id = trace_dict.get("session_id")
+    if session_id:
+        agent_attrs.append(_make_attr("session.id", session_id))
+
+    # Input/output
     if user_prompt:
-        agent_attrs.append(_make_attr("gen_ai.prompt", user_prompt[:1000]))
+        agent_attrs.append(_make_attr("gen_ai.prompt", user_prompt))
+    if output_data:
+        agent_attrs.append(_make_attr("gen_ai.completion", json.dumps(output_data, default=str)))
 
     # Include the original Databricks API response as a JSON string attribute
     raw_response = trace_dict.get("raw_response")
