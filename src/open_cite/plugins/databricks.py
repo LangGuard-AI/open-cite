@@ -207,6 +207,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         self.genie_client = _GenieClient(self.workspace_client.api_client)
         self.genie_spaces: Dict[str, Dict] = {}       # space_id → space metadata
         self.genie_traces: List[Dict] = []              # Converted Genie traces
+        self._user_cache: Dict[str, Optional[str]] = {}  # databricks_user_id → email (or None if unresolvable)
 
         # MCP discovery stores (matching OTLP plugin pattern)
         self.mcp_servers: Dict[str, Dict[str, Any]] = {}
@@ -1152,6 +1153,46 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         self._last_query_time = datetime.utcnow()
         self.notify_data_changed()
 
+    def _resolve_user_email(self, user_id: str) -> str:
+        """Resolve a Databricks numeric user ID to an email via SCIM API.
+
+        Returns the email if found, otherwise returns the original user_id.
+        Results are cached for the lifetime of the plugin instance.
+        """
+        if not user_id:
+            return user_id
+
+        # Return cached result
+        if user_id in self._user_cache:
+            cached = self._user_cache[user_id]
+            return cached if cached else user_id
+
+        try:
+            data = self.workspace_client.api_client.do(
+                "GET",
+                f"/api/2.0/preview/scim/v2/Users/{user_id}",
+            )
+            # SCIM response: emails is an array of {value, type, primary}
+            emails = data.get("emails", [])
+            email = None
+            for e in emails:
+                if e.get("primary"):
+                    email = e.get("value")
+                    break
+            if not email and emails:
+                email = emails[0].get("value")
+
+            # Fall back to userName (usually the email/UPN)
+            if not email:
+                email = data.get("userName")
+
+            self._user_cache[user_id] = email
+            return email if email else user_id
+        except Exception as e:
+            logger.debug(f"SCIM lookup failed for user_id={user_id}: {e}")
+            self._user_cache[user_id] = None  # Cache the failure to avoid retrying
+            return user_id
+
     def _process_genie_message(
         self,
         message: Dict,
@@ -1261,7 +1302,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             "status": status,
             "model": model_name,
             "provider": "databricks",
-            "user_id": str(message.get("user_id", "")),
+            "user_id": self._resolve_user_email(str(message.get("user_id", ""))),
             "session_id": conv_id,
             "input": {"prompt": user_prompt},
             "output": {"generated_sql": generated_sql, "text_response": text_response},
