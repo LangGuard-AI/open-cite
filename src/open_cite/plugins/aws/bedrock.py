@@ -94,6 +94,16 @@ class AWSBedrockPlugin(AWSClientMixin, BaseDiscoveryPlugin):
     def get_identification_attributes(self) -> List[str]:
         return ["aws.bedrock.model_id", "aws.bedrock.region", "aws.account_id"]
 
+    def export_assets(self) -> Dict[str, Any]:
+        """Export AWS Bedrock assets."""
+        return {
+            "aws_bedrock_models": self.list_assets("model"),
+            "aws_bedrock_custom_models": self.list_assets("custom_model"),
+            "aws_bedrock_provisioned_throughput": self.list_assets("provisioned_throughput"),
+            "aws_bedrock_invocations": self.list_assets("invocation", days=7),
+            "aws_bedrock_usage_by_model": self.get_usage_by_model(days=7),
+        }
+
     def get_config(self) -> Dict[str, Any]:
         """Return plugin configuration (sensitive values masked)."""
         return {

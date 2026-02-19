@@ -137,6 +137,16 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
         import threading
         self._lock = threading.Lock()
 
+    def export_assets(self) -> Dict[str, Any]:
+        """Export Google Cloud assets."""
+        return {
+            "gcp_models": self.list_assets("model"),
+            "gcp_endpoints": self.list_assets("endpoint"),
+            "gcp_deployments": self.list_assets("deployment"),
+            "gcp_generative_models": self.list_assets("generative_model"),
+            "gcp_mcp_servers": self.list_assets("mcp_server"),
+        }
+
     def get_config(self) -> Dict[str, Any]:
         """Return plugin configuration (sensitive values masked)."""
         return {

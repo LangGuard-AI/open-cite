@@ -264,6 +264,20 @@ class BaseDiscoveryPlugin(ABC):
         """
         pass
 
+    def export_assets(self) -> Dict[str, Any]:
+        """
+        Export discovered assets for the OpenCITE JSON export.
+
+        Returns a dict whose keys are export categories (e.g. ``"tools"``,
+        ``"models"``, ``"data_assets"``) and values are lists of
+        schema-formatted dicts.  ``export_to_json`` merges these across all
+        active plugins.
+
+        The default implementation returns an empty dict.  Override in
+        subclasses that contribute to the export.
+        """
+        return {}
+
     def get_config(self) -> Dict[str, Any]:
         """
         Get the current configuration of this plugin instance.

@@ -5,6 +5,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OpenCITE - AI Discovery & Cataloging</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&display=swap" rel="stylesheet">
     <style>
         * {
             margin: 0;
@@ -12,9 +15,148 @@
             box-sizing: border-box;
         }
 
+        /* ===== OpenCITE Theme (default) ===== */
+        body,
+        [data-theme="opencite"] {
+            --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            --bg-body: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%);
+            --bg-card: #ffffff;
+            --bg-card-alt: #f9fafb;
+            --bg-card-hover: #f3f4f6;
+            --bg-input: #ffffff;
+            --bg-modal-overlay: rgba(0, 0, 0, 0.5);
+            --bg-modal: #ffffff;
+            --bg-drawer: #ffffff;
+            --text-primary: #111827;
+            --text-secondary: #4b5563;
+            --text-muted: #6b7280;
+            --text-on-accent: #ffffff;
+            --accent-primary: #2563eb;
+            --accent-secondary: #1e40af;
+            --accent-hover: #1d4ed8;
+            --shadow-accent: rgba(37, 99, 235, 0.4);
+            --focus-ring: rgba(37, 99, 235, 0.1);
+            --border-color: #e5e7eb;
+            --border-light: #f3f4f6;
+            --badge-blue-bg: #dbeafe;
+            --badge-blue-text: #1e40af;
+            --badge-green-bg: #d1fae5;
+            --badge-green-text: #065f46;
+            --badge-purple-bg: #ede9fe;
+            --badge-purple-text: #5b21b6;
+            --chip-bg: #eef2ff;
+            --chip-text: #4338ca;
+            --btn-edit-bg: #e5e7eb;
+            --btn-edit-text: #374151;
+            --btn-edit-hover: #d1d5db;
+            --btn-secondary-bg: #6b7280;
+            --btn-secondary-hover: #4b5563;
+            --no-instances-bg: #f9fafb;
+            --no-instances-border: #e5e7eb;
+            --plugin-card-selected-bg: #eef2ff;
+            --unknown-card-bg: #fffbeb;
+            --unknown-card-border: #fbbf24;
+            --mapping-badge-bg: #fef3c7;
+            --mapping-badge-text: #92400e;
+            --close-btn-color: #9ca3af;
+            --close-btn-hover: #111827;
+        }
+
+        /* ===== Databricks Light ===== */
+        [data-theme="databricks-light"] {
+            --font-family: 'DM Sans', Arial, sans-serif;
+            --bg-body: #F9F7F4;
+            --bg-card: #ffffff;
+            --bg-card-alt: #F5F3F0;
+            --bg-card-hover: #EDEAE6;
+            --bg-input: #ffffff;
+            --bg-modal-overlay: rgba(0, 0, 0, 0.5);
+            --bg-modal: #ffffff;
+            --bg-drawer: #ffffff;
+            --text-primary: #0B2026;
+            --text-secondary: #4A4A4A;
+            --text-muted: #7A7A7A;
+            --text-on-accent: #ffffff;
+            --accent-primary: #FF3621;
+            --accent-secondary: #E02E1B;
+            --accent-hover: #CC2A18;
+            --shadow-accent: rgba(255, 54, 33, 0.3);
+            --focus-ring: rgba(255, 54, 33, 0.1);
+            --border-color: #E0DCD7;
+            --border-light: #EBE8E4;
+            --badge-blue-bg: #E8F0FE;
+            --badge-blue-text: #1A56DB;
+            --badge-green-bg: #D1FAE5;
+            --badge-green-text: #065F46;
+            --badge-purple-bg: #EDE9FE;
+            --badge-purple-text: #5B21B6;
+            --chip-bg: #FDE8E4;
+            --chip-text: #CC2A18;
+            --btn-edit-bg: #E0DCD7;
+            --btn-edit-text: #0B2026;
+            --btn-edit-hover: #D0CBC5;
+            --btn-secondary-bg: #6B7280;
+            --btn-secondary-hover: #4B5563;
+            --no-instances-bg: #F5F3F0;
+            --no-instances-border: #E0DCD7;
+            --plugin-card-selected-bg: #FDE8E4;
+            --unknown-card-bg: #FFFBEB;
+            --unknown-card-border: #FBBF24;
+            --mapping-badge-bg: #FEF3C7;
+            --mapping-badge-text: #92400E;
+            --close-btn-color: #9CA3AF;
+            --close-btn-hover: #0B2026;
+        }
+
+        /* ===== Databricks Dark ===== */
+        [data-theme="databricks-dark"] {
+            --font-family: 'DM Sans', Arial, sans-serif;
+            --bg-body: #11171C;
+            --bg-card: #243B44;
+            --bg-card-alt: #2D4A55;
+            --bg-card-hover: #355A66;
+            --bg-input: #2D4A55;
+            --bg-modal-overlay: rgba(0, 0, 0, 0.7);
+            --bg-modal: #243B44;
+            --bg-drawer: #243B44;
+            --text-primary: #E8E8E8;
+            --text-secondary: #A0AEB5;
+            --text-muted: #7A8E96;
+            --text-on-accent: #ffffff;
+            --accent-primary: #FF3621;
+            --accent-secondary: #E02E1B;
+            --accent-hover: #FF5642;
+            --shadow-accent: rgba(255, 54, 33, 0.3);
+            --focus-ring: rgba(255, 54, 33, 0.15);
+            --border-color: #3A4F5A;
+            --border-light: #2D4A55;
+            --badge-blue-bg: #1E3A5F;
+            --badge-blue-text: #93C5FD;
+            --badge-green-bg: #064E3B;
+            --badge-green-text: #6EE7B7;
+            --badge-purple-bg: #3B0764;
+            --badge-purple-text: #C4B5FD;
+            --chip-bg: #4A2020;
+            --chip-text: #FF8A7A;
+            --btn-edit-bg: #3A4F5A;
+            --btn-edit-text: #E8E8E8;
+            --btn-edit-hover: #4A6070;
+            --btn-secondary-bg: #3A4F5A;
+            --btn-secondary-hover: #4A6070;
+            --no-instances-bg: #2D4A55;
+            --no-instances-border: #3A4F5A;
+            --plugin-card-selected-bg: #4A2020;
+            --unknown-card-bg: #3D3520;
+            --unknown-card-border: #B8860B;
+            --mapping-badge-bg: #3D3520;
+            --mapping-badge-text: #FCD34D;
+            --close-btn-color: #7A8E96;
+            --close-btn-hover: #E8E8E8;
+        }
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: var(--font-family);
+            background: var(--bg-body);
             min-height: 100vh;
             padding: 20px;
         }
@@ -25,7 +167,7 @@
         }
 
         .header {
-            background: white;
+            background: var(--bg-card);
             border-radius: 12px;
             padding: 30px;
             margin-bottom: 20px;
@@ -33,7 +175,7 @@
         }
 
         h1 {
-            color: #333;
+            color: var(--text-primary);
             font-size: 2.5em;
         }
 
@@ -43,7 +185,7 @@
         }
 
         .subtitle {
-            color: #666;
+            color: var(--text-secondary);
             font-size: 1.1em;
         }
 
@@ -60,14 +202,14 @@
         }
 
         .card {
-            background: white;
+            background: var(--bg-card);
             border-radius: 12px;
             padding: 24px;
             box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
         }
 
         .card h2 {
-            color: #333;
+            color: var(--text-primary);
             font-size: 1.4em;
             margin-bottom: 16px;
             display: flex;
@@ -162,8 +304,8 @@
 
         /* Instance Card Styles */
         .instance-card {
-            background: #f9fafb;
-            border: 2px solid #e5e7eb;
+            background: var(--bg-card-alt);
+            border: 2px solid var(--border-color);
             border-radius: 8px;
             padding: 16px;
             margin-bottom: 12px;
@@ -171,8 +313,8 @@
         }
 
         .instance-card:hover {
-            border-color: #667eea;
-            background: #f3f4f6;
+            border-color: var(--accent-primary);
+            background: var(--bg-card-hover);
         }
 
         .instance-header {
@@ -185,19 +327,19 @@
 
         .instance-name {
             font-weight: 600;
-            color: #333;
+            color: var(--text-primary);
             font-size: 1.1em;
             flex-grow: 1;
             text-overflow: ellipsis;
         }
 
         .instance-type {
-            color: #6b7280;
+            color: var(--text-muted);
             font-size: 0.85em;
         }
 
         .instance-info {
-            color: #666;
+            color: var(--text-secondary);
             font-size: 0.9em;
             margin-bottom: 8px;
         }
@@ -218,12 +360,12 @@
         }
 
         .btn-edit {
-            background: #e5e7eb;
-            color: #374151;
+            background: var(--btn-edit-bg);
+            color: var(--btn-edit-text);
         }
 
         .btn-edit:hover {
-            background: #d1d5db;
+            background: var(--btn-edit-hover);
         }
 
         .btn-start {
@@ -265,13 +407,13 @@
         }
 
         .btn-primary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
+            background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
+            color: var(--text-on-accent);
         }
 
         .btn-primary:hover {
             transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+            box-shadow: 0 4px 12px var(--shadow-accent);
         }
 
         .btn-primary:disabled {
@@ -281,12 +423,12 @@
         }
 
         .btn-secondary {
-            background: #6b7280;
-            color: white;
+            background: var(--btn-secondary-bg);
+            color: var(--text-on-accent);
         }
 
         .btn-secondary:hover {
-            background: #4b5563;
+            background: var(--btn-secondary-hover);
         }
 
         .btn-add {
@@ -316,14 +458,14 @@
             display: flex;
             gap: 8px;
             margin-bottom: 16px;
-            border-bottom: 2px solid #e5e7eb;
+            border-bottom: 2px solid var(--border-color);
         }
 
         .tab {
             padding: 12px 20px;
             background: none;
             border: none;
-            color: #6b7280;
+            color: var(--text-muted);
             font-weight: 600;
             cursor: pointer;
             border-bottom: 3px solid transparent;
@@ -331,12 +473,12 @@
         }
 
         .tab:hover {
-            color: #667eea;
+            color: var(--accent-primary);
         }
 
         .tab.active {
-            color: #667eea;
-            border-bottom-color: #667eea;
+            color: var(--accent-primary);
+            border-bottom-color: var(--accent-primary);
         }
 
         .btn-export-inline {
@@ -364,8 +506,8 @@
         }
 
         .asset-card {
-            background: #f9fafb;
-            border: 1px solid #e5e7eb;
+            background: var(--bg-card-alt);
+            border: 1px solid var(--border-color);
             border-radius: 8px;
             padding: 16px;
             transition: all 0.2s;
@@ -380,20 +522,20 @@
         }
 
         .asset-card.unknown {
-            background-color: #fffbeb;
-            border: 2px solid #fbbf24;
+            background-color: var(--unknown-card-bg);
+            border: 2px solid var(--unknown-card-border);
         }
 
         .asset-title {
             font-weight: 600;
-            color: #333;
+            color: var(--text-primary);
             margin-bottom: 8px;
             font-size: 1.1em;
             text-overflow: ellipsis;
         }
 
         .asset-meta {
-            color: #666;
+            color: var(--text-secondary);
             font-size: 0.9em;
             margin-bottom: 4px;
         }
@@ -409,24 +551,24 @@
         }
 
         .badge-blue {
-            background: #dbeafe;
-            color: #1e40af;
+            background: var(--badge-blue-bg);
+            color: var(--badge-blue-text);
         }
 
         .badge-green {
-            background: #d1fae5;
-            color: #065f46;
+            background: var(--badge-green-bg);
+            color: var(--badge-green-text);
         }
 
         .badge-purple {
-            background: #ede9fe;
-            color: #5b21b6;
+            background: var(--badge-purple-bg);
+            color: var(--badge-purple-text);
         }
 
         .empty-state {
             text-align: center;
             padding: 60px 20px;
-            color: #6b7280;
+            color: var(--text-muted);
         }
 
         .empty-state-icon {
@@ -443,8 +585,8 @@
         }
 
         .stat-card {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
+            background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
+            color: var(--text-on-accent);
             padding: 16px;
             border-radius: 8px;
             text-align: center;
@@ -454,7 +596,7 @@
 
         .stat-card:hover {
             transform: translateY(-4px);
-            box-shadow: 0 8px 16px rgba(102, 126, 234, 0.4);
+            box-shadow: 0 8px 16px var(--shadow-accent);
         }
 
         .stat-number {
@@ -486,12 +628,12 @@
             top: 0;
             width: 100%;
             height: 100%;
-            background-color: rgba(0, 0, 0, 0.5);
+            background-color: var(--bg-modal-overlay);
             backdrop-filter: blur(4px);
         }
 
         .modal-content {
-            background-color: white;
+            background-color: var(--bg-modal);
             margin: 5% auto;
             padding: 30px;
             border-radius: 12px;
@@ -507,23 +649,23 @@
             align-items: center;
             margin-bottom: 20px;
             padding-bottom: 15px;
-            border-bottom: 1px solid #e5e7eb;
+            border-bottom: 1px solid var(--border-color);
         }
 
         .modal-header h2 {
             font-size: 1.5em;
-            color: #111827;
+            color: var(--text-primary);
         }
 
         .close {
-            color: #9ca3af;
+            color: var(--close-btn-color);
             font-size: 28px;
             font-weight: bold;
             cursor: pointer;
         }
 
         .close:hover {
-            color: #111827;
+            color: var(--close-btn-hover);
         }
 
         .form-group {
@@ -532,7 +674,7 @@
 
         .form-group label {
             display: block;
-            color: #555;
+            color: var(--text-secondary);
             font-size: 0.9em;
             margin-bottom: 4px;
             font-weight: 500;
@@ -542,20 +684,22 @@
         .form-group select {
             width: 100%;
             padding: 10px 12px;
-            border: 1px solid #d1d5db;
+            border: 1px solid var(--border-color);
             border-radius: 6px;
             font-size: 0.95em;
+            background: var(--bg-input);
+            color: var(--text-primary);
         }
 
         .form-group input:focus,
         .form-group select:focus {
             outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 0 3px var(--focus-ring);
         }
 
         .plugin-type-card {
-            border: 2px solid #e5e7eb;
+            border: 2px solid var(--border-color);
             border-radius: 8px;
             padding: 12px;
             margin-bottom: 8px;
@@ -564,30 +708,30 @@
         }
 
         .plugin-type-card:hover {
-            border-color: #667eea;
-            background: #f9fafb;
+            border-color: var(--accent-primary);
+            background: var(--bg-card-alt);
         }
 
         .plugin-type-card.selected {
-            border-color: #667eea;
-            background: #eef2ff;
+            border-color: var(--accent-primary);
+            background: var(--plugin-card-selected-bg);
         }
 
         .plugin-type-name {
             font-weight: 600;
-            color: #333;
+            color: var(--text-primary);
         }
 
         .plugin-type-description {
             font-size: 0.85em;
-            color: #666;
+            color: var(--text-secondary);
             margin-top: 4px;
         }
 
         .config-section {
             margin-top: 20px;
             padding-top: 20px;
-            border-top: 1px solid #e5e7eb;
+            border-top: 1px solid var(--border-color);
         }
 
         .attribute-list {
@@ -601,14 +745,14 @@
             display: flex;
             align-items: center;
             padding: 10px;
-            background: #f9fafb;
-            border: 1px solid #e5e7eb;
+            background: var(--bg-card-alt);
+            border: 1px solid var(--border-color);
             border-radius: 8px;
             cursor: pointer;
         }
 
         .attribute-item:hover {
-            background: #f3f4f6;
+            background: var(--bg-card-hover);
         }
 
         .attribute-item input {
@@ -636,10 +780,10 @@
         .no-instances {
             text-align: center;
             padding: 30px;
-            color: #6b7280;
-            background: #f9fafb;
+            color: var(--text-muted);
+            background: var(--no-instances-bg);
             border-radius: 8px;
-            border: 2px dashed #e5e7eb;
+            border: 2px dashed var(--no-instances-border);
         }
 
         .instances-list {
@@ -647,12 +791,170 @@
             overflow-y: auto;
             margin-bottom: 12px;
         }
+
+        /* Detail Drawer */
+        .drawer-overlay {
+            position: fixed;
+            inset: 0;
+            background: var(--bg-modal-overlay);
+            z-index: 1100;
+            display: none;
+        }
+
+        .drawer-overlay.open {
+            display: block;
+        }
+
+        .detail-drawer {
+            position: fixed;
+            top: 0;
+            right: 0;
+            width: 480px;
+            max-width: 90vw;
+            height: 100%;
+            background: var(--bg-drawer);
+            box-shadow: -4px 0 20px rgba(0, 0, 0, 0.15);
+            z-index: 1200;
+            transform: translateX(100%);
+            transition: transform 0.25s ease;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .detail-drawer.open {
+            transform: translateX(0);
+        }
+
+        .drawer-header {
+            position: sticky;
+            top: 0;
+            background: var(--bg-drawer);
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            z-index: 1;
+        }
+
+        .drawer-header .drawer-title {
+            font-size: 1.2em;
+            font-weight: 700;
+            color: var(--text-primary);
+            flex-grow: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .drawer-header .drawer-close {
+            background: none;
+            border: none;
+            font-size: 24px;
+            color: var(--close-btn-color);
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 4px;
+            line-height: 1;
+        }
+
+        .drawer-header .drawer-close:hover {
+            color: var(--close-btn-hover);
+            background: var(--bg-card-hover);
+        }
+
+        .drawer-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px 24px;
+        }
+
+        .detail-section {
+            margin-bottom: 20px;
+        }
+
+        .detail-section-title {
+            font-size: 0.8em;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            margin-bottom: 10px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .detail-row {
+            display: flex;
+            padding: 6px 0;
+            font-size: 0.9em;
+            line-height: 1.5;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .detail-label {
+            font-weight: 600;
+            color: var(--text-secondary);
+            width: 140px;
+            min-width: 140px;
+            flex-shrink: 0;
+            padding-right: 12px;
+            text-align: right;
+        }
+
+        .detail-label::after {
+            content: ':';
+        }
+
+        .detail-value {
+            color: var(--text-secondary);
+            word-break: break-word;
+            flex: 1;
+        }
+
+        .detail-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+
+        .detail-chip {
+            display: inline-block;
+            padding: 2px 8px;
+            background: var(--chip-bg);
+            color: var(--chip-text);
+            border-radius: 12px;
+            font-size: 0.82em;
+            font-weight: 500;
+        }
+
+        .detail-sub-block {
+            background: var(--bg-card-alt);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 10px 12px;
+            margin-bottom: 8px;
+        }
+
+        .detail-sub-block .detail-row {
+            padding: 2px 0;
+        }
     </style>
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 </head>
 
-<body>
-    <div class="container">
+<body data-theme="opencite">
+    <div style="position:absolute;right:20px;top:10px;">
+        <label for="themeSelect" style="color: var(--text-muted); font-size: 0.85em; white-space:nowrap;">Theme:</label>
+        <select id="themeSelect" onchange="setTheme(this.value); refreshLineageGraph();" style="padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border-color);
+                        background: var(--bg-input); color: var(--text-primary); font-size: 0.85em;
+                        font-family: var(--font-family); cursor: pointer;">
+            <option value="opencite">OpenCITE</option>
+            <option value="databricks-light">Databricks Light</option>
+            <option value="databricks-dark">Databricks Dark</option>
+        </select>
+    </div>
+    <div class="container" style="margin-top:2em;">
         <div class="header" style="display:flex;align-items:center;">
             <div style="float:left">
                 <h1><img src="static/OpenCiteBear.png" /> OpenCITE</h1>
@@ -673,8 +975,8 @@
                         <span class="status-indicator" id="statusIndicator"></span>
                         Discovery Status
                     </h2>
-                    <div id="statusText" style="color: #666; margin-bottom: 12px;">Not running</div>
-                    <div id="pluginsActive" style="color: #666; font-size: 0.9em;"></div>
+                    <div id="statusText" style="color: var(--text-secondary); margin-bottom: 12px;">Not running</div>
+                    <div id="pluginsActive" style="color: var(--text-secondary); font-size: 0.9em;"></div>
                     <div id="progressContainer" class="progress-container" style="display: none;"></div>
                 </div>
 
@@ -776,7 +1078,7 @@
                 <h2>Identify Asset</h2>
                 <span class="close" onclick="closeMapModal()">&times;</span>
             </div>
-            <p style="color: #6b7280; font-size: 0.9em; margin-bottom: 20px;">
+            <p style="color: var(--text-muted); font-size: 0.9em; margin-bottom: 20px;">
                 Select the attributes that uniquely identify this tool and provide its identity.
             </p>
 
@@ -796,7 +1098,7 @@
             </div>
 
             <div style="margin-top: 20px;">
-                <label style="font-weight: 600; font-size: 0.9em; color: #374151;">Select Identifying Attributes:</label>
+                <label style="font-weight: 600; font-size: 0.9em; color: var(--text-secondary);">Select Identifying Attributes:</label>
                 <div id="attributeList" class="attribute-list"></div>
             </div>
 
@@ -807,7 +1109,32 @@
         </div>
     </div>
 
+    <!-- Detail Drawer -->
+    <div id="drawerOverlay" class="drawer-overlay" onclick="closeDrawer()"></div>
+    <div id="detailDrawer" class="detail-drawer">
+        <div class="drawer-header">
+            <span class="drawer-title" id="drawerTitle"></span>
+            <button class="drawer-close" onclick="closeDrawer()">&times;</button>
+        </div>
+        <div class="drawer-body" id="drawerBody"></div>
+    </div>
+
     <script>
+        // =========================================================================
+        // Theme Management
+        // =========================================================================
+        function setTheme(theme) {
+            document.body.setAttribute('data-theme', theme);
+            localStorage.setItem('opencite-theme', theme);
+            const sel = document.getElementById('themeSelect');
+            if (sel) sel.value = theme;
+        }
+        function loadTheme() {
+            const saved = localStorage.getItem('opencite-theme') || 'opencite';
+            setTheme(saved);
+        }
+        loadTheme();
+
         let pluginTypes = {};
         let instances = [];
         let assets = {};
@@ -975,7 +1302,7 @@
                 return;
             }
 
-            configContainer.innerHTML = '<h4 style="margin-bottom: 12px; color: #374151;">Configuration</h4>' +
+            configContainer.innerHTML = '<h4 style="margin-bottom: 12px; color: var(--text-secondary);">Configuration</h4>' +
                 Object.entries(fields).map(([key, field]) => {
                     const inputType = field.type || 'text';
                     const useValue = inputType === 'number';
@@ -1159,6 +1486,7 @@
 
             socket.on('status_update', function (data) {
                 _applyStatusUpdate(data);
+                loadInstances();
             });
 
             socket.on('disconnect', function () {
@@ -1348,7 +1676,7 @@
                         <div class="asset-meta">Type: ${tool.type}</div>
                         <div class="asset-meta">Source: ${tool.discovery_source}</div>
                         ${sourceName ? `<div class="asset-meta"><b>Identified:</b> ${sourceName}</div>` :
-                        `<span class="badge" style="background: #fef3c7; color: #92400e;">Mapping Required</span>`}
+                        `<span class="badge" style="background: var(--mapping-badge-bg); color: var(--mapping-badge-text);">Mapping Required</span>`}
                         <div class="asset-meta">Models: ${tool.models?.length || 0}</div>
                         <span class="badge badge-blue">Tool</span>
                         ${isUnknown ? `<br><button class="btn-map" onclick="openMapModal('${tool.name.replace(/'/g, "\\'")}')">Map Source</button>` : ''}
@@ -1378,7 +1706,7 @@
                         <div class="asset-title">🤖 ${agent.name}</div>
                         <div class="asset-meta">Confidence: ${agent.confidence}</div>
                         ${agentSourceName ? `<div class="asset-meta"><b>Identified:</b> ${agentSourceName}</div>` :
-                        `<span class="badge" style="background: #fef3c7; color: #92400e;">Mapping Required</span>`}
+                        `<span class="badge" style="background: var(--mapping-badge-bg); color: var(--mapping-badge-text);">Mapping Required</span>`}
                         <div class="asset-meta">Tools: ${agent.tools_used?.length || 0}</div>
                         <span class="badge badge-purple">Agent</span>
                         ${isAgentUnknown ? `<br><button class="btn-map" onclick="openAgentMapModal('${agent.name.replace(/'/g, "\\'")}')">Map Source</button>` : ''}
@@ -1443,7 +1771,7 @@
                         <div class="asset-meta">Type: ${tool.type}</div>
                         <div class="asset-meta">Discovery: ${tool.discovery_source}</div>
                         ${sourceName ? `<div class="asset-meta"><b>Identified:</b> ${sourceName}</div>` :
-                        `<span class="badge" style="background: #fef3c7; color: #92400e;">Mapping Required</span>`}
+                        `<span class="badge" style="background: var(--mapping-badge-bg); color: var(--mapping-badge-text);">Mapping Required</span>`}
                         <div class="asset-meta">Models: ${tool.models?.join(', ') || 'none'}</div>
                         ${isUnknown ? `<button class="btn-map" onclick="openMapModal('${tool.name.replace(/'/g, "\\'")}')">Map Source</button>` : ''}
                     </div>
@@ -1492,7 +1820,7 @@
                         <div class="asset-title">🤖 ${agent.name}</div>
                         <div class="asset-meta">Confidence: ${agent.confidence}</div>
                         ${agentSourceName ? `<div class="asset-meta"><b>Identified:</b> ${agentSourceName}</div>` :
-                        `<span class="badge" style="background: #fef3c7; color: #92400e;">Mapping Required</span>`}
+                        `<span class="badge" style="background: var(--mapping-badge-bg); color: var(--mapping-badge-text);">Mapping Required</span>`}
                         <div class="asset-meta">Tools: ${agent.tools_used?.join(', ') || 'none'}</div>
                         <div class="asset-meta">Models: ${agent.models_used?.join(', ') || 'none'}</div>
                         ${agent.first_seen ? `<div class="asset-meta">First seen: ${new Date(agent.first_seen).toLocaleString()}</div>` : ''}
@@ -1629,7 +1957,7 @@
             );
 
             if (keys.length === 0) {
-                attrList.innerHTML = '<p style="color: #666;">No metadata attributes available.</p>';
+                attrList.innerHTML = '<p style="color: var(--text-secondary);">No metadata attributes available.</p>';
             } else {
                 attrList.innerHTML = keys.map(key => {
                     const value = metadata[key];
@@ -1638,7 +1966,7 @@
                         <div class="attribute-item" onclick="if(event.target.tagName!=='INPUT')this.querySelector('input').click()">
                             <input type="checkbox" data-key="${key}" data-value="${value}">
                             <div style="flex-grow: 1;">
-                                <span style="color: #6b7280;">${key}:</span>
+                                <span style="color: var(--text-muted);">${key}:</span>
                                 <span style="font-weight: 600;">${value}</span>
                             </div>
                         </div>
@@ -1664,7 +1992,7 @@
             );
 
             if (keys.length === 0) {
-                attrList.innerHTML = '<p style="color: #666;">No metadata attributes available.</p>';
+                attrList.innerHTML = '<p style="color: var(--text-secondary);">No metadata attributes available.</p>';
             } else {
                 attrList.innerHTML = keys.map(key => {
                     const value = metadata[key];
@@ -1673,7 +2001,7 @@
                         <div class="attribute-item" onclick="if(event.target.tagName!=='INPUT')this.querySelector('input').click()">
                             <input type="checkbox" data-key="${key}" data-value="${value}">
                             <div style="flex-grow: 1;">
-                                <span style="color: #6b7280;">${key}:</span>
+                                <span style="color: var(--text-muted);">${key}:</span>
                                 <span style="font-weight: 600;">${value}</span>
                             </div>
                         </div>
@@ -1792,7 +2120,8 @@
 
             if (!lineageCollapsed) {
                 const frame = document.getElementById('lineageFrame');
-                frame.src = '/api/v1/lineage-graph?t=' + Date.now();
+                const theme = document.body.getAttribute('data-theme') || 'opencite';
+                frame.src = '/api/v1/lineage-graph?t=' + Date.now() + '&theme=' + encodeURIComponent(theme);
             }
         }
 
@@ -1834,6 +2163,174 @@
             card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
 
+        // =========================================================================
+        // Asset Detail Drawer
+        // =========================================================================
+
+        const _assetTypeEmoji = {
+            tool: '🔧', model: '🤖', agent: '🤖', downstream: '🔗',
+            data_asset: '📊', mcp_server: '🌐', mcp_tool: '🛠️'
+        };
+
+        const _assetTypeBadgeClass = {
+            tool: 'badge-blue', model: 'badge-green', agent: 'badge-purple',
+            downstream: 'badge-green', data_asset: 'badge-green',
+            mcp_server: 'badge-purple', mcp_tool: 'badge-blue'
+        };
+
+        function openDrawer(type, asset) {
+            if (!asset) return;
+            const emoji = _assetTypeEmoji[type] || '📦';
+            const badgeCls = _assetTypeBadgeClass[type] || 'badge-blue';
+            const typeLabel = type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            document.getElementById('drawerTitle').innerHTML =
+                `${emoji} ${_escHtml(asset.name || 'Unknown')} <span class="badge ${badgeCls}" style="font-size:0.7em;vertical-align:middle;">${typeLabel}</span>`;
+            document.getElementById('drawerBody').innerHTML = renderAssetDetail(asset, type);
+            document.getElementById('drawerOverlay').classList.add('open');
+            document.getElementById('detailDrawer').classList.add('open');
+        }
+
+        function closeDrawer() {
+            document.getElementById('drawerOverlay').classList.remove('open');
+            document.getElementById('detailDrawer').classList.remove('open');
+        }
+
+        function _escHtml(str) {
+            const d = document.createElement('div');
+            d.textContent = str;
+            return d.innerHTML;
+        }
+
+        function _isTimestampKey(key) {
+            return /seen|timestamp|created|updated|date/i.test(key);
+        }
+
+        function _formatTimestamp(val) {
+            try {
+                const d = new Date(val);
+                if (isNaN(d.getTime())) return String(val);
+                return d.toLocaleString();
+            } catch { return String(val); }
+        }
+
+        function _prettyKey(key) {
+            return key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        }
+
+        function renderAssetDetail(asset, type) {
+            const skipKeys = new Set(['traces']);
+            let html = '';
+            const mainRows = [];
+            const sections = [];
+
+            for (const [key, val] of Object.entries(asset)) {
+                if (skipKeys.has(key)) continue;
+                if (val === null || val === undefined) continue;
+
+                const label = _prettyKey(key);
+
+                if (typeof val === 'string' || typeof val === 'number' || typeof val === 'boolean') {
+                    let display;
+                    if (_isTimestampKey(key) && typeof val === 'string') {
+                        display = _formatTimestamp(val);
+                    } else {
+                        display = _escHtml(String(val));
+                    }
+                    mainRows.push(`<div class="detail-row"><span class="detail-label">${_escHtml(label)}</span><span class="detail-value">${display}</span></div>`);
+                } else if (Array.isArray(val)) {
+                    if (val.length === 0) {
+                        mainRows.push(`<div class="detail-row"><span class="detail-label">${_escHtml(label)}</span><span class="detail-value" style="color:var(--text-muted);">none</span></div>`);
+                    } else if (typeof val[0] === 'string' || typeof val[0] === 'number') {
+                        const chips = val.map(v => `<span class="detail-chip">${_escHtml(String(v))}</span>`).join('');
+                        mainRows.push(`<div class="detail-row"><span class="detail-label">${_escHtml(label)}</span><span class="detail-value"><div class="detail-chips">${chips}</div></span></div>`);
+                    } else if (typeof val[0] === 'object') {
+                        let sectionHtml = `<div class="detail-section"><div class="detail-section-title">${_escHtml(label)} (${val.length})</div>`;
+                        val.forEach(item => {
+                            sectionHtml += '<div class="detail-sub-block">';
+                            for (const [sk, sv] of Object.entries(item)) {
+                                if (sv === null || sv === undefined) continue;
+                                sectionHtml += `<div class="detail-row"><span class="detail-label">${_escHtml(_prettyKey(sk))}</span><span class="detail-value">${_escHtml(String(sv))}</span></div>`;
+                            }
+                            sectionHtml += '</div>';
+                        });
+                        sectionHtml += '</div>';
+                        sections.push(sectionHtml);
+                    }
+                } else if (typeof val === 'object') {
+                    const entries = Object.entries(val).filter(([, v]) => v !== null && v !== undefined);
+                    if (entries.length > 0) {
+                        let sectionHtml = `<div class="detail-section"><div class="detail-section-title">${_escHtml(label)}</div>`;
+                        for (const [sk, sv] of entries) {
+                            if (typeof sv === 'object' && !Array.isArray(sv)) {
+                                sectionHtml += `<div class="detail-row"><span class="detail-label">${_escHtml(_prettyKey(sk))}</span><span class="detail-value" style="font-family:monospace;font-size:0.85em;">${_escHtml(JSON.stringify(sv))}</span></div>`;
+                            } else if (Array.isArray(sv)) {
+                                const chips = sv.map(v => `<span class="detail-chip">${_escHtml(String(v))}</span>`).join('');
+                                sectionHtml += `<div class="detail-row"><span class="detail-label">${_escHtml(_prettyKey(sk))}</span><span class="detail-value"><div class="detail-chips">${chips}</div></span></div>`;
+                            } else {
+                                let display = _isTimestampKey(sk) && typeof sv === 'string' ? _formatTimestamp(sv) : _escHtml(String(sv));
+                                sectionHtml += `<div class="detail-row"><span class="detail-label">${_escHtml(_prettyKey(sk))}</span><span class="detail-value">${display}</span></div>`;
+                            }
+                        }
+                        sectionHtml += '</div>';
+                        sections.push(sectionHtml);
+                    }
+                }
+            }
+
+            if (mainRows.length) {
+                html += '<div class="detail-section"><div class="detail-section-title">Properties</div>' + mainRows.join('') + '</div>';
+            }
+            html += sections.join('');
+
+            return html || '<p style="color:var(--text-muted);">No details available</p>';
+        }
+
+        // Asset lookup helper
+        function _lookupAsset(type, name) {
+            const map = {
+                tool: assets.tools,
+                model: assets.models,
+                agent: assets.agents,
+                downstream: assets.downstream_systems,
+                data_asset: assets.data_assets,
+                mcp_server: assets.mcp_servers,
+                mcp_tool: assets.mcp_tools,
+            };
+            const list = map[type];
+            if (!list) return null;
+            // Try name, then display_name
+            let found = list.find(a => a.name === name) || list.find(a => a.display_name === name);
+            // For models, also check gcp_models
+            if (!found && type === 'model' && assets.gcp_models) {
+                found = assets.gcp_models.find(a => a.name === name) || assets.gcp_models.find(a => a.display_name === name);
+            }
+            return found || null;
+        }
+
+        // Escape key closes drawer
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') closeDrawer();
+        });
+
+        // Listen for graph node clicks (postMessage from lineage iframe)
+        window.addEventListener('message', function (e) {
+            if (!e.data || e.data.type !== 'openDetail') return;
+            const nodeId = e.data.nodeId;
+            if (!nodeId || typeof nodeId !== 'string') return;
+            const colonIdx = nodeId.indexOf(':');
+            if (colonIdx === -1) return;
+            const prefix = nodeId.substring(0, colonIdx);
+            const name = nodeId.substring(colonIdx + 1);
+            const prefixToType = {
+                tool: 'tool', model: 'model', agent: 'agent',
+                ds: 'downstream', data: 'data_asset'
+            };
+            const type = prefixToType[prefix];
+            if (!type) return;
+            const asset = _lookupAsset(type, name);
+            if (asset) openDrawer(type, asset);
+        });
+
         // Click-to-focus: clicking an asset card focuses its node in the lineage graph
         document.getElementById('assetsContainer').addEventListener('click', function (e) {
             // Don't intercept button clicks (Map Source, etc.)
@@ -1853,30 +2350,40 @@
             let type = null;
             for (const badge of card.querySelectorAll('.badge')) {
                 const t = badge.textContent.trim().toLowerCase();
-                if (t === 'tool') { type = 'tool'; break; }
+                if (t === 'tool') {
+                    // In MCP tab, "Tool" badge means mcp_tool
+                    type = currentTab === 'mcp' ? 'mcp_tool' : 'tool'; break;
+                }
                 if (t === 'model') { type = 'model'; break; }
                 if (t === 'agent') { type = 'agent'; break; }
                 if (t === 'downstream') { type = 'downstream'; break; }
                 if (t === 'data asset') { type = 'data_asset'; break; }
+                if (t === 'server' || t === 'mcp server') { type = 'mcp_server'; break; }
             }
             // Fallback: infer from the active tab
             if (!type) {
                 const tabMap = {
                     tools: 'tool', models: 'model', agents: 'agent',
-                    downstream: 'downstream', data_assets: 'data_asset'
+                    downstream: 'downstream', data_assets: 'data_asset',
+                    mcp: 'mcp_server'
                 };
                 type = tabMap[currentTab];
             }
             if (!type) return;
 
+            // Open detail drawer
+            const asset = _lookupAsset(type, name);
+            if (asset) openDrawer(type, asset);
+
+            // Focus lineage node (keep existing behavior)
             const prefixMap = {
                 tool: 'tool', model: 'model', agent: 'agent',
                 downstream: 'ds', data_asset: 'data'
             };
             const prefix = prefixMap[type];
-            if (!prefix) return;
-
-            focusLineageNode(prefix + ':' + name);
+            if (prefix) {
+                focusLineageNode(prefix + ':' + name);
+            }
         });
 
         // Initialize on load
