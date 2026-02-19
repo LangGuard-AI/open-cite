@@ -57,6 +57,21 @@ class OTLPRequestHandler(BaseHTTPRequestHandler):
             content_length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(content_length)
 
+            # Capture all inbound HTTP headers for webhook forwarding.
+            # Skip hop-by-hop headers that requests manages itself.
+            # Map Host to OTEL-HOST so it doesn't conflict with the
+            # webhook destination's Host header.
+            _SKIP_HEADERS = {"content-length", "transfer-encoding", "connection",
+                             "keep-alive", "te", "trailers", "upgrade"}
+            inbound_headers = {}
+            for key, value in self.headers.items():
+                if key.lower() in _SKIP_HEADERS:
+                    continue
+                if key.lower() == "host":
+                    inbound_headers["OTEL-HOST"] = value
+                else:
+                    inbound_headers[key] = value
+
             # Store reference to the plugin's trace store
             plugin = self.server.plugin
 
@@ -72,6 +87,9 @@ class OTLPRequestHandler(BaseHTTPRequestHandler):
                         logger.debug(f"[OTLP] Raw trace data: {json.dumps(data, indent=2)}")
 
                     plugin._ingest_traces(data)
+
+                    # Forward to webhooks with original inbound headers
+                    plugin._deliver_to_webhooks(data, inbound_headers=inbound_headers)
 
                     # Log successful trace ingestion
                     num_spans = sum(len(rs.get("scopeSpans", [])) for rs in data.get("resourceSpans", []))
@@ -122,7 +140,10 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         return {
             "name": "OpenTelemetry",
             "description": "Discovers AI tools using models via OTLP traces",
-            "required_fields": {},
+            "required_fields": {
+                "port": {"label": "OTLP HTTP Port", "default": 4318, "required": False, "type": "number"},
+                "host": {"label": "Bind Address", "default": "0.0.0.0", "required": False, "type": "text"},
+            },
             "trace_endpoints": {
                 "localhost": "http://localhost:4318/v1/traces",
                 "network": f"http://{local_ip}:4318/v1/traces" if local_ip != '127.0.0.1' else None,
@@ -131,11 +152,30 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
     @classmethod
     def from_config(cls, config, instance_id=None, display_name=None, dependencies=None):
+        import socket as _socket
+
+        host = config.get('host', '0.0.0.0')
+        port = int(config.get('port', 4318))
+
+        # Check that the port is available before creating the instance
+        try:
+            sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+            sock.bind((host, port))
+            sock.close()
+        except OSError:
+            raise ValueError(
+                f"Port {port} is already in use. "
+                f"Choose a different port for this OpenTelemetry instance."
+            )
+
         return cls(
-            host=config.get('host', '0.0.0.0'),
-            port=config.get('port', 4318),
+            host=host,
+            port=port,
             instance_id=instance_id,
             display_name=display_name,
+            persist_mappings=config.get('persist_mappings', True),
+            mapping_store_path=config.get('mapping_store_path'),
         )
 
     def start(self):
@@ -157,6 +197,8 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         attribute_patterns: List[str] = None,
         instance_id: Optional[str] = None,
         display_name: Optional[str] = None,
+        persist_mappings: bool = True,
+        mapping_store_path: Optional[str] = None,
     ):
         """
         Initialize the OpenTelemetry plugin.
@@ -167,10 +209,14 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             attribute_patterns: Optional list of regex patterns to match attributes to collect
             instance_id: Unique identifier for this plugin instance
             display_name: Human-readable name for this instance
+            persist_mappings: Whether to persist identity mappings to disk
+            mapping_store_path: Path to the mapping JSON file (None = default)
         """
         super().__init__(instance_id=instance_id, display_name=display_name)
         self.host = host
         self.port = port
+        self._persist_mappings = persist_mappings
+        self._mapping_store_path = mapping_store_path
         self.server: Optional[HTTPServer] = None
         self.server_thread: Optional[threading.Thread] = None
 
@@ -235,7 +281,10 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
         # Identifier for tool source identification
         from ..identifier import ToolIdentifier
-        self.identifier = ToolIdentifier()
+        self.identifier = ToolIdentifier(
+            mapping_path=self._mapping_store_path,
+            persist=self._persist_mappings,
+        )
 
     def get_config(self) -> Dict[str, Any]:
         """Return plugin configuration."""
@@ -282,28 +331,42 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
     def start_receiver(self):
         """Start the OTLP HTTP receiver in a background thread."""
-        import time
         if self.server_thread and self.server_thread.is_alive():
             logger.warning("OTLP receiver is already running")
             return
 
-        # Event to signal when server is ready
+        # Event to signal when server is ready (or failed)
         server_ready = threading.Event()
+        server_error: list = []
 
         def run_server():
-            self.server = ThreadingHTTPServer((self.host, self.port), OTLPRequestHandler)
-            self.server.plugin = self  # Pass plugin reference to handler
-            logger.info(f"OTLP receiver started on {self.host}:{self.port}")
-            server_ready.set()  # Signal that server is ready
-            self.server.serve_forever()
+            try:
+                self.server = ThreadingHTTPServer((self.host, self.port), OTLPRequestHandler)
+                self.server.plugin = self  # Pass plugin reference to handler
+                logger.info(f"OTLP receiver started on {self.host}:{self.port}")
+                server_ready.set()  # Signal that server is ready
+                self.server.serve_forever()
+            except OSError as e:
+                server_error.append(e)
+                server_ready.set()  # Unblock the waiting thread immediately
 
         self.server_thread = threading.Thread(target=run_server, daemon=True)
         self.server_thread.start()
 
         # Wait for server to actually start (timeout after 5 seconds)
         if not server_ready.wait(timeout=5.0):
+            self.server_thread = None
             logger.error("OTLP receiver failed to start within 5 seconds")
             raise RuntimeError("OTLP receiver failed to start")
+
+        if server_error:
+            self.server_thread = None
+            err = server_error[0]
+            logger.error(f"OTLP receiver failed to bind port {self.port}: {err}")
+            raise RuntimeError(
+                f"Port {self.port} is already in use. "
+                f"Choose a different port for this OpenTelemetry instance."
+            )
 
         logger.info("OTLP receiver thread started")
 

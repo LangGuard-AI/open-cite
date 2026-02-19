@@ -1,0 +1,14 @@
+{
+  "instances": {
+    "750bc40f-b613-5516-a6cc-22c30f1c165c": {
+      "plugin_type": "opentelemetry",
+      "display_name": "OpenTelemetry",
+      "config": {
+        "port": "4319"
+      },
+      "auto_start": true,
+      "created_at": "2026-02-19T16:17:33.871115",
+      "updated_at": "2026-02-19T16:17:33.871115"
+    }
+  }
+}

@@ -12,18 +12,28 @@ class ToolIdentifier:
     Identifies tools based on attribute combinations from traces.
     Uses a mapping JSON file to match attributes to identities.
     Supports hot-reloading if the file is edited on the filesystem.
+
+    When *persist* is False, existing mappings are still loaded from the
+    file (read-only) but ``add_mapping`` will only keep changes in memory
+    and will not write back to disk.
     """
 
-    def __init__(self, mapping_path: Optional[str] = None):
+    def __init__(self, mapping_path: Optional[str] = None, persist: bool = True):
         if not mapping_path:
             # Default to the one in resources
             mapping_path = str(Path(__file__).parent / "resources" / "tool_mapping.json")
-        
+
         self.mapping_path = mapping_path
+        self._persist = persist
         self._lock = threading.Lock()
         self.last_mtime = 0
         self.mapping = {}
         self._ensure_loaded()
+
+        if self._persist:
+            logger.info(f"Identity mapping persistence (JSON) enabled: {self.mapping_path}")
+        else:
+            logger.info("Identity mapping persistence (JSON) disabled — in-memory only")
 
     def _ensure_loaded(self):
         """Check if the mapping file has changed and reload if necessary."""
@@ -92,28 +102,31 @@ class ToolIdentifier:
 
     def add_mapping(self, plugin_name: str, attributes: Dict[str, Any], identity: Dict[str, str], match_type: str = "all"):
         """
-        Add a new tool mapping and save it to the mapping file.
+        Add a new tool mapping.
+
+        The mapping is always added in memory (so it takes effect immediately).
+        It is only written to disk when persistence is enabled.
         """
         if plugin_name not in self.mapping:
             self.mapping[plugin_name] = []
-        
-        # Add the new mapping entry
+
         self.mapping[plugin_name].append({
             "attributes": attributes,
             "identity": identity,
             "match_type": match_type
         })
-        
-        # Persist to file
+
+        if not self._persist:
+            return True
+
         try:
             with self._lock:
                 with open(self.mapping_path, 'w') as f:
                     json.dump(self.mapping, f, indent=4)
-                # Update mtime so we don't immediately reload what we just saved
                 try:
                     self.last_mtime = os.path.getmtime(self.mapping_path)
-                except:
-                    pass 
+                except Exception:
+                    pass
             logger.info(f"Successfully saved new tool mapping to {self.mapping_path}")
             return True
         except Exception as e:

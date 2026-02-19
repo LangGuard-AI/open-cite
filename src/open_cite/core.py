@@ -336,12 +336,18 @@ class BaseDiscoveryPlugin(ABC):
         """Return list of subscribed webhook URLs."""
         return list(self._webhook_urls)
 
-    def _deliver_to_webhooks(self, otlp_payload: dict):
+    def _deliver_to_webhooks(self, otlp_payload: dict, inbound_headers: Optional[Dict[str, str]] = None):
         """
         Deliver an OTLP payload to all subscribed webhooks (fire-and-forget).
 
         Each delivery is submitted to a thread pool so it doesn't block
         the discovery loop.
+
+        Args:
+            otlp_payload: OTLP JSON payload to forward
+            inbound_headers: HTTP headers from the original inbound request.
+                             These are forwarded to the webhook with the Host
+                             header mapped to OTEL-HOST.
         """
         if not self._webhook_urls:
             return
@@ -360,10 +366,15 @@ class BaseDiscoveryPlugin(ABC):
         if self._webhook_executor is None:
             self._webhook_executor = ThreadPoolExecutor(max_workers=2)
         for url in list(self._webhook_urls):
-            self._webhook_executor.submit(self._send_webhook, url, otlp_payload)
+            self._webhook_executor.submit(self._send_webhook, url, otlp_payload, inbound_headers)
 
-    def _send_webhook(self, url: str, otlp_payload: dict):
+    def _send_webhook(self, url: str, otlp_payload: dict, inbound_headers: Optional[Dict[str, str]] = None):
         """POST an OTLP JSON payload to a webhook URL with retries."""
+        # Build outbound headers: start with forwarded inbound headers,
+        # then ensure Content-Type is set for JSON
+        headers = dict(inbound_headers) if inbound_headers else {}
+        headers["Content-Type"] = "application/json"
+
         # Mask token in debug output
         masked_url = url.split("?")[0] + ("?token=***" if "token=" in url else "")
         backoffs = [0.5, 1.0]
@@ -372,7 +383,7 @@ class BaseDiscoveryPlugin(ABC):
                 resp = requests.post(
                     url,
                     json=otlp_payload,
-                    headers={"Content-Type": "application/json"},
+                    headers=headers,
                     timeout=10,
                 )
                 if resp.status_code < 400:

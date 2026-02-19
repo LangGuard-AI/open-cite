@@ -3,6 +3,11 @@ OpenCITE Headless API Service.
 
 A REST API for OpenCITE discovery and inventory capabilities,
 designed for deployment in Kubernetes without a GUI.
+
+Shared route registration:
+  - ``register_api_routes(app)`` mounts all ``/api/v1/`` endpoints.
+  - The GUI app imports and calls it so both entry-points share one
+    implementation.
 """
 
 import os
@@ -11,24 +16,37 @@ import logging
 import socket
 import uuid
 from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional
+from typing import Callable, Dict, List, Any, Optional
 from flask import Flask, request, jsonify
-from threading import Lock
+from threading import Lock, Thread
 
 from open_cite.client import OpenCiteClient
 from .config import OpenCiteConfig
 from .health import health_bp, init_health
 from .shutdown import register_shutdown_handler
 from .persistence import PersistenceManager
+from open_cite.plugin_store import PluginConfigStore
 
 from open_cite.plugins.registry import get_all_plugin_metadata, create_plugin_instance
 
 logger = logging.getLogger(__name__)
 
-# Global state
+# =========================================================================
+# Module-level shared state
+#
+# These globals are initialised by ``init_opencite_state()`` (called by
+# both ``create_app()`` for the API and by the GUI's startup code).
+# They are intentionally module-level so that route handlers and helper
+# functions can access them without coupling to Flask's ``current_app``.
+# Only one entry-point (API *or* GUI) runs per process, so there is no
+# conflict.
+# =========================================================================
+
 client: Optional[OpenCiteClient] = None
 persistence: Optional[PersistenceManager] = None
-discovery_status = {
+plugin_store: Optional[PluginConfigStore] = None
+_config: Optional[OpenCiteConfig] = None
+discovery_status: Dict[str, Any] = {
     "running": False,
     "plugins_enabled": [],
     "last_updated": None,
@@ -41,6 +59,28 @@ discovering_assets = False
 asset_cache = None
 asset_cache_time = None
 
+# Downstream types that are really data assets, not generic downstream systems
+_DATA_ASSET_TYPES = {"database", "dataset", "document_store"}
+
+# =========================================================================
+# GUI integration hooks
+#
+# When the GUI entry-point is active it sets these callbacks so that the
+# shared API route logic can trigger WebSocket pushes and background-
+# threaded plugin starts without importing GUI-specific modules.
+# =========================================================================
+
+_on_plugin_start: Optional[Callable] = None
+"""If set, called instead of ``plugin.start()`` – the GUI sets this to run
+start() in a background thread and push WebSocket updates."""
+
+_on_status_changed: Optional[Callable] = None
+"""Called after any discovery_status mutation so the GUI can push via WS."""
+
+
+# =========================================================================
+# Public helpers (used by GUI init and health checks)
+# =========================================================================
 
 def get_persistence() -> Optional[PersistenceManager]:
     """Get the persistence manager instance."""
@@ -81,6 +121,64 @@ def discover_available_plugins():
     return get_all_plugin_metadata()
 
 
+def _notify_status_changed():
+    """Notify listeners (GUI WebSocket) that discovery_status changed."""
+    if _on_status_changed:
+        try:
+            _on_status_changed()
+        except Exception as e:
+            logger.debug(f"_on_status_changed error: {e}")
+
+
+def _reclassify_downstream(assets):
+    """Move data-oriented downstream items into data_assets."""
+    remaining = []
+    for item in assets.get("downstream_systems", []):
+        if item.get("type") in _DATA_ASSET_TYPES:
+            assets["data_assets"].append(item)
+        else:
+            remaining.append(item)
+    assets["downstream_systems"] = remaining
+
+
+# =========================================================================
+# State initialisation
+# =========================================================================
+
+def init_opencite_state(app: Flask, config: Optional[OpenCiteConfig] = None):
+    """Initialise module-level shared state and attach to *app*.
+
+    Called by ``create_app()`` (API) and by the GUI's startup code so that
+    both entry-points share the same state layer.
+    """
+    global persistence, plugin_store, _config
+
+    if config is None:
+        config = OpenCiteConfig.from_env()
+
+    _config = config
+
+    # Store config on the app
+    app.opencite_config = config
+
+    # SQLite persistence for discovered assets (disabled by default)
+    if config.persistence_enabled:
+        persistence = PersistenceManager(config.db_path)
+        logger.info(f"Asset persistence (SQLite) enabled: {config.db_path}")
+    else:
+        logger.info("Asset persistence (SQLite) disabled — in-memory only")
+
+    # JSON plugin config persistence (enabled by default)
+    plugin_store = PluginConfigStore(
+        path=config.plugin_store_path,
+        enabled=config.persist_plugins,
+    )
+
+
+# =========================================================================
+# Flask app factory (API entry-point)
+# =========================================================================
+
 def create_app(config: Optional[OpenCiteConfig] = None) -> Flask:
     """
     Create and configure the Flask application.
@@ -91,8 +189,6 @@ def create_app(config: Optional[OpenCiteConfig] = None) -> Flask:
     Returns:
         Configured Flask application
     """
-    global persistence
-
     if config is None:
         config = OpenCiteConfig.from_env()
 
@@ -113,15 +209,11 @@ def create_app(config: Optional[OpenCiteConfig] = None) -> Flask:
         oc_logger.addHandler(handler)
     oc_logger.propagate = False
 
-    # Initialize persistence if enabled
-    if config.persistence_enabled:
-        persistence = PersistenceManager(config.db_path)
-        logger.info(f"Persistence enabled: {config.db_path}")
-    else:
-        logger.info("Persistence disabled (in-memory only)")
-
     app = Flask(__name__)
     app.config['SECRET_KEY'] = os.urandom(24)
+
+    # Initialise shared state (persistence, plugin_store)
+    init_opencite_state(app, config)
 
     # Register health check blueprint
     app.register_blueprint(health_bp)
@@ -132,17 +224,21 @@ def create_app(config: Optional[OpenCiteConfig] = None) -> Flask:
     # Register API routes
     register_api_routes(app)
 
-    # Store config in app context
-    app.opencite_config = config
-
     # Auto-configure plugins from environment when auto_start is enabled.
     # This is needed for gunicorn which calls create_app() directly
     # rather than going through run_api().
     if config.auto_start:
         auto_configure_plugins(app)
 
+    # Restore saved plugin instances from JSON store
+    _restore_saved_plugins()
+
     return app
 
+
+# =========================================================================
+# Route registration (shared by API and GUI Flask apps)
+# =========================================================================
 
 def register_api_routes(app: Flask):
     """Register all API routes on the Flask app."""
@@ -202,6 +298,7 @@ def register_api_routes(app: Flask):
                         })
                         discovery_status["error"] = f"Failed to configure {plugin_name}: {str(e)}"
                         discovery_status["current_status"] = f"Error configuring {plugin_name}"
+                    _notify_status_changed()
                     return jsonify({"error": f"Failed to configure {plugin_name}: {str(e)}"}), 400
 
             with state_lock:
@@ -213,6 +310,7 @@ def register_api_routes(app: Flask):
                     "message": f"All plugins configured successfully ({len(discovery_status['plugins_enabled'])} active)",
                     "status": "success"
                 })
+            _notify_status_changed()
 
             return jsonify({
                 "success": True,
@@ -249,11 +347,12 @@ def register_api_routes(app: Flask):
                     })
 
             if asset_cache and asset_cache_time:
-                if datetime.utcnow() - asset_cache_time < timedelta(seconds=2):
+                if datetime.utcnow() - asset_cache_time < timedelta(seconds=30):
                     return jsonify(asset_cache)
 
             discovering_assets = True
             assets = _collect_assets(asset_type)
+            _reclassify_downstream(assets)
             totals = {k: len(v) for k, v in assets.items()}
 
             result = {
@@ -390,16 +489,28 @@ def register_api_routes(app: Flask):
             if not all([plugin_name, attributes, identity]):
                 return jsonify({"error": "Missing required fields"}), 400
 
+            # Generate a stable source_id as UUIDv5
+            OPENCITE_NS = uuid.UUID('a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d')
+            source_name = identity.get('source_name', '')
+            identity['source_id'] = str(uuid.uuid5(OPENCITE_NS, f"{plugin_name}:{source_name}"))
+
+            # Try plugin's own identifier first, fall back to finding any plugin with one
             plugin = client.plugins.get(plugin_name)
-            if not plugin:
-                return jsonify({"error": f"Plugin {plugin_name} not found"}), 404
-
-            if not hasattr(plugin, 'identifier'):
-                return jsonify({"error": f"Plugin {plugin_name} does not support mapping"}), 400
-
-            success = plugin.identifier.add_mapping(
-                plugin_name, attributes, identity, match_type=match_type
-            )
+            if plugin and hasattr(plugin, 'identifier'):
+                success = plugin.identifier.add_mapping(
+                    plugin_name, attributes, identity, match_type=match_type
+                )
+            else:
+                # Find first plugin with an identifier
+                success = False
+                for p in client.plugins.values():
+                    if hasattr(p, 'identifier'):
+                        success = p.identifier.add_mapping(
+                            plugin_name, attributes, identity, match_type=match_type
+                        )
+                        break
+                if not success:
+                    return jsonify({"error": "No plugin with identifier support found"}), 400
 
             if success:
                 global asset_cache, asset_cache_time
@@ -441,6 +552,7 @@ def register_api_routes(app: Flask):
                 discovery_status["current_status"] = "Idle"
                 discovery_status["progress"] = []
                 discovery_status["error"] = None
+            _notify_status_changed()
 
             return jsonify({"success": True})
 
@@ -649,9 +761,17 @@ def register_api_routes(app: Flask):
             # Register the plugin
             client.register_plugin(plugin_instance)
 
-            # Save to persistence if enabled
-            # Persist the raw config (not plugin.get_config() which masks tokens)
-            # so that the instance can be restored from persistence after restart.
+            # Save to plugin config store (JSON file)
+            if plugin_store:
+                plugin_store.save(
+                    instance_id=instance_id,
+                    plugin_type=plugin_type,
+                    display_name=display_name,
+                    config=config,
+                    auto_start=auto_start,
+                )
+
+            # Save to SQLite persistence if enabled
             if persistence:
                 persistence.save_plugin_instance(
                     instance_id=instance_id,
@@ -665,6 +785,11 @@ def register_api_routes(app: Flask):
             # Start the plugin if auto_start is enabled
             if auto_start:
                 _start_plugin_instance(plugin_instance)
+                with state_lock:
+                    if plugin_type not in discovery_status["plugins_enabled"]:
+                        discovery_status["plugins_enabled"].append(plugin_type)
+                    discovery_status["running"] = True
+                _notify_status_changed()
 
             return jsonify({
                 "success": True,
@@ -733,6 +858,21 @@ def register_api_routes(app: Flask):
                             auto_start=new_auto_start,
                         )
 
+                # Update plugin store
+                if plugin_store:
+                    saved = next(
+                        (s for s in plugin_store.load_all() if s['instance_id'] == instance_id),
+                        None
+                    )
+                    if saved:
+                        plugin_store.save(
+                            instance_id=instance_id,
+                            plugin_type=saved['plugin_type'],
+                            display_name=data.get('display_name', saved['display_name']),
+                            config={**saved['config'], **data.get('config', {})},
+                            auto_start=data.get('auto_start', saved['auto_start']),
+                        )
+
                 return jsonify({"success": True, "instance": plugin.to_dict()})
 
             elif persistence:
@@ -769,7 +909,11 @@ def register_api_routes(app: Flask):
                 _stop_plugin_instance(plugin)
                 client.unregister_plugin(instance_id)
 
-            # Remove from persistence
+            # Remove from plugin config store
+            if plugin_store:
+                plugin_store.delete(instance_id)
+
+            # Remove from SQLite persistence
             if persistence:
                 persistence.delete_plugin_instance(instance_id)
 
@@ -800,6 +944,14 @@ def register_api_routes(app: Flask):
 
             _start_plugin_instance(plugin)
 
+            # Update discovery status
+            with state_lock:
+                plugin_type = plugin.plugin_type
+                if plugin_type not in discovery_status["plugins_enabled"]:
+                    discovery_status["plugins_enabled"].append(plugin_type)
+                discovery_status["running"] = True
+            _notify_status_changed()
+
             # Update status in persistence
             if persistence:
                 persistence.update_instance_status(instance_id, 'running')
@@ -819,6 +971,7 @@ def register_api_routes(app: Flask):
                 return jsonify({"error": f"Instance '{instance_id}' not found"}), 404
 
             _stop_plugin_instance(plugin)
+            _notify_status_changed()
 
             # Update status in persistence
             if persistence:
@@ -924,6 +1077,149 @@ def register_api_routes(app: Flask):
         removed = plugin.unsubscribe_webhook(url)
         return jsonify({"success": True, "removed": removed, "webhooks": plugin.list_webhooks()})
 
+    # =========================================================================
+    # Lineage Graph (visual HTML – used by GUI iframe)
+    # =========================================================================
+
+    @app.route('/api/v1/lineage-graph')
+    def api_lineage_graph():
+        """Generate a pyvis lineage graph as embeddable HTML."""
+        try:
+            from pyvis.network import Network
+        except ImportError:
+            return ("<html><body><p>pyvis not installed</p></body></html>",
+                    200, {'Content-Type': 'text/html'})
+
+        if not client:
+            return ("<html><body><p>No data yet</p></body></html>",
+                    200, {'Content-Type': 'text/html'})
+
+        net = Network(
+            height="350", width="100%", directed=True,
+            bgcolor="#ffffff", font_color="#333333",
+        )
+        net.set_options("""{
+            "layout": {
+                "hierarchical": {
+                    "enabled": true,
+                    "direction": "LR",
+                    "sortMethod": "directed",
+                    "levelSeparation": 250,
+                    "nodeSpacing": 120
+                }
+            },
+            "physics": {
+                "hierarchicalRepulsion": { "nodeDistance": 150 }
+            },
+            "edges": {
+                "arrows": { "to": { "enabled": true } },
+                "smooth": { "type": "cubicBezier" }
+            },
+            "interaction": { "hover": true, "tooltipDelay": 100 }
+        }""")
+
+        agents = client.list_agents()
+        tools = client.list_tools()
+        models = client.list_models()
+        downstream = client.list_downstream_systems()
+
+        data_assets_list = []
+        if asset_cache:
+            data_assets_list = asset_cache.get("assets", {}).get("data_assets", [])
+
+        temp = {"downstream_systems": downstream, "data_assets": data_assets_list}
+        _reclassify_downstream(temp)
+        downstream = temp["downstream_systems"]
+        data_assets_list = temp["data_assets"]
+
+        added = set()
+        STYLES = {
+            "agent":      ("#8b5cf6", "diamond",  0),
+            "tool":       ("#3b82f6", "dot",       1),
+            "model":      ("#10b981", "star",      2),
+            "data_asset": ("#f59e0b", "database",  3),
+            "downstream": ("#ef4444", "triangle",  3),
+        }
+
+        def add_node(nid, label, ntype, title=None):
+            if nid in added:
+                return
+            added.add(nid)
+            color, shape, level = STYLES.get(ntype, ("#6b7280", "dot", 1))
+            net.add_node(nid, label=label, color=color, shape=shape, level=level,
+                         title=title or f"{ntype}: {label}", size=20)
+
+        for a in agents:
+            nid = f"agent:{a['name']}"
+            add_node(nid, a["name"], "agent", f"Agent: {a['name']}")
+            for t in (a.get("tools_used") or []):
+                tid = f"tool:{t}"
+                add_node(tid, t, "tool")
+                net.add_edge(nid, tid)
+            for m in (a.get("models_used") or []):
+                mid = f"model:{m}"
+                add_node(mid, m, "model")
+                net.add_edge(nid, mid)
+
+        for t in tools:
+            tid = f"tool:{t['name']}"
+            add_node(tid, t["name"], "tool")
+            for m in (t.get("models") or []):
+                mid = f"model:{m}"
+                add_node(mid, m, "model")
+                net.add_edge(tid, mid)
+
+        for m in models:
+            mid = f"model:{m['name']}"
+            add_node(mid, m["name"], "model",
+                     f"Model: {m['name']}\nProvider: {m.get('provider','')}")
+
+        for d in data_assets_list:
+            did = f"data:{d['name']}"
+            add_node(did, d["name"], "data_asset",
+                     f"Data: {d['name']}\nType: {d.get('type','')}")
+            for t in (d.get("tools_connecting") or []):
+                tid = f"tool:{t}"
+                add_node(tid, t, "tool")
+                net.add_edge(tid, did)
+
+        for d in downstream:
+            did = f"ds:{d['name']}"
+            add_node(did, d["name"], "downstream",
+                     f"Downstream: {d['name']}\nType: {d.get('type','')}")
+            for t in (d.get("tools_connecting") or []):
+                tid = f"tool:{t}"
+                add_node(tid, t, "tool")
+                net.add_edge(tid, did)
+
+        if not added:
+            return ("<html><body style='display:flex;align-items:center;justify-content:center;"
+                    "height:100%;color:#6b7280;font-family:sans-serif'>"
+                    "<p>No lineage data yet</p></body></html>"), 200, {'Content-Type': 'text/html'}
+
+        html = net.generate_html()
+
+        focus_script = """<script>
+window.addEventListener('message', function(e) {
+    if (e.data && e.data.type === 'focusNode' && typeof network !== 'undefined') {
+        var nid = e.data.nodeId;
+        try {
+            var ids = network.body.data.nodes.getIds();
+            if (ids.indexOf(nid) !== -1) {
+                network.focus(nid, {scale: 1.5, animation: {duration: 800, easingFunction: 'easeInOutQuad'}});
+                network.selectNodes([nid]);
+            }
+        } catch(err) {}
+    }
+});
+</script>"""
+        html = html.replace('</body>', focus_script + '</body>')
+        return html, 200, {'Content-Type': 'text/html'}
+
+
+# =========================================================================
+# Plugin lifecycle helpers
+# =========================================================================
 
 def _create_plugin_instance(
     plugin_type_name: str,
@@ -932,6 +1228,12 @@ def _create_plugin_instance(
     config: Dict[str, Any],
 ) -> 'BaseDiscoveryPlugin':
     """Create a new plugin instance of the specified type via the registry."""
+    # Inject identity mapping persistence settings for OpenTelemetry plugins
+    if plugin_type_name == "opentelemetry" and _config:
+        config = {**config}  # shallow copy to avoid mutating caller's dict
+        config.setdefault("persist_mappings", _config.persist_mappings)
+        config.setdefault("mapping_store_path", _config.mapping_store_path)
+
     return create_plugin_instance(
         plugin_type=plugin_type_name,
         config=config,
@@ -941,8 +1243,16 @@ def _create_plugin_instance(
 
 
 def _start_plugin_instance(plugin: 'BaseDiscoveryPlugin'):
-    """Start a plugin instance via its lifecycle method."""
-    plugin.start()
+    """Start a plugin instance.
+
+    If the GUI has set ``_on_plugin_start`` this delegates to that callback
+    (which runs start() in a background thread with WebSocket notifications).
+    Otherwise starts synchronously.
+    """
+    if _on_plugin_start:
+        _on_plugin_start(plugin)
+    else:
+        plugin.start()
 
 
 def _stop_plugin_instance(plugin: 'BaseDiscoveryPlugin'):
@@ -955,9 +1265,9 @@ def _ensure_instance(instance_id: str) -> Optional['BaseDiscoveryPlugin']:
     Ensure a plugin instance is in memory and return it.
 
     Lookup order:
-    1. Already in client.plugins (in-memory) → return it
-    2. Found in persistence → restore (create from persisted config, register) → return it
-    3. Not found anywhere → return None
+    1. Already in client.plugins (in-memory) -> return it
+    2. Found in plugin_store or persistence -> restore -> return it
+    3. Not found anywhere -> return None
     """
     global client
 
@@ -965,29 +1275,83 @@ def _ensure_instance(instance_id: str) -> Optional['BaseDiscoveryPlugin']:
     if client and instance_id in client.plugins:
         return client.plugins[instance_id]
 
-    # 2. Try restoring from persistence
-    if persistence:
-        persisted = persistence.get_plugin_instance(instance_id)
-        if persisted:
-            try:
-                if not client:
-                    client = OpenCiteClient()
+    # 2. Try restoring from plugin_store first, then persistence
+    persisted = None
+    if plugin_store:
+        for saved in plugin_store.load_all():
+            if saved['instance_id'] == instance_id:
+                persisted = saved
+                break
 
-                plugin_instance = _create_plugin_instance(
-                    plugin_type_name=persisted['plugin_type'],
-                    instance_id=instance_id,
-                    display_name=persisted['display_name'],
-                    config=persisted['config'],
-                )
-                client.register_plugin(plugin_instance)
-                logger.info(f"Restored instance '{instance_id}' from persistence")
-                return plugin_instance
-            except Exception as e:
-                logger.error(f"Failed to restore instance '{instance_id}' from persistence: {e}")
-                return None
+    if not persisted and persistence:
+        persisted = persistence.get_plugin_instance(instance_id)
+
+    if persisted:
+        try:
+            if not client:
+                client = OpenCiteClient()
+
+            plugin_instance = _create_plugin_instance(
+                plugin_type_name=persisted['plugin_type'],
+                instance_id=instance_id,
+                display_name=persisted['display_name'],
+                config=persisted['config'],
+            )
+            client.register_plugin(plugin_instance)
+            logger.info(f"Restored instance '{instance_id}' from persistence")
+            return plugin_instance
+        except Exception as e:
+            logger.error(f"Failed to restore instance '{instance_id}' from persistence: {e}")
+            return None
 
     # 3. Not found
     return None
+
+
+def _restore_saved_plugins():
+    """Restore plugin instances from the JSON plugin store on startup."""
+    global client
+
+    if not plugin_store or not plugin_store.enabled:
+        return
+
+    saved = plugin_store.load_all()
+    if not saved:
+        return
+
+    logger.info(f"Restoring {len(saved)} saved plugin instance(s) from JSON store")
+
+    if not client:
+        client = OpenCiteClient()
+
+    for entry in saved:
+        iid = entry['instance_id']
+        # Skip if already registered (e.g. by auto_configure_plugins)
+        if iid in client.plugins:
+            continue
+
+        try:
+            plugin_instance = _create_plugin_instance(
+                plugin_type_name=entry['plugin_type'],
+                instance_id=iid,
+                display_name=entry['display_name'],
+                config=entry['config'],
+            )
+            client.register_plugin(plugin_instance)
+
+            if entry.get('auto_start', False):
+                _start_plugin_instance(plugin_instance)
+                with state_lock:
+                    pt = entry['plugin_type']
+                    if pt not in discovery_status["plugins_enabled"]:
+                        discovery_status["plugins_enabled"].append(pt)
+                    discovery_status["running"] = True
+
+            logger.info(f"Restored plugin instance '{iid}' ({entry['plugin_type']})")
+        except Exception as e:
+            logger.error(f"Failed to restore plugin instance '{iid}': {e}")
+
+    _notify_status_changed()
 
 
 def _configure_plugin(plugin_name: str, config: Dict[str, Any]):
@@ -1001,6 +1365,7 @@ def _configure_plugin(plugin_name: str, config: Dict[str, Any]):
             "message": f"Initializing {plugin_name} plugin",
             "status": "in_progress",
         })
+    _notify_status_changed()
 
     # Check if plugin is already registered (reuse existing instance)
     existing_plugin = client.plugins.get(plugin_name)
@@ -1019,7 +1384,7 @@ def _configure_plugin(plugin_name: str, config: Dict[str, Any]):
         client.register_plugin(plugin_instance)
 
         # Start the plugin
-        plugin_instance.start()
+        _start_plugin_instance(plugin_instance)
         logger.info(f"Configured and started {plugin_name} plugin")
 
     # Build success message with plugin-specific details
@@ -1039,6 +1404,7 @@ def _configure_plugin(plugin_name: str, config: Dict[str, Any]):
     with state_lock:
         discovery_status["progress"][-1]["status"] = "success"
         discovery_status["progress"][-1]["message"] = success_msg
+    _notify_status_changed()
 
 
 def _empty_assets() -> Dict[str, List]:
@@ -1472,6 +1838,8 @@ def run_api(host: str = "0.0.0.0", port: int = 8080, auto_start: bool = True):
         print(f"  Persistence: {config.db_path}")
     else:
         print(f"  Persistence: disabled (in-memory only)")
+    if plugin_store and plugin_store.enabled:
+        print(f"  Plugin Store: {plugin_store._path}")
     print(f"{'='*60}\n")
 
     app.run(host=host, port=port, debug=False, threaded=True)
