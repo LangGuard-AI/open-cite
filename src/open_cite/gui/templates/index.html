@@ -298,8 +298,14 @@
             gap: 8px;
         }
 
-        .btn-add:hover {
+        .btn-add:hover:not(:disabled) {
             background: #059669;
+        }
+
+        .btn-add:disabled {
+            background: #9ca3af;
+            cursor: not-allowed;
+            opacity: 0.7;
         }
 
         .content-area {
@@ -679,8 +685,8 @@
 
                     <div id="instancesList" class="instances-list"></div>
 
-                    <button class="btn btn-add" onclick="openAddInstanceModal()">
-                        + Add Plugin
+                    <button class="btn btn-add" id="addPluginBtn" onclick="openAddInstanceModal()" disabled>
+                        Loading Plugins...
                     </button>
                 </div>
             </div>
@@ -730,6 +736,8 @@
                 <h2 id="instanceModalTitle">Add Plugin</h2>
                 <span class="close" onclick="closeAddInstanceModal()">&times;</span>
             </div>
+
+            <div id="modalErrorMessage" class="error-message" style="display: none;"></div>
 
             <div class="form-group">
                 <label>Plugin Type *</label>
@@ -835,23 +843,28 @@
 
         // Load available plugin types
         async function loadPluginTypes() {
+            const btn = document.getElementById('addPluginBtn');
             try {
-                const response = await fetch('/api/plugins');
+                const response = await fetch('/api/v1/plugins');
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                 }
                 pluginTypes = await response.json();
                 console.log('Loaded plugin types:', pluginTypes);
+                btn.disabled = false;
+                btn.textContent = '+ Add Plugin';
             } catch (error) {
                 console.error('Error loading plugin types:', error);
                 pluginTypes = {};
+                btn.disabled = false;
+                btn.textContent = '+ Add Plugin';
             }
         }
 
         // Load configured instances
         async function loadInstances() {
             try {
-                const response = await fetch('/api/instances');
+                const response = await fetch('/api/v1/instances');
                 const data = await response.json();
                 instances = data.instances || [];
                 renderInstances();
@@ -917,6 +930,7 @@
                 document.getElementById('instanceAutoStart').checked = true;
                 document.getElementById('instanceConfigSection').style.display = 'none';
                 document.getElementById('saveInstanceBtn').disabled = true;
+                hideModalError();
 
                 renderPluginTypesList();
                 document.getElementById('addInstanceModal').style.display = 'block';
@@ -981,14 +995,16 @@
 
         // Save instance
         async function saveInstance() {
+            hideModalError();
+
             if (!selectedPluginType) {
-                showError('Please select a plugin type');
+                showModalError('Please select a plugin type');
                 return;
             }
 
             const displayName = document.getElementById('instanceDisplayName').value.trim();
             if (!displayName) {
-                showError('Please enter an instance name');
+                showModalError('Please enter an instance name');
                 return;
             }
 
@@ -1006,14 +1022,14 @@
                     if (value) {
                         config[key] = value;
                     } else if (field.required) {
-                        showError(`${field.label} is required`);
+                        showModalError(`${field.label} is required`);
                         return;
                     }
                 }
             }
 
             try {
-                const response = await fetch('/api/instances', {
+                const response = await fetch('/api/v1/instances', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -1039,14 +1055,14 @@
                 }
 
             } catch (error) {
-                showError(error.message);
+                showModalError(error.message);
             }
         }
 
         // Start instance
         async function startInstance(instanceId) {
             try {
-                const response = await fetch(`/api/instances/${instanceId}/start`, { method: 'POST' });
+                const response = await fetch(`/api/v1/instances/${instanceId}/start`, { method: 'POST' });
                 const result = await response.json();
 
                 if (!response.ok) {
@@ -1065,7 +1081,7 @@
         // Stop instance
         async function stopInstance(instanceId) {
             try {
-                const response = await fetch(`/api/instances/${instanceId}/stop`, { method: 'POST' });
+                const response = await fetch(`/api/v1/instances/${instanceId}/stop`, { method: 'POST' });
                 const result = await response.json();
 
                 if (!response.ok) {
@@ -1091,7 +1107,7 @@
             }
 
             try {
-                const response = await fetch(`/api/instances/${instanceId}`, { method: 'DELETE' });
+                const response = await fetch(`/api/v1/instances/${instanceId}`, { method: 'DELETE' });
                 const result = await response.json();
 
                 if (!response.ok) {
@@ -1192,7 +1208,7 @@
         // Refresh assets (HTTP fallback)
         async function refreshAssets() {
             try {
-                const response = await fetch('/api/assets');
+                const response = await fetch('/api/v1/assets');
                 const data = await response.json();
 
                 if (data.assets) {
@@ -1246,7 +1262,7 @@
         // Update status (HTTP fallback)
         async function updateStatus() {
             try {
-                const response = await fetch('/api/status');
+                const response = await fetch('/api/v1/status');
                 const status = await response.json();
                 _applyStatusUpdate(status);
             } catch (error) {
@@ -1571,10 +1587,10 @@
 
         async function exportData() {
             try {
-                const statusResp = await fetch('/api/status');
+                const statusResp = await fetch('/api/v1/status');
                 const status = await statusResp.json();
 
-                const exportResp = await fetch('/api/export', {
+                const exportResp = await fetch('/api/v1/export', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ plugins: status.plugins_enabled })
@@ -1694,7 +1710,7 @@
             }
 
             try {
-                const response = await fetch('/api/map-tool', {
+                const response = await fetch('/api/v1/map-tool', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -1725,6 +1741,23 @@
 
         function hideError() {
             document.getElementById('errorMessage').style.display = 'none';
+        }
+
+        function showModalError(message) {
+            const errorMsg = document.getElementById('modalErrorMessage');
+            errorMsg.textContent = message;
+            errorMsg.style.display = 'block';
+            const modalContent = document.querySelector('#addInstanceModal .modal-content');
+            if (modalContent) {
+                modalContent.scrollTop = 0;
+            }
+        }
+
+        function hideModalError() {
+            const errorMsg = document.getElementById('modalErrorMessage');
+            if (errorMsg) {
+                errorMsg.style.display = 'none';
+            }
         }
 
         // Close modals only when both mousedown and mouseup occur on the backdrop
@@ -1759,7 +1792,7 @@
 
             if (!lineageCollapsed) {
                 const frame = document.getElementById('lineageFrame');
-                frame.src = '/api/lineage-graph?t=' + Date.now();
+                frame.src = '/api/v1/lineage-graph?t=' + Date.now();
             }
         }
 

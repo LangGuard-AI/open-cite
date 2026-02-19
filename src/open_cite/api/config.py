@@ -9,6 +9,16 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
+def _resolve_persist_default(env_var: str) -> bool:
+    """Resolve a persistence toggle: True unless in Kubernetes, overridable by *env_var*."""
+    env = os.getenv(env_var)
+    if env is not None:
+        return env.lower() == "true"
+    if os.getenv("KUBERNETES_SERVICE_HOST"):
+        return False
+    return True
+
+
 @dataclass
 class OpenCiteConfig:
     """
@@ -46,12 +56,28 @@ class OpenCiteConfig:
     # Logging
     log_level: str = field(default_factory=lambda: os.getenv("OPENCITE_LOG_LEVEL", "INFO"))
 
-    # Persistence
+    # Persistence (SQLite for discovered assets)
     persistence_enabled: bool = field(
         default_factory=lambda: os.getenv("OPENCITE_PERSISTENCE_ENABLED", "false").lower() == "true"
     )
     db_path: str = field(
         default_factory=lambda: os.getenv("OPENCITE_DB_PATH", "/data/opencite.db")
+    )
+
+    # Plugin config persistence (JSON file)
+    persist_plugins: bool = field(
+        default_factory=lambda: _resolve_persist_default("OPENCITE_PERSIST_PLUGINS")
+    )
+    plugin_store_path: Optional[str] = field(
+        default_factory=lambda: os.getenv("OPENCITE_PLUGIN_STORE_PATH")
+    )
+
+    # Identity mapping persistence (JSON file)
+    persist_mappings: bool = field(
+        default_factory=lambda: _resolve_persist_default("OPENCITE_PERSIST_MAPPINGS")
+    )
+    mapping_store_path: Optional[str] = field(
+        default_factory=lambda: os.getenv("OPENCITE_MAPPING_STORE_PATH")
     )
 
     @classmethod
