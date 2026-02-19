@@ -57,6 +57,11 @@ OpenCITE uses a plugin-based architecture that allows you to:
 ## Installation
 
 ```bash
+# Create and activate a virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install in editable mode
 pip install -e .
 ```
 

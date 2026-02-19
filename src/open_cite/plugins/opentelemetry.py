@@ -286,6 +286,107 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             persist=self._persist_mappings,
         )
 
+    def export_assets(self) -> Dict[str, Any]:
+        """Export OTel-discovered assets in OpenCITE schema format."""
+        from open_cite.schema import (
+            ToolFormatter, ModelFormatter, parse_model_id,
+            MCPServerFormatter, MCPToolFormatter, MCPResourceFormatter,
+        )
+
+        tools = []
+        for tool in self.list_assets("tool"):
+            models_used = []
+            for model_name in tool.get("models", []):
+                models_used.append({
+                    "model_id": model_name,
+                    "usage_count": len([
+                        t for t in tool.get("traces", [])
+                        if t.get("model") == model_name
+                    ]),
+                })
+            tools.append(ToolFormatter.format_tool(
+                tool_id=tool["name"],
+                name=tool["name"],
+                discovery_source="opentelemetry",
+                type="application",
+                models_used=models_used,
+                provider=None,
+                last_seen=tool.get("metadata", {}).get("last_seen"),
+                metadata=tool.get("metadata", {}),
+            ))
+
+        models = []
+        for model in self.list_assets("model"):
+            model_id = model["name"]
+            parsed = parse_model_id(model_id)
+            models.append(ModelFormatter.format_model(
+                model_id=model_id,
+                name=model_id,
+                discovery_source="opentelemetry",
+                provider=parsed["provider"],
+                model_family=parsed["model_family"],
+                model_version=parsed["model_version"],
+                usage={
+                    "total_calls": model.get("usage_count", 0),
+                    "unique_tools": len(model.get("tools", [])),
+                    "tools_using": model.get("tools", []),
+                },
+            ))
+
+        mcp_servers = []
+        for server in self.list_assets("mcp_server"):
+            mcp_servers.append(MCPServerFormatter.format_mcp_server(
+                server_id=server["id"],
+                name=server["name"],
+                discovery_source=server.get("discovery_source", self.instance_id),
+                transport=server.get("transport", "unknown"),
+                endpoint=server.get("endpoint"),
+                command=server.get("command"),
+                args=server.get("args"),
+                env=server.get("env"),
+                tools_count=server.get("tools_count", 0),
+                resources_count=server.get("resources_count", 0),
+                source_file=server.get("source_file"),
+                source_env_var=server.get("source_env_var"),
+                metadata=server.get("metadata", {}),
+            ))
+
+        mcp_tools = []
+        for tool in self.list_assets("mcp_tool"):
+            mcp_tools.append(MCPToolFormatter.format_mcp_tool(
+                tool_id=tool["id"],
+                name=tool["name"],
+                server_id=tool["server_id"],
+                discovery_source=tool.get("discovery_source"),
+                description=tool.get("description"),
+                schema=tool.get("schema"),
+                usage=tool.get("usage"),
+                metadata=tool.get("metadata"),
+            ))
+
+        mcp_resources = []
+        for resource in self.list_assets("mcp_resource"):
+            mcp_resources.append(MCPResourceFormatter.format_mcp_resource(
+                resource_id=resource["id"],
+                uri=resource["uri"],
+                server_id=resource["server_id"],
+                name=resource.get("name"),
+                discovery_source=resource.get("discovery_source"),
+                type=resource.get("type"),
+                mime_type=resource.get("mime_type"),
+                description=resource.get("description"),
+                usage=resource.get("usage"),
+                metadata=resource.get("metadata"),
+            ))
+
+        return {
+            "tools": tools,
+            "models": models,
+            "mcp_servers": mcp_servers,
+            "mcp_tools": mcp_tools,
+            "mcp_resources": mcp_resources,
+        }
+
     def get_config(self) -> Dict[str, Any]:
         """Return plugin configuration."""
         return {

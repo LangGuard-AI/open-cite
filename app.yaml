@@ -1,0 +1,10 @@
+command:
+  - "python"
+  - "databricks_app.py"
+env:
+  - name: "OPENCITE_ENABLE_OTEL"
+    value: "true"
+  - name: "OPENCITE_ENABLE_DATABRICKS"
+    value: "true"
+  - name: "OPENCITE_PERSIST_PLUGINS"
+    value: "true"

@@ -35,7 +35,8 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.urandom(24)
 app.json.sort_keys = False  # Preserve dict insertion order (e.g. plugin config fields)
-socketio = SocketIO(app, async_mode='threading', cors_allowed_origins='*')
+socketio = SocketIO(app, async_mode='gevent', cors_allowed_origins='*',
+                    manage_session=False)
 
 # Configure logging
 logging.basicConfig(
@@ -127,9 +128,7 @@ def _push_status_update():
 # =========================================================================
 
 def _gui_start_plugin(plugin):
-    """Start a plugin in a background thread and push WebSocket updates."""
-    from threading import Thread
-
+    """Start a plugin in a background greenlet and push WebSocket updates."""
     plugin.on_data_changed = lambda p: _push_assets_update(p)
 
     def _run():
@@ -141,7 +140,7 @@ def _gui_start_plugin(plugin):
         _push_status_update()
         _push_assets_update(plugin)
 
-    Thread(target=_run, daemon=True).start()
+    socketio.start_background_task(_run)
 
 
 # Wire the hooks into the shared API module
@@ -189,22 +188,27 @@ _restore_saved_plugins()
 # Entry-point
 # =========================================================================
 
-def run_gui(host='127.0.0.1', port=5000, debug=False):
+def run_gui(host=None, port=None, debug=False):
     """
     Run the OpenCITE GUI.
 
     Args:
-        host: Host to bind to (default: 127.0.0.1)
-        port: Port to bind to (default: 5000)
+        host: Host to bind to (default from OPENCITE_HOST env or 127.0.0.1)
+        port: Port to bind to (default from DATABRICKS_APP_PORT or OPENCITE_PORT env or 5000)
         debug: Enable debug mode
     """
+    if host is None:
+        host = os.environ.get('OPENCITE_HOST', '127.0.0.1')
+    if port is None:
+        port = int(os.environ.get('DATABRICKS_APP_PORT',
+                   os.environ.get('OPENCITE_PORT', '5000')))
     print(f"\n{'='*60}")
     print(f"  OpenCITE Web GUI")
     print(f"{'='*60}")
     print(f"  Access the GUI at: http://{host}:{port}")
     print(f"{'='*60}\n")
 
-    socketio.run(app, host=host, port=port, debug=debug, allow_unsafe_werkzeug=True)
+    socketio.run(app, host=host, port=port, debug=debug, use_reloader=False)
 
 
 if __name__ == '__main__':

@@ -236,6 +236,60 @@ def create_app(config: Optional[OpenCiteConfig] = None) -> Flask:
     return app
 
 
+def export_to_json(include_plugins: List[str]) -> Dict[str, Any]:
+    """Export all discovered data to JSON format according to OpenCITE schema.
+
+    Iterates over registered plugins whose type is in *include_plugins*,
+    calls each plugin's ``export_assets()`` method, and merges the results.
+
+    Args:
+        include_plugins: List of plugin type names to include
+                         (e.g. ``["opentelemetry", "databricks"]``).
+
+    Returns:
+        JSON-serializable dictionary with all discovered data.
+    """
+    from open_cite.schema import OpenCiteExporter
+
+    merged: Dict[str, Any] = {}
+    plugins_info: List[Dict[str, str]] = []
+
+    for plugin in client.plugins.values():
+        if plugin.plugin_type not in include_plugins:
+            continue
+        try:
+            assets = plugin.export_assets()
+        except Exception as e:
+            logger.error(f"Export failed for plugin {plugin.instance_id}: {e}")
+            continue
+        if not assets:
+            continue
+        # Merge: list values are extended, dicts are merged
+        for key, value in assets.items():
+            if isinstance(value, list):
+                merged.setdefault(key, []).extend(value)
+            elif isinstance(value, dict):
+                merged.setdefault(key, {}).update(value)
+            else:
+                merged[key] = value
+        plugins_info.append({"name": plugin.plugin_type, "version": "1.0.0"})
+
+    exporter = OpenCiteExporter()
+    export_data = exporter.export_discovery(
+        tools=merged.pop("tools", []),
+        models=merged.pop("models", []),
+        data_assets=merged.pop("data_assets", []),
+        mcp_servers=merged.pop("mcp_servers", []),
+        mcp_tools=merged.pop("mcp_tools", []),
+        mcp_resources=merged.pop("mcp_resources", []),
+        metadata={"generated_by": "opencite", "plugins": plugins_info},
+    )
+    # Any remaining keys from plugins (gcp_*, aws_*, etc.) go into the export
+    export_data.update(merged)
+
+    return export_data
+
+
 # =========================================================================
 # Route registration (shared by API and GUI Flask apps)
 # =========================================================================
@@ -459,16 +513,7 @@ def register_api_routes(app: Flask):
         try:
             data = request.json or {}
             include_plugins = data.get('plugins', [])
-
-            export_data = client.export_to_json(
-                include_otel="opentelemetry" in include_plugins,
-                include_mcp="mcp" in include_plugins,
-                include_databricks="databricks" in include_plugins,
-                include_google_cloud="google_cloud" in include_plugins
-            )
-
-            return jsonify(export_data)
-
+            return jsonify(export_to_json(include_plugins))
         except Exception as e:
             logger.error(f"Export failed: {e}")
             return jsonify({"error": str(e)}), 500
@@ -1081,6 +1126,55 @@ def register_api_routes(app: Flask):
     # Lineage Graph (visual HTML – used by GUI iframe)
     # =========================================================================
 
+    # Theme palettes for the lineage graph (keyed by data-theme value)
+    _LINEAGE_THEMES = {
+        "opencite": {
+            "bgcolor": "#ffffff",
+            "font_color": "#333333",
+            "edge_color": "#cccccc",
+            "node_colors": {
+                "agent":      "#8b5cf6",
+                "tool":       "#3b82f6",
+                "model":      "#10b981",
+                "data_asset": "#f59e0b",
+                "downstream": "#ef4444",
+                "default":    "#6b7280",
+            },
+            "empty_bg": "#ffffff",
+            "empty_text": "#6b7280",
+        },
+        "databricks-light": {
+            "bgcolor": "#ffffff",
+            "font_color": "#0B2026",
+            "edge_color": "#C8C3BC",
+            "node_colors": {
+                "agent":      "#8b5cf6",
+                "tool":       "#1A56DB",
+                "model":      "#059669",
+                "data_asset": "#D97706",
+                "downstream": "#FF3621",
+                "default":    "#7A7A7A",
+            },
+            "empty_bg": "#ffffff",
+            "empty_text": "#7A7A7A",
+        },
+        "databricks-dark": {
+            "bgcolor": "#243B44",
+            "font_color": "#E8E8E8",
+            "edge_color": "#4A6070",
+            "node_colors": {
+                "agent":      "#C4B5FD",
+                "tool":       "#93C5FD",
+                "model":      "#6EE7B7",
+                "data_asset": "#FCD34D",
+                "downstream": "#FF5642",
+                "default":    "#7A8E96",
+            },
+            "empty_bg": "#243B44",
+            "empty_text": "#7A8E96",
+        },
+    }
+
     @app.route('/api/v1/lineage-graph')
     def api_lineage_graph():
         """Generate a pyvis lineage graph as embeddable HTML."""
@@ -1094,9 +1188,12 @@ def register_api_routes(app: Flask):
             return ("<html><body><p>No data yet</p></body></html>",
                     200, {'Content-Type': 'text/html'})
 
+        theme_name = request.args.get('theme', 'opencite')
+        theme = _LINEAGE_THEMES.get(theme_name, _LINEAGE_THEMES["opencite"])
+
         net = Network(
             height="350", width="100%", directed=True,
-            bgcolor="#ffffff", font_color="#333333",
+            bgcolor=theme["bgcolor"], font_color=theme["font_color"],
         )
         net.set_options("""{
             "layout": {
@@ -1112,11 +1209,12 @@ def register_api_routes(app: Flask):
                 "hierarchicalRepulsion": { "nodeDistance": 150 }
             },
             "edges": {
+                "color": { "color": "%s", "highlight": "%s" },
                 "arrows": { "to": { "enabled": true } },
                 "smooth": { "type": "cubicBezier" }
             },
             "interaction": { "hover": true, "tooltipDelay": 100 }
-        }""")
+        }""" % (theme["edge_color"], theme["font_color"]))
 
         agents = client.list_agents()
         tools = client.list_tools()
@@ -1132,20 +1230,21 @@ def register_api_routes(app: Flask):
         downstream = temp["downstream_systems"]
         data_assets_list = temp["data_assets"]
 
+        node_colors = theme["node_colors"]
         added = set()
         STYLES = {
-            "agent":      ("#8b5cf6", "diamond",  0),
-            "tool":       ("#3b82f6", "dot",       1),
-            "model":      ("#10b981", "star",      2),
-            "data_asset": ("#f59e0b", "database",  3),
-            "downstream": ("#ef4444", "triangle",  3),
+            "agent":      (node_colors["agent"],      "diamond",  0),
+            "tool":       (node_colors["tool"],       "dot",       1),
+            "model":      (node_colors["model"],      "star",      2),
+            "data_asset": (node_colors["data_asset"], "database",  3),
+            "downstream": (node_colors["downstream"], "triangle",  3),
         }
 
         def add_node(nid, label, ntype, title=None):
             if nid in added:
                 return
             added.add(nid)
-            color, shape, level = STYLES.get(ntype, ("#6b7280", "dot", 1))
+            color, shape, level = STYLES.get(ntype, (node_colors["default"], "dot", 1))
             net.add_node(nid, label=label, color=color, shape=shape, level=level,
                          title=title or f"{ntype}: {label}", size=20)
 
@@ -1194,10 +1293,23 @@ def register_api_routes(app: Flask):
 
         if not added:
             return ("<html><body style='display:flex;align-items:center;justify-content:center;"
-                    "height:100%;color:#6b7280;font-family:sans-serif'>"
-                    "<p>No lineage data yet</p></body></html>"), 200, {'Content-Type': 'text/html'}
+                    "height:100%%;background:%s;color:%s;font-family:sans-serif'>"
+                    "<p>No lineage data yet</p></body></html>"
+                    % (theme["empty_bg"], theme["empty_text"])), 200, {'Content-Type': 'text/html'}
 
         html = net.generate_html()
+
+        # Override pyvis/Bootstrap default styles so the graph blends
+        # seamlessly into the parent card (no white border or background).
+        theme_css = (
+            "<style>"
+            "body { background: %s !important; margin: 0; padding: 0; }"
+            ".card { background: transparent !important; border: none !important;"
+            "  box-shadow: none !important; margin: 0 !important; padding: 0 !important; }"
+            "#mynetwork { border: none !important; }"
+            "</style>"
+        ) % theme["bgcolor"]
+        html = html.replace('</head>', theme_css + '</head>')
 
         focus_script = """<script>
 window.addEventListener('message', function(e) {
@@ -1212,6 +1324,13 @@ window.addEventListener('message', function(e) {
         } catch(err) {}
     }
 });
+if (typeof network !== 'undefined') {
+    network.on('selectNode', function(params) {
+        if (params.nodes.length === 1) {
+            window.parent.postMessage({ type: 'openDetail', nodeId: params.nodes[0] }, '*');
+        }
+    });
+}
 </script>"""
         html = html.replace('</body>', focus_script + '</body>')
         return html, 200, {'Content-Type': 'text/html'}
@@ -1842,7 +1961,9 @@ def run_api(host: str = "0.0.0.0", port: int = 8080, auto_start: bool = True):
         print(f"  Plugin Store: {plugin_store._path}")
     print(f"{'='*60}\n")
 
-    app.run(host=host, port=port, debug=False, threaded=True)
+    from gevent.pywsgi import WSGIServer
+    http_server = WSGIServer((host, port), app)
+    http_server.serve_forever()
 
 
 # For gunicorn: gunicorn "open_cite.api.app:create_app()"

@@ -91,6 +91,16 @@ class AWSSageMakerPlugin(AWSClientMixin, BaseDiscoveryPlugin):
     def get_identification_attributes(self) -> List[str]:
         return ["aws.sagemaker.endpoint_name", "aws.sagemaker.region", "aws.account_id"]
 
+    def export_assets(self) -> Dict[str, Any]:
+        """Export AWS SageMaker assets."""
+        return {
+            "aws_sagemaker_endpoints": self.list_assets("endpoint"),
+            "aws_sagemaker_models": self.list_assets("model"),
+            "aws_sagemaker_model_packages": self.list_assets("model_package"),
+            "aws_sagemaker_training_jobs": self.list_assets("training_job", days=30),
+            "aws_sagemaker_usage_summary": self.get_usage_summary(days=7),
+        }
+
     def get_config(self) -> Dict[str, Any]:
         """Return plugin configuration (sensitive values masked)."""
         return {

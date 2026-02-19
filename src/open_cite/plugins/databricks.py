@@ -30,27 +30,33 @@ _mlflow_env_lock = threading.Lock()
 
 
 @contextmanager
-def _databricks_mlflow_env(host: str, token: str):
+def _databricks_mlflow_env(host: str, token: Optional[str] = None):
     """Context manager that sets DATABRICKS_HOST/TOKEN for MLflow calls.
 
     Uses a lock so concurrent plugin instances don't clobber each other.
+    When token is None, DATABRICKS_TOKEN is left untouched so MLflow can
+    auto-detect OAuth credentials from the environment.
     """
     with _mlflow_env_lock:
         old_host = os.environ.get("DATABRICKS_HOST")
         old_token = os.environ.get("DATABRICKS_TOKEN")
+        token_was_set = False
         try:
             os.environ["DATABRICKS_HOST"] = host
-            os.environ["DATABRICKS_TOKEN"] = token
+            if token:
+                os.environ["DATABRICKS_TOKEN"] = token
+                token_was_set = True
             yield
         finally:
             if old_host is not None:
                 os.environ["DATABRICKS_HOST"] = old_host
             else:
                 os.environ.pop("DATABRICKS_HOST", None)
-            if old_token is not None:
-                os.environ["DATABRICKS_TOKEN"] = old_token
-            else:
-                os.environ.pop("DATABRICKS_TOKEN", None)
+            if token_was_set:
+                if old_token is not None:
+                    os.environ["DATABRICKS_TOKEN"] = old_token
+                else:
+                    os.environ.pop("DATABRICKS_TOKEN", None)
 
 
 class _GenieClient:
@@ -133,7 +139,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             "description": "Discovers AI/ML assets from MLflow experiments, Genie, and Unity Catalog",
             "required_fields": {
                 "host": {"label": "Host", "default": "https://dbc-xxx.cloud.databricks.com", "required": True},
-                "token": {"label": "Personal Access Token", "default": "", "required": True, "type": "password"},
+                "token": {"label": "Personal Access Token", "default": "", "required": False, "type": "password", "help": "Leave blank for OAuth/service principal auth"},
                 "warehouse_id": {"label": "Warehouse ID (optional)", "default": "", "required": False},
                 "lookback_days": {"label": "Initial Lookback (days)", "default": "90", "required": False, "type": "number", "min": 1, "max": 180},
             },
@@ -149,7 +155,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             lookback = 90
         return cls(
             host=config.get('host'),
-            token=config.get('token'),
+            token=config.get('token') or None,
             warehouse_id=config.get('warehouse_id'),
             lookback_days=lookback,
             http_client=dependencies.get('http_client'),
@@ -177,16 +183,17 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         if not self.host:
             raise ValueError("Databricks host is required.")
 
-        if not self.token:
-            raise ValueError("Databricks personal access token is required.")
-
         # Normalize host to always include https:// scheme
         self.host = self.host.rstrip("/")
         if not self.host.startswith(("https://", "http://")):
             self.host = f"https://{self.host}"
 
-        # Build WorkspaceClient with PAT authentication
-        self.workspace_client = WorkspaceClient(host=self.host, token=self.token)
+        # Build WorkspaceClient — uses PAT when provided, otherwise auto-detects
+        # OAuth credentials (DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET) from env
+        if self.token:
+            self.workspace_client = WorkspaceClient(host=self.host, token=self.token)
+        else:
+            self.workspace_client = WorkspaceClient(host=self.host)
 
         # MLflow client pointed at Databricks tracking server
         with _databricks_mlflow_env(self.host, self.token):
@@ -253,11 +260,135 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             lambda: {"input_tokens": 0, "output_tokens": 0}
         )
 
+    def export_assets(self) -> Dict[str, Any]:
+        """Export Databricks data assets used by AI/ML tools."""
+        from open_cite.schema import DataAssetFormatter
+
+        data_assets: List[Dict[str, Any]] = []
+        try:
+            used_tables: Dict[str, Dict[str, Any]] = {}
+
+            try:
+                ai_workload_usage = self.get_tables_used_by_ai_workloads(days=30)
+                if ai_workload_usage:
+                    logger.info(f"Found {len(ai_workload_usage)} tables from AI/ML workloads")
+                    for table_name, usage in ai_workload_usage.items():
+                        used_tables[table_name] = {
+                            "ai_users": usage.get("ai_users", []),
+                            "ai_experiments": usage.get("ai_experiments", []),
+                            "ai_experiment_names": usage.get("ai_experiment_names", []),
+                            "access_count": usage.get("access_count", 0),
+                            "first_seen": usage.get("first_seen"),
+                            "last_seen": usage.get("last_seen"),
+                            "discovery_method": "mlflow_experiments",
+                        }
+            except Exception as e:
+                logger.warning(f"Could not fetch AI workload table usage: {e}")
+
+            try:
+                genie_usage = self.get_tables_used_by_genie(days=30)
+                if genie_usage:
+                    logger.info(f"Found {len(genie_usage)} tables from Genie spaces")
+                    for table_name, usage in genie_usage.items():
+                        if table_name not in used_tables:
+                            used_tables[table_name] = {"discovery_method": "genie_spaces"}
+                        info = used_tables[table_name]
+                        info["genie_users"] = usage.get("genie_users", [])
+                        info["genie_spaces"] = usage.get("genie_spaces", [])
+                        info.setdefault("access_count", 0)
+                        info["access_count"] += usage.get("access_count", 0)
+                        if usage.get("first_seen"):
+                            if not info.get("first_seen") or usage["first_seen"] < info["first_seen"]:
+                                info["first_seen"] = usage["first_seen"]
+                        if usage.get("last_seen"):
+                            if not info.get("last_seen") or usage["last_seen"] > info["last_seen"]:
+                                info["last_seen"] = usage["last_seen"]
+            except Exception as e:
+                logger.warning(f"Could not fetch Genie table usage: {e}")
+
+            if not used_tables:
+                return {"data_assets": []}
+
+            catalogs_needed: set = set()
+            schemas_needed: set = set()
+            for table_full_name in used_tables:
+                parts = table_full_name.split(".")
+                if len(parts) == 3:
+                    catalogs_needed.add(parts[0])
+                    schemas_needed.add((parts[0], parts[1]))
+
+            for catalog_name in catalogs_needed:
+                try:
+                    catalogs = self.list_assets("catalog")
+                    cat = next((c for c in catalogs if c["name"].lower() == catalog_name.lower()), None)
+                    if cat:
+                        data_assets.append(DataAssetFormatter.format_data_asset(
+                            asset_id=cat["id"], name=cat["name"], asset_type="catalog",
+                            discovery_source="databricks",
+                            hierarchy={"catalog": cat["name"]},
+                            metadata={"owner": cat.get("owner"), "comment": cat.get("comment"),
+                                      "ai_usage": "Contains tables accessed by AI/ML tools"},
+                        ))
+                except Exception as e:
+                    logger.warning(f"Failed to export catalog {catalog_name}: {e}")
+
+            for catalog_name, schema_name in schemas_needed:
+                try:
+                    db_schemas = self.list_assets("schema", catalog_name=catalog_name)
+                    sch = next((s for s in db_schemas if s["name"].lower() == schema_name.lower()), None)
+                    if sch:
+                        data_assets.append(DataAssetFormatter.format_data_asset(
+                            asset_id=f"{catalog_name}.{schema_name}", name=sch["name"],
+                            asset_type="schema", discovery_source="databricks",
+                            full_name=f"{catalog_name}.{schema_name}",
+                            hierarchy={"catalog": catalog_name, "schema": schema_name},
+                            metadata={"owner": sch.get("owner"), "comment": sch.get("comment"),
+                                      "ai_usage": "Contains tables accessed by AI/ML tools"},
+                        ))
+                except Exception as e:
+                    logger.warning(f"Failed to export schema {catalog_name}.{schema_name}: {e}")
+
+            for table_full_name, usage_info in used_tables.items():
+                parts = table_full_name.split(".")
+                if len(parts) != 3:
+                    continue
+                cat_n, sch_n, tbl_n = parts
+                try:
+                    tables = self.list_assets("table", catalog_name=cat_n, schema_name=sch_n)
+                    tbl = next((t for t in tables if t["name"].lower() == tbl_n.lower()), None)
+                    if tbl:
+                        data_assets.append(DataAssetFormatter.format_data_asset(
+                            asset_id=table_full_name, name=tbl["name"],
+                            asset_type="table", discovery_source="databricks",
+                            full_name=table_full_name,
+                            hierarchy={"catalog": cat_n, "schema": sch_n, "table": tbl_n},
+                            metadata={
+                                "table_type": tbl.get("table_type"), "owner": tbl.get("owner"),
+                                "comment": tbl.get("comment"),
+                                "ai_users": usage_info.get("ai_users", []),
+                                "ai_experiments": usage_info.get("ai_experiments", []),
+                                "ai_experiment_names": usage_info.get("ai_experiment_names", []),
+                                "ai_access_count": usage_info.get("access_count", 0),
+                                "ai_first_seen": usage_info.get("first_seen"),
+                                "ai_last_seen": usage_info.get("last_seen"),
+                                "ai_discovery_method": usage_info.get("discovery_method", "unknown"),
+                                "genie_users": usage_info.get("genie_users", []),
+                                "genie_spaces": usage_info.get("genie_spaces", []),
+                            },
+                        ))
+                except Exception as e:
+                    logger.warning(f"Failed to export table {table_full_name}: {e}")
+
+        except Exception as e:
+            logger.error(f"Failed to export Databricks assets: {e}")
+
+        return {"data_assets": data_assets}
+
     def get_config(self) -> Dict[str, Any]:
         """Return plugin configuration (sensitive values masked)."""
         return {
             "host": self.host,
-            "token": "****",
+            "token": "****" if self.token else "",
             "warehouse_id": self.warehouse_id,
             "lookback_days": self.lookback_days,
         }
@@ -307,11 +438,13 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
 
     def _sql_connect_kwargs(self, http_path: str) -> Dict[str, Any]:
         """Build kwargs for databricks.sql.connect()."""
-        return {
+        kwargs = {
             "server_hostname": self.host.replace("https://", "").replace("http://", ""),
             "http_path": http_path,
-            "access_token": self.token,
         }
+        if self.token:
+            kwargs["access_token"] = self.token
+        return kwargs
 
     def verify_connection(self) -> Dict[str, Any]:
         try:
