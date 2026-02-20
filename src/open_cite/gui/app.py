@@ -9,13 +9,16 @@ adds the template route (``GET /``), WebSocket handlers, and the
 ``run_gui()`` entry-point.
 """
 
+import asyncio
 import logging
 import os
+import signal
+import threading
 import time
 from datetime import datetime
 
 from flask import Flask, render_template
-from flask_socketio import SocketIO, emit
+import socketio as sio_module
 
 # Shared state & route registration from the API module
 import open_cite.api.app as api_app
@@ -23,27 +26,54 @@ from open_cite.api.app import (
     init_opencite_state,
     register_api_routes,
     _restore_saved_plugins,
+    _auto_configure_databricks_app,
+    _setup_databricks_otel_forwarding,
     _reclassify_downstream,
+    _otlp_ingest,
 )
 
 logger = logging.getLogger(__name__)
 
 # =========================================================================
-# Flask + SocketIO setup
+# Flask + python-socketio setup
 # =========================================================================
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.urandom(24)
 app.json.sort_keys = False  # Preserve dict insertion order (e.g. plugin config fields)
-socketio = SocketIO(app, async_mode='gevent', cors_allowed_origins='*',
-                    manage_session=False)
 
-# Configure logging
+# AsyncServer is required for the ASGI layer (Hypercorn).
+# Sync emit calls from plugin threads use _sync_emit() below.
+sio = sio_module.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
+
+# Reference to the running asyncio event loop, set by run_gui().
+# Used by _sync_emit() to schedule async emits from sync threads.
+_event_loop: asyncio.AbstractEventLoop | None = None
+
+# Configure logging — honour OPENCITE_LOG_LEVEL (default INFO)
+_log_level = getattr(logging, os.environ.get('OPENCITE_LOG_LEVEL', 'INFO').upper(), logging.INFO)
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=_log_level,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logging.getLogger('open_cite.plugins.opentelemetry').setLevel(logging.DEBUG)
+logging.getLogger('open_cite.plugins.opentelemetry').setLevel(_log_level)
+logging.getLogger('hpack').setLevel(logging.WARNING)
+
+
+# =========================================================================
+# Sync-to-async emit bridge
+# =========================================================================
+
+def _sync_emit(event, data, **kwargs):
+    """Emit a socket.io event from a sync context (e.g. plugin callback thread).
+
+    Schedules the coroutine on the main event loop via
+    ``run_coroutine_threadsafe`` (fire-and-forget).
+    """
+    loop = _event_loop
+    if loop is not None and loop.is_running():
+        asyncio.run_coroutine_threadsafe(sio.emit(event, data, **kwargs), loop)
+
 
 # =========================================================================
 # Debounced WebSocket push helpers
@@ -110,7 +140,7 @@ def _push_assets_update(source_plugin=None):
         api_app.asset_cache = result
         api_app.asset_cache_time = datetime.utcnow()
 
-        socketio.emit('assets_update', result)
+        _sync_emit('assets_update', result)
     except Exception as e:
         logger.error(f"Error pushing assets update: {e}")
 
@@ -118,7 +148,7 @@ def _push_assets_update(source_plugin=None):
 def _push_status_update():
     """Push current discovery status to all connected WebSocket clients."""
     try:
-        socketio.emit('status_update', api_app.discovery_status)
+        _sync_emit('status_update', api_app.discovery_status)
     except Exception as e:
         logger.error(f"Error pushing status update: {e}")
 
@@ -128,7 +158,7 @@ def _push_status_update():
 # =========================================================================
 
 def _gui_start_plugin(plugin):
-    """Start a plugin in a background greenlet and push WebSocket updates."""
+    """Start a plugin in a background thread and push WebSocket updates."""
     plugin.on_data_changed = lambda p: _push_assets_update(p)
 
     def _run():
@@ -140,7 +170,7 @@ def _gui_start_plugin(plugin):
         _push_status_update()
         _push_assets_update(plugin)
 
-    socketio.start_background_task(_run)
+    threading.Thread(target=_run, daemon=True).start()
 
 
 # Wire the hooks into the shared API module
@@ -152,17 +182,17 @@ api_app._on_status_changed = _push_status_update
 # WebSocket handlers
 # =========================================================================
 
-@socketio.on('connect')
-def handle_connect():
+@sio.on('connect')
+async def handle_connect(sid, environ):
     """Send current state to newly connected client."""
-    logger.info("WebSocket client connected")
-    emit('status_update', api_app.discovery_status)
+    logger.info("WebSocket client connected: %s", sid)
+    await sio.emit('status_update', api_app.discovery_status, to=sid)
 
 
-@socketio.on('disconnect')
-def handle_disconnect():
+@sio.on('disconnect')
+async def handle_disconnect(sid):
     """Log client disconnection."""
-    logger.info("WebSocket client disconnected")
+    logger.info("WebSocket client disconnected: %s", sid)
 
 
 # =========================================================================
@@ -179,9 +209,21 @@ def index():
 # Initialisation: shared state + shared API routes
 # =========================================================================
 
+print("  [gui init] Initializing OpenCITE state...")
 init_opencite_state(app)
+# Wire up WebSocket push for the embedded OTel plugin (created during init,
+# bypasses _gui_start_plugin which only handles user-started plugins)
+if api_app._default_otel_plugin is not None:
+    api_app._default_otel_plugin.on_data_changed = lambda p: _push_assets_update(p)
+print("  [gui init] Registering API routes...")
 register_api_routes(app)
+print("  [gui init] Restoring saved plugins...")
 _restore_saved_plugins()
+print("  [gui init] Checking Databricks App auto-configure...")
+_auto_configure_databricks_app()
+print("  [gui init] Setting up Databricks OTEL forwarding...")
+_setup_databricks_otel_forwarding()
+print("  [gui init] Initialization complete.")
 
 
 # =========================================================================
@@ -197,18 +239,61 @@ def run_gui(host=None, port=None, debug=False):
         port: Port to bind to (default from DATABRICKS_APP_PORT or OPENCITE_PORT env or 5000)
         debug: Enable debug mode
     """
+    from open_cite.asgi.app import create_asgi_app
+    from hypercorn.config import Config as HyperConfig
+    from hypercorn.asyncio import serve
+
     if host is None:
         host = os.environ.get('OPENCITE_HOST', '127.0.0.1')
     if port is None:
         port = int(os.environ.get('DATABRICKS_APP_PORT',
                    os.environ.get('OPENCITE_PORT', '5000')))
+
+    ingest_fn = _otlp_ingest if api_app._default_otel_plugin else None
+    from open_cite.api.app import _otlp_ingest_logs
+    logs_ingest_fn = _otlp_ingest_logs if api_app._default_otel_plugin else None
+    asgi_app = create_asgi_app(
+        app, sio_server=sio, ingest_fn=ingest_fn,
+        logs_ingest_fn=logs_ingest_fn,
+    )
+
     print(f"\n{'='*60}")
-    print(f"  OpenCITE Web GUI")
+    print(f"  OpenCITE Web GUI (HTTP/2 via Hypercorn)")
     print(f"{'='*60}")
     print(f"  Access the GUI at: http://{host}:{port}")
+    if api_app._default_otel_plugin:
+        print(f"  OTLP (JSON): http://{host}:{port}/v1/traces")
+        print(f"  OTLP (gRPC): http://{host}:{port} (HTTP/2)")
     print(f"{'='*60}\n")
 
-    socketio.run(app, host=host, port=port, debug=debug, use_reloader=False)
+    hconfig = HyperConfig()
+    hconfig.bind = [f"{host}:{port}"]
+
+    async def _serve():
+        global _event_loop
+        _event_loop = asyncio.get_running_loop()
+
+        shutdown_event = asyncio.Event()
+
+        def _signal_handler():
+            if shutdown_event.is_set():
+                # Second signal — force exit immediately
+                logger.warning("Received second signal, forcing exit")
+                os._exit(1)
+            logger.info("Received shutdown signal, shutting down gracefully... (press Ctrl+C again to force)")
+            shutdown_event.set()
+
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _signal_handler)
+
+        try:
+            await serve(asgi_app, hconfig, shutdown_trigger=shutdown_event.wait)
+        finally:
+            _event_loop = None
+            api_app.shutdown_cleanup()
+
+    asyncio.run(_serve())
 
 
 if __name__ == '__main__':

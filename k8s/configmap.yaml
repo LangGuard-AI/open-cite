@@ -11,9 +11,10 @@ data:
   OPENCITE_HOST: "0.0.0.0"
   OPENCITE_PORT: "8080"
 
-  # OTLP Receiver
+  # OTLP Receiver (standalone on port 4318, not embedded on the API port)
   OPENCITE_OTLP_HOST: "0.0.0.0"
   OPENCITE_OTLP_PORT: "4318"
+  OPENCITE_OTLP_EMBEDDED: "false"
 
   # Plugin toggles
   OPENCITE_ENABLE_OTEL: "true"
@@ -27,9 +28,10 @@ data:
   # Logging
   OPENCITE_LOG_LEVEL: "INFO"
 
-  # Persistence (SQLite)
+  # Persistence (database-backed in K8s)
   OPENCITE_PERSISTENCE_ENABLED: "true"
-  OPENCITE_DB_PATH: "/data/opencite.db"
+  OPENCITE_DATABASE_URL: "postgresql://opencite:password@postgres:5432/opencite"
+  OPENCITE_PERSIST_MAPPINGS: "false"
 
   # Google Cloud (non-sensitive)
   GCP_LOCATION: "us-central1"

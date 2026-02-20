@@ -39,8 +39,6 @@ def main():
     args = parser.parse_args()
 
     if args.command == 'gui':
-        from gevent import monkey
-        monkey.patch_all()
         from open_cite.gui.app import run_gui
         run_gui(host=args.host, port=args.port, debug=args.debug)
     elif args.command == 'api':

@@ -138,7 +138,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             "name": "Databricks",
             "description": "Discovers AI/ML assets from MLflow experiments, Genie, and Unity Catalog",
             "required_fields": {
-                "host": {"label": "Host", "default": "https://dbc-xxx.cloud.databricks.com", "required": True},
+                "host": {"label": "Host", "default": os.environ.get("DATABRICKS_HOST", "https://dbc-xxx.cloud.databricks.com"), "required": False, "help": "Leave blank to auto-detect from environment"},
                 "token": {"label": "Personal Access Token", "default": "", "required": False, "type": "password", "help": "Leave blank for OAuth/service principal auth"},
                 "warehouse_id": {"label": "Warehouse ID (optional)", "default": "", "required": False},
                 "lookback_days": {"label": "Initial Lookback (days)", "default": "90", "required": False, "type": "number", "min": 1, "max": 180},
@@ -154,7 +154,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         except (ValueError, TypeError):
             lookback = 90
         return cls(
-            host=config.get('host'),
+            host=config.get('host') or None,
             token=config.get('token') or None,
             warehouse_id=config.get('warehouse_id'),
             lookback_days=lookback,
@@ -180,25 +180,37 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         self.lookback_days = lookback_days
         self._last_query_time: Optional[datetime] = None
 
-        if not self.host:
-            raise ValueError("Databricks host is required.")
+        # Build WorkspaceClient
+        print(f"  [DatabricksPlugin] __init__ host={self.host!r}, token={'set' if self.token else 'None'}")
+        if self.host:
+            # Normalize host to always include https:// scheme
+            self.host = self.host.rstrip("/")
+            if not self.host.startswith(("https://", "http://")):
+                self.host = f"https://{self.host}"
 
-        # Normalize host to always include https:// scheme
-        self.host = self.host.rstrip("/")
-        if not self.host.startswith(("https://", "http://")):
-            self.host = f"https://{self.host}"
-
-        # Build WorkspaceClient — uses PAT when provided, otherwise auto-detects
-        # OAuth credentials (DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET) from env
-        if self.token:
-            self.workspace_client = WorkspaceClient(host=self.host, token=self.token)
+            if self.token:
+                print(f"  [DatabricksPlugin] Creating WorkspaceClient(host={self.host}, token=***)")
+                self.workspace_client = WorkspaceClient(host=self.host, token=self.token)
+            else:
+                print(f"  [DatabricksPlugin] Creating WorkspaceClient(host={self.host}) — no token, SDK auto-detect auth")
+                self.workspace_client = WorkspaceClient(host=self.host)
         else:
-            self.workspace_client = WorkspaceClient(host=self.host)
+            # No host — let the SDK auto-detect everything from environment.
+            # In Databricks Apps the SDK reads DATABRICKS_HOST and resolves
+            # the workspace URL + OAuth credentials automatically.
+            print("  [DatabricksPlugin] Creating WorkspaceClient() — full SDK auto-detect from env")
+            self.workspace_client = WorkspaceClient()
+            self.host = self.workspace_client.config.host
+            print(f"  [DatabricksPlugin] SDK resolved host: {self.host}")
+
+        print(f"  [DatabricksPlugin] WorkspaceClient created, auth_type={self.workspace_client.config.auth_type}")
 
         # MLflow client pointed at Databricks tracking server
+        print(f"  [DatabricksPlugin] Creating MLflow client (host={self.host}, token={'set' if self.token else 'None'})...")
         with _databricks_mlflow_env(self.host, self.token):
             mlflow.set_tracking_uri("databricks")
             self.mlflow_client = MlflowClient("databricks")
+        print("  [DatabricksPlugin] MLflow client created")
 
         # Inject custom session if provided
         if http_client:
