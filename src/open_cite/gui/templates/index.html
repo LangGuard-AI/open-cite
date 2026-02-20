@@ -157,6 +157,7 @@
         body {
             font-family: var(--font-family);
             background: var(--bg-body);
+            color: var(--text-primary);
             min-height: 100vh;
             padding: 20px;
         }
@@ -342,6 +343,25 @@
             color: var(--text-secondary);
             font-size: 0.9em;
             margin-bottom: 8px;
+        }
+
+        .otel-forwarding-info {
+            margin-top: 8px;
+            padding: 8px 10px;
+            border-radius: 6px;
+            background: var(--badge-green-bg);
+            color: var(--badge-green-text);
+            font-size: 0.82em;
+            line-height: 1.5;
+        }
+
+        .otel-forwarding-info .fwd-title {
+            font-weight: 600;
+            margin-bottom: 2px;
+        }
+
+        .otel-forwarding-info .fwd-endpoint {
+            opacity: 0.85;
         }
 
         .instance-actions {
@@ -1137,6 +1157,7 @@
 
         let pluginTypes = {};
         let instances = [];
+        let otelForwardingStatus = null;
         let assets = {};
         let currentTab = 'all';
         let refreshInterval = null;
@@ -1191,9 +1212,13 @@
         // Load configured instances
         async function loadInstances() {
             try {
-                const response = await fetch('/api/v1/instances');
-                const data = await response.json();
+                const [instResp, fwdResp] = await Promise.all([
+                    fetch('/api/v1/instances'),
+                    fetch('/api/v1/otel-forwarding-status'),
+                ]);
+                const data = await instResp.json();
                 instances = data.instances || [];
+                try { otelForwardingStatus = await fwdResp.json(); } catch(e) { otelForwardingStatus = null; }
                 renderInstances();
 
                 // Show export button if there are running instances
@@ -1223,6 +1248,21 @@
                 const statusClass = isRunning ? 'running' : (instance.status === 'error' ? 'error' : 'stopped');
                 const pluginInfo = pluginTypes[instance.plugin_type] || {};
 
+                // Show OTEL forwarding info on Databricks cards
+                let fwdHtml = '';
+                if (instance.plugin_type === 'databricks' && otelForwardingStatus?.enabled) {
+                    const fwdParts = [];
+                    if (otelForwardingStatus.traces) fwdParts.push('Traces');
+                    if (otelForwardingStatus.logs) fwdParts.push('Logs');
+                    if (fwdParts.length > 0) {
+                        fwdHtml = `
+                            <div class="otel-forwarding-info">
+                                <div class="fwd-title">OTEL Auto-Forward Active</div>
+                                <div class="fwd-endpoint">${fwdParts.join(' + ')} &rarr; ${otelForwardingStatus.host}</div>
+                            </div>`;
+                    }
+                }
+
                 return `
                     <div class="instance-card">
                         <div class="instance-header">
@@ -1231,8 +1271,11 @@
                         </div>
                         <div class="instance-type">Type: ${pluginInfo.name || instance.plugin_type}</div>
                         <div class="instance-info">ID: ${instance.instance_id}</div>
-                        ${instance.config?.host ? `<div class="instance-info">Host: ${instance.config.host}</div>` : ''}
-                        ${instance.config?.port ? `<div class="instance-info">Port: ${instance.config.port}</div>` : ''}
+                        ${instance.config?.endpoint ? `<div class="instance-info">Endpoint: ${instance.config.endpoint.replace('/v1/traces', '/v1/[logs/traces]')}</div>`
+                          : instance.config?.embedded ? `<div class="instance-info">Endpoint: ${window.location.origin}/v1/[logs/traces]</div>`
+                          : (instance.config?.host ? `<div class="instance-info">Host: ${instance.config.host}</div>` : '')
+                            + (instance.config?.port ? `<div class="instance-info">Port: ${instance.config.port}</div>` : '')}
+                        ${fwdHtml}
                         <div class="instance-actions">
                             ${isRunning
                         ? `<button class="btn-stop" onclick="stopInstance('${instance.instance_id}')">Stop</button>`

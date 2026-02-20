@@ -1,37 +1,32 @@
 """
-JSON-based plugin configuration persistence.
+SQLAlchemy-based plugin configuration persistence.
 
-Stores plugin instance configurations to a JSON file so they survive restarts.
-Enabled by default; disabled when running as a Kubernetes sidecar.
+Stores plugin instance configurations to the ``plugin_configs`` table so they
+survive restarts.  Enabled by default; disabled when running as a Kubernetes
+sidecar.
 """
 
-import json
 import logging
 import os
-import threading
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from open_cite.db import get_session, init_db, PluginConfig
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_PATH = Path(__file__).parent / "resources" / "plugin_instances.json"
-
 
 class PluginConfigStore:
-    """Thread-safe JSON store for plugin instance configurations."""
+    """Thread-safe store for plugin instance configurations (SQLAlchemy)."""
 
     def __init__(self, path: Optional[str] = None, enabled: Optional[bool] = None):
         """
         Args:
-            path: Path to JSON file. Defaults to resources/plugin_instances.json.
+            path: Ignored (kept for backward compatibility).
             enabled: Explicitly enable/disable. Defaults to True unless running
                      in Kubernetes (KUBERNETES_SERVICE_HOST is set). Can be
                      overridden via OPENCITE_PERSIST_PLUGINS env var.
         """
-        self._path = Path(path) if path else _DEFAULT_PATH
-        self._lock = threading.Lock()
-
         if enabled is not None:
             self._enabled = enabled
         else:
@@ -44,10 +39,10 @@ class PluginConfigStore:
                 self._enabled = True
 
         if self._enabled:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            logger.info(f"Plugin config persistence (JSON) enabled: {self._path}")
+            init_db()
+            logger.info("Plugin config persistence (SQLAlchemy) enabled")
         else:
-            logger.info("Plugin config persistence (JSON) disabled")
+            logger.info("Plugin config persistence disabled")
 
     @property
     def enabled(self) -> bool:
@@ -65,32 +60,47 @@ class PluginConfigStore:
         if not self._enabled:
             return
 
-        with self._lock:
-            data = self._read()
+        session = get_session()
+        try:
             now = datetime.utcnow().isoformat()
-            existing = data["instances"].get(instance_id)
-            data["instances"][instance_id] = {
-                "plugin_type": plugin_type,
-                "display_name": display_name,
-                "config": config,
-                "auto_start": auto_start,
-                "created_at": existing["created_at"] if existing else now,
-                "updated_at": now,
-            }
-            self._write(data)
-            logger.debug(f"Saved plugin instance: {instance_id}")
+            existing = session.get(PluginConfig, instance_id)
+            if existing:
+                existing.plugin_type = plugin_type
+                existing.display_name = display_name
+                existing.config = config
+                existing.auto_start = auto_start
+                existing.updated_at = now
+            else:
+                session.add(PluginConfig(
+                    instance_id=instance_id,
+                    plugin_type=plugin_type,
+                    display_name=display_name,
+                    config=config,
+                    auto_start=auto_start,
+                    created_at=now,
+                    updated_at=now,
+                ))
+            session.commit()
+            logger.debug("Saved plugin instance: %s", instance_id)
+        except Exception:
+            session.rollback()
+            raise
 
     def delete(self, instance_id: str) -> None:
         """Remove a plugin instance configuration."""
         if not self._enabled:
             return
 
-        with self._lock:
-            data = self._read()
-            if instance_id in data["instances"]:
-                del data["instances"][instance_id]
-                self._write(data)
-                logger.info(f"Deleted plugin instance: {instance_id}")
+        session = get_session()
+        try:
+            row = session.get(PluginConfig, instance_id)
+            if row:
+                session.delete(row)
+                session.commit()
+                logger.info("Deleted plugin instance: %s", instance_id)
+        except Exception:
+            session.rollback()
+            raise
 
     def load_all(self) -> List[Dict[str, Any]]:
         """Return all saved instance configs as a list of dicts.
@@ -101,33 +111,17 @@ class PluginConfigStore:
         if not self._enabled:
             return []
 
-        with self._lock:
-            data = self._read()
-
+        session = get_session()
+        rows = session.query(PluginConfig).all()
         return [
-            {"instance_id": iid, **entry}
-            for iid, entry in data["instances"].items()
+            {
+                "instance_id": r.instance_id,
+                "plugin_type": r.plugin_type,
+                "display_name": r.display_name,
+                "config": r.config,
+                "auto_start": r.auto_start,
+                "created_at": r.created_at,
+                "updated_at": r.updated_at,
+            }
+            for r in rows
         ]
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _read(self) -> Dict[str, Any]:
-        """Read the JSON file (caller must hold self._lock)."""
-        if self._path.exists():
-            try:
-                return json.loads(self._path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError) as e:
-                logger.warning(f"Could not read {self._path}: {e}")
-        return {"instances": {}}
-
-    def _write(self, data: Dict[str, Any]) -> None:
-        """Write the JSON file (caller must hold self._lock)."""
-        try:
-            self._path.write_text(
-                json.dumps(data, indent=2, default=str) + "\n",
-                encoding="utf-8",
-            )
-        except OSError as e:
-            logger.error(f"Failed to write {self._path}: {e}")

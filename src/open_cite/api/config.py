@@ -9,16 +9,6 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
-def _resolve_persist_default(env_var: str) -> bool:
-    """Resolve a persistence toggle: True unless in Kubernetes, overridable by *env_var*."""
-    env = os.getenv(env_var)
-    if env is not None:
-        return env.lower() == "true"
-    if os.getenv("KUBERNETES_SERVICE_HOST"):
-        return False
-    return True
-
-
 @dataclass
 class OpenCiteConfig:
     """
@@ -35,6 +25,11 @@ class OpenCiteConfig:
     otlp_host: str = field(default_factory=lambda: os.getenv("OPENCITE_OTLP_HOST", "0.0.0.0"))
     otlp_port: int = field(default_factory=lambda: int(os.getenv("OPENCITE_OTLP_PORT", "4318")))
 
+    # Embedded OTLP receiver (traces served on the main web port via HTTP/2 + gRPC)
+    otlp_embedded: bool = field(
+        default_factory=lambda: os.getenv("OPENCITE_OTLP_EMBEDDED", "true").lower() == "true"
+    )
+
     # Plugin toggles
     enable_otel: bool = field(default_factory=lambda: os.getenv("OPENCITE_ENABLE_OTEL", "true").lower() == "true")
     enable_mcp: bool = field(default_factory=lambda: os.getenv("OPENCITE_ENABLE_MCP", "true").lower() == "true")
@@ -46,6 +41,10 @@ class OpenCiteConfig:
     databricks_token: Optional[str] = field(default_factory=lambda: os.getenv("DATABRICKS_TOKEN"))
     databricks_warehouse_id: Optional[str] = field(default_factory=lambda: os.getenv("DATABRICKS_WAREHOUSE_ID"))
 
+    # Auto-forward OTLP to Databricks workspace endpoints.
+    # Defaults to true when DATABRICKS_HOST is set or running as a Databricks App.
+    databricks_auto_forward: bool = field(default=None)
+
     # Google Cloud settings (passed through to plugin)
     gcp_project_id: Optional[str] = field(default_factory=lambda: os.getenv("GCP_PROJECT_ID"))
     gcp_location: str = field(default_factory=lambda: os.getenv("GCP_LOCATION", "us-central1"))
@@ -56,7 +55,14 @@ class OpenCiteConfig:
     # Logging
     log_level: str = field(default_factory=lambda: os.getenv("OPENCITE_LOG_LEVEL", "INFO"))
 
-    # Persistence (SQLite for discovered assets)
+    # Database URL (SQLAlchemy — supports SQLite and PostgreSQL)
+    database_url: Optional[str] = field(
+        default_factory=lambda: os.getenv("OPENCITE_DATABASE_URL")
+    )
+
+    # Master persistence toggle — when true, assets, plugins, and mappings
+    # are all persisted by default.  Each can be individually overridden to
+    # false via its own env var.
     persistence_enabled: bool = field(
         default_factory=lambda: os.getenv("OPENCITE_PERSISTENCE_ENABLED", "false").lower() == "true"
     )
@@ -64,21 +70,31 @@ class OpenCiteConfig:
         default_factory=lambda: os.getenv("OPENCITE_DB_PATH", "/data/opencite.db")
     )
 
-    # Plugin config persistence (JSON file)
-    persist_plugins: bool = field(
-        default_factory=lambda: _resolve_persist_default("OPENCITE_PERSIST_PLUGINS")
-    )
-    plugin_store_path: Optional[str] = field(
-        default_factory=lambda: os.getenv("OPENCITE_PLUGIN_STORE_PATH")
-    )
+    # Plugin config persistence (defaults to OPENCITE_PERSISTENCE_ENABLED)
+    persist_plugins: bool = field(default=None)
 
-    # Identity mapping persistence (JSON file)
-    persist_mappings: bool = field(
-        default_factory=lambda: _resolve_persist_default("OPENCITE_PERSIST_MAPPINGS")
-    )
+    # Identity mapping persistence (defaults to OPENCITE_PERSISTENCE_ENABLED)
+    persist_mappings: bool = field(default=None)
     mapping_store_path: Optional[str] = field(
         default_factory=lambda: os.getenv("OPENCITE_MAPPING_STORE_PATH")
     )
+
+    def __post_init__(self):
+        """Resolve defaults that depend on other fields or env detection."""
+        if self.persist_plugins is None:
+            env = os.getenv("OPENCITE_PERSIST_PLUGINS")
+            self.persist_plugins = env.lower() == "true" if env else self.persistence_enabled
+        if self.persist_mappings is None:
+            env = os.getenv("OPENCITE_PERSIST_MAPPINGS")
+            self.persist_mappings = env.lower() == "true" if env else self.persistence_enabled
+        if self.databricks_auto_forward is None:
+            env = os.getenv("OPENCITE_DATABRICKS_AUTO_FORWARD")
+            if env is not None:
+                self.databricks_auto_forward = env.lower() == "true"
+            else:
+                # Auto-enable when Databricks host is set or running as a Databricks App
+                is_db_app = bool(os.getenv("DATABRICKS_CLIENT_ID") and os.getenv("DATABRICKS_APP_PORT"))
+                self.databricks_auto_forward = bool(self.databricks_host) or is_db_app
 
     @classmethod
     def from_env(cls) -> "OpenCiteConfig":

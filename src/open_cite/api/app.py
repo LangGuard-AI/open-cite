@@ -23,7 +23,6 @@ from threading import Lock, Thread
 from open_cite.client import OpenCiteClient
 from .config import OpenCiteConfig
 from .health import health_bp, init_health
-from .shutdown import register_shutdown_handler
 from .persistence import PersistenceManager
 from open_cite.plugin_store import PluginConfigStore
 
@@ -46,6 +45,10 @@ client: Optional[OpenCiteClient] = None
 persistence: Optional[PersistenceManager] = None
 plugin_store: Optional[PluginConfigStore] = None
 _config: Optional[OpenCiteConfig] = None
+_default_otel_plugin: Optional[Any] = None
+"""Default embedded OpenTelemetry plugin instance (created when otlp_embedded=True)."""
+_databricks_forwarder: Optional[Any] = None
+"""DatabricksOtelForwarder instance (set when auto-forward is enabled)."""
 discovery_status: Dict[str, Any] = {
     "running": False,
     "plugins_enabled": [],
@@ -151,7 +154,7 @@ def init_opencite_state(app: Flask, config: Optional[OpenCiteConfig] = None):
     Called by ``create_app()`` (API) and by the GUI's startup code so that
     both entry-points share the same state layer.
     """
-    global persistence, plugin_store, _config
+    global persistence, plugin_store, _config, client, _default_otel_plugin
 
     if config is None:
         config = OpenCiteConfig.from_env()
@@ -161,18 +164,52 @@ def init_opencite_state(app: Flask, config: Optional[OpenCiteConfig] = None):
     # Store config on the app
     app.opencite_config = config
 
-    # SQLite persistence for discovered assets (disabled by default)
-    if config.persistence_enabled:
-        persistence = PersistenceManager(config.db_path)
-        logger.info(f"Asset persistence (SQLite) enabled: {config.db_path}")
-    else:
-        logger.info("Asset persistence (SQLite) disabled — in-memory only")
+    # Propagate database URL / path to env so the db package can pick it up
+    if config.database_url:
+        os.environ.setdefault("OPENCITE_DATABASE_URL", config.database_url)
+    elif config.db_path:
+        os.environ.setdefault("OPENCITE_DB_PATH", config.db_path)
 
-    # JSON plugin config persistence (enabled by default)
+    # Initialise shared database if any persistence category is enabled
+    any_persistence = (
+        config.persistence_enabled
+        or config.persist_plugins
+        or config.persist_mappings
+    )
+    if any_persistence:
+        from open_cite.db import init_db
+        init_db()
+
+    # Asset persistence (disabled by default)
+    if config.persistence_enabled:
+        persistence = PersistenceManager()
+        logger.info("Asset persistence (SQLAlchemy) enabled")
+    else:
+        logger.info("Asset persistence disabled — in-memory only")
+
+    # Plugin config persistence (enabled by default)
     plugin_store = PluginConfigStore(
-        path=config.plugin_store_path,
         enabled=config.persist_plugins,
     )
+
+    # Create the default embedded OTel plugin if enabled
+    if config.otlp_embedded:
+        if not client:
+            client = OpenCiteClient()
+        otel_config = {
+            "embedded_receiver": True,
+            "persist_mappings": config.persist_mappings,
+            "mapping_store_path": config.mapping_store_path,
+        }
+        _default_otel_plugin = _create_plugin_instance(
+            plugin_type_name="opentelemetry",
+            instance_id="opentelemetry",
+            display_name="OpenTelemetry (Embedded)",
+            config=otel_config,
+        )
+        client.register_plugin(_default_otel_plugin)
+        _default_otel_plugin.start()
+        logger.info("Embedded OTLP receiver active on main web port")
 
 
 # =========================================================================
@@ -232,6 +269,12 @@ def create_app(config: Optional[OpenCiteConfig] = None) -> Flask:
 
     # Restore saved plugin instances from JSON store
     _restore_saved_plugins()
+
+    # Auto-configure Databricks plugin when running as a Databricks App
+    _auto_configure_databricks_app()
+
+    # Auto-forward OTLP to Databricks workspace endpoints
+    _setup_databricks_otel_forwarding()
 
     return app
 
@@ -294,8 +337,163 @@ def export_to_json(include_plugins: List[str]) -> Dict[str, Any]:
 # Route registration (shared by API and GUI Flask apps)
 # =========================================================================
 
+def _otlp_ingest(data: dict, headers: dict):
+    """Ingest OTLP trace data into the default embedded OTel plugin.
+
+    Used as the callback for both the ``POST /v1/traces`` Flask route and
+    the gRPC ASGI handler.
+    """
+    if _default_otel_plugin is None:
+        raise RuntimeError("No embedded OTLP receiver configured")
+    _default_otel_plugin._ingest_traces(data)
+    _default_otel_plugin._deliver_to_webhooks(data, inbound_headers=headers)
+    if _databricks_forwarder is not None:
+        _databricks_forwarder.forward_traces(data)
+
+
+def _otlp_ingest_logs(data: dict, headers: dict):
+    """Convert OTLP logs to synthetic traces, then ingest + forward via webhooks.
+
+    Used as the callback for both the ``POST /v1/logs`` Flask route and
+    the gRPC ASGI handler.
+    """
+    if _default_otel_plugin is None:
+        raise RuntimeError("No embedded OTLP receiver configured")
+    # Forward raw OTLP logs to Databricks before conversion
+    if _databricks_forwarder is not None:
+        _databricks_forwarder.forward_logs(data)
+    from open_cite.plugins.logs_adapter import convert_logs_to_traces
+    synthetic_traces = convert_logs_to_traces(data)
+    if synthetic_traces.get("resourceSpans"):
+        _default_otel_plugin._ingest_traces(synthetic_traces)
+        _default_otel_plugin._deliver_to_webhooks(synthetic_traces, inbound_headers=headers)
+
+
 def register_api_routes(app: Flask):
     """Register all API routes on the Flask app."""
+
+    # -----------------------------------------------------------------
+    # OTLP HTTP trace ingestion (JSON + protobuf)
+    # -----------------------------------------------------------------
+    @app.route('/v1/traces', methods=['POST'])
+    def otlp_ingest_traces():
+        """Accept OTLP trace payloads (JSON or protobuf) on the main port."""
+        if _default_otel_plugin is None:
+            return jsonify({"error": "Embedded OTLP receiver not configured"}), 503
+
+        content_type = request.headers.get("Content-Type", "")
+
+        # Extract forwarded headers (skip hop-by-hop)
+        _SKIP_HEADERS = {"content-length", "transfer-encoding", "connection",
+                         "keep-alive", "te", "trailers", "upgrade"}
+        inbound_headers = {}
+        for key, value in request.headers:
+            if key.lower() in _SKIP_HEADERS:
+                continue
+            if key.lower() == "host":
+                inbound_headers["OTEL-HOST"] = value
+            else:
+                inbound_headers[key] = value
+
+        try:
+            if "application/json" in content_type:
+                data = request.get_json(force=True)
+            elif "application/x-protobuf" in content_type:
+                from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+                    ExportTraceServiceRequest,
+                )
+                from google.protobuf.json_format import MessageToDict
+
+                req = ExportTraceServiceRequest()
+                req.ParseFromString(request.get_data())
+                data = MessageToDict(req)
+            else:
+                return jsonify({"error": f"Unsupported Content-Type: {content_type}"}), 415
+
+            _default_otel_plugin._ingest_traces(data)
+            _default_otel_plugin._deliver_to_webhooks(data, inbound_headers=inbound_headers)
+
+            num_spans = sum(
+                len(rs.get("scopeSpans", []))
+                for rs in data.get("resourceSpans", [])
+            )
+            logger.info(f"[OTLP/embedded] Received trace with {num_spans} scope spans")
+
+            return jsonify({"status": "success"})
+
+        except Exception as e:
+            logger.error(f"Error processing OTLP traces: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    # -----------------------------------------------------------------
+    # OTLP HTTP log ingestion (JSON + protobuf) — converts to traces
+    # -----------------------------------------------------------------
+    @app.route('/v1/logs', methods=['POST'])
+    def otlp_ingest_logs():
+        """Accept OTLP log payloads (JSON or protobuf), convert to traces, ingest."""
+        if _default_otel_plugin is None:
+            return jsonify({"error": "Embedded OTLP receiver not configured"}), 503
+
+        content_type = request.headers.get("Content-Type", "")
+
+        # Extract forwarded headers (skip hop-by-hop)
+        _SKIP_HEADERS = {"content-length", "transfer-encoding", "connection",
+                         "keep-alive", "te", "trailers", "upgrade"}
+        inbound_headers = {}
+        for key, value in request.headers:
+            if key.lower() in _SKIP_HEADERS:
+                continue
+            if key.lower() == "host":
+                inbound_headers["OTEL-HOST"] = value
+            else:
+                inbound_headers[key] = value
+
+        try:
+            if "application/json" in content_type:
+                data = request.get_json(force=True)
+            elif "application/x-protobuf" in content_type:
+                from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import (
+                    ExportLogsServiceRequest,
+                )
+                from google.protobuf.json_format import MessageToDict
+
+                req = ExportLogsServiceRequest()
+                req.ParseFromString(request.get_data())
+                data = MessageToDict(req)
+            else:
+                return jsonify({"error": f"Unsupported Content-Type: {content_type}"}), 415
+
+            from open_cite.plugins.logs_adapter import convert_logs_to_traces
+            synthetic_traces = convert_logs_to_traces(data)
+
+            num_log_records = sum(
+                len(lr)
+                for rl in data.get("resourceLogs", [])
+                for sl in rl.get("scopeLogs", [])
+                for lr in [sl.get("logRecords", [])]
+            )
+
+            if synthetic_traces.get("resourceSpans"):
+                _default_otel_plugin._ingest_traces(synthetic_traces)
+                _default_otel_plugin._deliver_to_webhooks(
+                    synthetic_traces, inbound_headers=inbound_headers
+                )
+
+            num_spans = sum(
+                len(ss.get("spans", []))
+                for rs in synthetic_traces.get("resourceSpans", [])
+                for ss in rs.get("scopeSpans", [])
+            )
+            logger.info(
+                f"[OTLP/logs] Received {num_log_records} log records, "
+                f"converted to {num_spans} synthetic spans"
+            )
+
+            return jsonify({"status": "success"})
+
+        except Exception as e:
+            logger.error(f"Error processing OTLP logs: {e}")
+            return jsonify({"error": str(e)}), 500
 
     @app.route('/api/v1/status')
     def api_get_status():
@@ -626,11 +824,9 @@ def register_api_routes(app: Flask):
             mcp_servers = persistence.load_mcp_servers()
             mcp_tools = persistence.load_mcp_tools()
             mcp_resources = persistence.load_mcp_resources()
-            mappings = persistence.load_mappings()
 
             return jsonify({
                 "enabled": True,
-                "db_path": str(persistence.db_path),
                 "stats": {
                     "tools": len(tools),
                     "models": len(models),
@@ -640,7 +836,6 @@ def register_api_routes(app: Flask):
                     "mcp_servers": len(mcp_servers),
                     "mcp_tools": len(mcp_tools),
                     "mcp_resources": len(mcp_resources),
-                    "mappings": len(mappings),
                 }
             })
         except Exception as e:
@@ -742,13 +937,15 @@ def register_api_routes(app: Flask):
                 instances = [i for i in instances if i['plugin_type'] == plugin_type]
             return jsonify({"instances": instances, "count": len(instances)})
 
-        # Fall back to persisted instances if no client
-        if persistence:
+        # Fall back to plugin store
+        if plugin_store:
             try:
-                instances = persistence.load_plugin_instances(plugin_type)
+                instances = plugin_store.load_all()
+                if plugin_type:
+                    instances = [i for i in instances if i['plugin_type'] == plugin_type]
                 return jsonify({"instances": instances, "count": len(instances)})
             except Exception as e:
-                logger.error(f"Failed to load instances from persistence: {e}")
+                logger.error(f"Failed to load instances from plugin store: {e}")
                 return jsonify({"error": str(e)}), 500
 
         return jsonify({"instances": [], "count": 0})
@@ -806,24 +1003,13 @@ def register_api_routes(app: Flask):
             # Register the plugin
             client.register_plugin(plugin_instance)
 
-            # Save to plugin config store (JSON file)
+            # Save to plugin config store
             if plugin_store:
                 plugin_store.save(
                     instance_id=instance_id,
                     plugin_type=plugin_type,
                     display_name=display_name,
                     config=config,
-                    auto_start=auto_start,
-                )
-
-            # Save to SQLite persistence if enabled
-            if persistence:
-                persistence.save_plugin_instance(
-                    instance_id=instance_id,
-                    plugin_type=plugin_type,
-                    display_name=display_name,
-                    config=config,
-                    status='running' if auto_start else 'stopped',
                     auto_start=auto_start,
                 )
 
@@ -855,11 +1041,11 @@ def register_api_routes(app: Flask):
             plugin = client.plugins[instance_id]
             return jsonify({"instance": plugin.to_dict()})
 
-        # Fall back to persistence
-        if persistence:
-            instance = persistence.get_plugin_instance(instance_id)
-            if instance:
-                return jsonify({"instance": instance})
+        # Fall back to plugin store
+        if plugin_store:
+            for saved in plugin_store.load_all():
+                if saved['instance_id'] == instance_id:
+                    return jsonify({"instance": saved})
 
         return jsonify({"error": f"Instance '{instance_id}' not found"}), 404
 
@@ -886,23 +1072,6 @@ def register_api_routes(app: Flask):
                 if 'display_name' in data:
                     plugin.display_name = data['display_name']
 
-                # Update persistence if enabled
-                if persistence:
-                    existing = persistence.get_plugin_instance(instance_id)
-                    if existing:
-                        new_display_name = data.get('display_name', existing['display_name'])
-                        new_config = {**existing['config'], **data.get('config', {})}
-                        new_auto_start = data.get('auto_start', existing['auto_start'])
-
-                        persistence.save_plugin_instance(
-                            instance_id=instance_id,
-                            plugin_type=existing['plugin_type'],
-                            display_name=new_display_name,
-                            config=new_config,
-                            status=existing['status'],
-                            auto_start=new_auto_start,
-                        )
-
                 # Update plugin store
                 if plugin_store:
                     saved = next(
@@ -920,22 +1089,23 @@ def register_api_routes(app: Flask):
 
                 return jsonify({"success": True, "instance": plugin.to_dict()})
 
-            elif persistence:
-                existing = persistence.get_plugin_instance(instance_id)
-                if existing:
-                    new_display_name = data.get('display_name', existing['display_name'])
-                    new_config = {**existing['config'], **data.get('config', {})}
-                    new_auto_start = data.get('auto_start', existing['auto_start'])
-
-                    persistence.save_plugin_instance(
+            elif plugin_store:
+                saved = next(
+                    (s for s in plugin_store.load_all() if s['instance_id'] == instance_id),
+                    None
+                )
+                if saved:
+                    plugin_store.save(
                         instance_id=instance_id,
-                        plugin_type=existing['plugin_type'],
-                        display_name=new_display_name,
-                        config=new_config,
-                        status=existing['status'],
-                        auto_start=new_auto_start,
+                        plugin_type=saved['plugin_type'],
+                        display_name=data.get('display_name', saved['display_name']),
+                        config={**saved['config'], **data.get('config', {})},
+                        auto_start=data.get('auto_start', saved['auto_start']),
                     )
-                    updated = persistence.get_plugin_instance(instance_id)
+                    updated = next(
+                        (s for s in plugin_store.load_all() if s['instance_id'] == instance_id),
+                        None
+                    )
                     return jsonify({"success": True, "instance": updated})
 
             return jsonify({"error": f"Instance '{instance_id}' not found"}), 404
@@ -957,10 +1127,6 @@ def register_api_routes(app: Flask):
             # Remove from plugin config store
             if plugin_store:
                 plugin_store.delete(instance_id)
-
-            # Remove from SQLite persistence
-            if persistence:
-                persistence.delete_plugin_instance(instance_id)
 
             return jsonify({"success": True, "message": f"Instance '{instance_id}' deleted"})
 
@@ -997,10 +1163,6 @@ def register_api_routes(app: Flask):
                 discovery_status["running"] = True
             _notify_status_changed()
 
-            # Update status in persistence
-            if persistence:
-                persistence.update_instance_status(instance_id, 'running')
-
             return jsonify({"success": True, "message": f"Instance '{instance_id}' started"})
 
         except Exception as e:
@@ -1017,10 +1179,6 @@ def register_api_routes(app: Flask):
 
             _stop_plugin_instance(plugin)
             _notify_status_changed()
-
-            # Update status in persistence
-            if persistence:
-                persistence.update_instance_status(instance_id, 'stopped')
 
             return jsonify({"success": True, "message": f"Instance '{instance_id}' stopped"})
 
@@ -1061,10 +1219,6 @@ def register_api_routes(app: Flask):
                 # Fallback: full discovery via start()
                 _start_plugin_instance(plugin)
                 method = 'start'
-
-            # Update status in persistence
-            if persistence:
-                persistence.update_instance_status(instance_id, 'running')
 
             return jsonify({
                 "success": True,
@@ -1121,6 +1275,28 @@ def register_api_routes(app: Flask):
 
         removed = plugin.unsubscribe_webhook(url)
         return jsonify({"success": True, "removed": removed, "webhooks": plugin.list_webhooks()})
+
+    # =========================================================================
+    # Databricks OTEL Forwarding Status
+    # =========================================================================
+
+    @app.route('/api/v1/otel-forwarding-status', methods=['GET'])
+    def api_otel_forwarding_status():
+        """Return the status of the Databricks OTEL auto-forwarder."""
+        fwd = _databricks_forwarder
+        if fwd is None:
+            return jsonify({
+                "enabled": False,
+                "traces": False,
+                "logs": False,
+                "host": None,
+            })
+        return jsonify({
+            "enabled": True,
+            "traces": fwd._traces_available,
+            "logs": fwd._logs_available,
+            "host": fwd._host,
+        })
 
     # =========================================================================
     # Lineage Graph (visual HTML – used by GUI iframe)
@@ -1352,6 +1528,8 @@ def _create_plugin_instance(
         config = {**config}  # shallow copy to avoid mutating caller's dict
         config.setdefault("persist_mappings", _config.persist_mappings)
         config.setdefault("mapping_store_path", _config.mapping_store_path)
+        # Don't inject embedded_receiver for user-created instances —
+        # they should run their own standalone receivers unless explicitly set.
 
     return create_plugin_instance(
         plugin_type=plugin_type_name,
@@ -1394,16 +1572,13 @@ def _ensure_instance(instance_id: str) -> Optional['BaseDiscoveryPlugin']:
     if client and instance_id in client.plugins:
         return client.plugins[instance_id]
 
-    # 2. Try restoring from plugin_store first, then persistence
+    # 2. Try restoring from plugin_store
     persisted = None
     if plugin_store:
         for saved in plugin_store.load_all():
             if saved['instance_id'] == instance_id:
                 persisted = saved
                 break
-
-    if not persisted and persistence:
-        persisted = persistence.get_plugin_instance(instance_id)
 
     if persisted:
         try:
@@ -1471,6 +1646,157 @@ def _restore_saved_plugins():
             logger.error(f"Failed to restore plugin instance '{iid}': {e}")
 
     _notify_status_changed()
+
+
+def _is_databricks_app() -> bool:
+    """Return True when running inside a Databricks App container.
+
+    Detection: both ``DATABRICKS_CLIENT_ID`` and ``DATABRICKS_APP_PORT``
+    are present in the environment.  These are auto-injected by the
+    Databricks Apps platform.
+    """
+    return bool(os.environ.get("DATABRICKS_CLIENT_ID")
+                and os.environ.get("DATABRICKS_APP_PORT"))
+
+
+def _auto_configure_databricks_app():
+    """Auto-configure a Databricks plugin when running as a Databricks App.
+
+    Detection: both ``DATABRICKS_CLIENT_ID`` and ``DATABRICKS_APP_PORT``
+    are set (auto-injected by the Databricks Apps platform).
+
+    The Databricks SDK auto-detects the workspace URL and OAuth
+    credentials from the environment, so no explicit host or token is
+    needed.  Skips if a Databricks instance already exists (e.g.
+    restored from the plugin store).
+    """
+    global client
+
+    # -- Dump all DATABRICKS_* env vars for troubleshooting ----------------
+    db_env = {k: ("****" if "SECRET" in k or "TOKEN" in k else v)
+              for k, v in os.environ.items() if k.startswith("DATABRICKS_")}
+    print(f"  [auto-configure] DATABRICKS_* env vars: {db_env}")
+    logger.info("Databricks App auto-configure check — env vars: %s", db_env)
+
+    if not _is_databricks_app():
+        print(f"  [auto-configure] Skipping — not a Databricks App "
+              f"(DATABRICKS_CLIENT_ID={'set' if os.environ.get('DATABRICKS_CLIENT_ID') else 'UNSET'}, "
+              f"DATABRICKS_APP_PORT={'set' if os.environ.get('DATABRICKS_APP_PORT') else 'UNSET'})")
+        return
+
+    print("  [auto-configure] Databricks App environment detected")
+
+    # Skip if a Databricks plugin instance is already registered
+    if client:
+        registered = {iid: getattr(p, 'plugin_type', '?') for iid, p in client.plugins.items()}
+        print(f"  [auto-configure] Already registered plugins: {registered}")
+        for plugin in client.plugins.values():
+            if getattr(plugin, "plugin_type", None) == "databricks":
+                print("  [auto-configure] Databricks instance already registered — skipping")
+                return
+
+    if not client:
+        print("  [auto-configure] Creating OpenCiteClient")
+        client = OpenCiteClient()
+
+    instance_id = "databricks-app-auto"
+    display_name = "Databricks (App Auto-configured)"
+
+    try:
+        print("  [auto-configure] Creating Databricks plugin instance (empty config, SDK auto-detect)...")
+        # Pass empty config — the SDK auto-detects host + OAuth from env
+        plugin_instance = _create_plugin_instance(
+            plugin_type_name="databricks",
+            instance_id=instance_id,
+            display_name=display_name,
+            config={},
+        )
+
+        resolved_host = getattr(plugin_instance, "host", "unknown")
+        print(f"  [auto-configure] Plugin created — resolved host: {resolved_host}")
+
+        client.register_plugin(plugin_instance)
+        print(f"  [auto-configure] Plugin registered as '{instance_id}'")
+
+        # Persist so it survives restarts (auto_start=True)
+        if plugin_store:
+            plugin_store.save(
+                instance_id=instance_id,
+                plugin_type="databricks",
+                display_name=display_name,
+                config={},
+                auto_start=True,
+            )
+            print("  [auto-configure] Plugin config saved to store")
+
+        print("  [auto-configure] Starting plugin...")
+        _start_plugin_instance(plugin_instance)
+
+        with state_lock:
+            if "databricks" not in discovery_status["plugins_enabled"]:
+                discovery_status["plugins_enabled"].append("databricks")
+            discovery_status["running"] = True
+        _notify_status_changed()
+
+        print(f"  [auto-configure] SUCCESS — Databricks plugin running for {resolved_host}")
+    except Exception as e:
+        import traceback
+        print(f"  [auto-configure] FAILED: {e}")
+        print(f"  [auto-configure] Traceback:\n{traceback.format_exc()}")
+        logger.error(f"Failed to auto-configure Databricks plugin: {e}", exc_info=True)
+
+
+def _setup_databricks_otel_forwarding():
+    """Set up auto-forwarding of OTLP data to Databricks workspace endpoints.
+
+    Creates a :class:`DatabricksOtelForwarder` when
+    ``databricks_auto_forward`` is enabled, probes the endpoints in a
+    background thread, and stores the forwarder in the module global
+    ``_databricks_forwarder`` so ``_otlp_ingest`` / ``_otlp_ingest_logs``
+    can use it.
+    """
+    global _databricks_forwarder
+
+    if not _config or not _config.databricks_auto_forward:
+        logger.debug("Databricks OTEL auto-forwarding disabled")
+        return
+
+    # Resolve the workspace host
+    host = _config.databricks_host
+    if not host:
+        # Try SDK auto-detect (Databricks App environment)
+        try:
+            from databricks.sdk import WorkspaceClient
+            w = WorkspaceClient()
+            host = w.config.host
+            logger.info("Databricks OTEL forwarding: resolved host via SDK: %s", host)
+        except Exception as exc:
+            logger.info(
+                "Databricks OTEL forwarding: cannot resolve host "
+                "(no DATABRICKS_HOST and SDK auto-detect failed: %s)", exc,
+            )
+            return
+
+    if not host:
+        logger.info("Databricks OTEL forwarding: no host available — skipping")
+        return
+
+    from open_cite.databricks_otel_forwarder import DatabricksOtelForwarder
+
+    forwarder = DatabricksOtelForwarder(host=host, token=_config.databricks_token)
+
+    def _probe():
+        forwarder.probe_endpoints()
+        if forwarder._traces_available or forwarder._logs_available:
+            global _databricks_forwarder
+            _databricks_forwarder = forwarder
+            logger.info("Databricks OTEL forwarder activated")
+        else:
+            logger.info("Databricks OTEL forwarder: no endpoints available, not activated")
+
+    t = Thread(target=_probe, daemon=True, name="databricks-otel-probe")
+    t.start()
+    logger.info("Databricks OTEL forwarding: probing %s in background...", host)
 
 
 def _configure_plugin(plugin_name: str, config: Dict[str, Any]):
@@ -1618,21 +1944,8 @@ def _load_persisted_data():
         except Exception as e:
             logger.warning(f"Failed to load downstream system data: {e}")
 
-    # Load tool mappings into identifier
-    if otel_plugin and hasattr(otel_plugin, 'identifier'):
-        try:
-            mappings = persistence.load_mappings('opentelemetry')
-            for mapping in mappings:
-                otel_plugin.identifier.add_mapping(
-                    mapping['plugin_name'],
-                    mapping['attributes'],
-                    mapping['identity'],
-                    match_type=mapping.get('match_type', 'all')
-                )
-            if mappings:
-                logger.info(f"Loaded {len(mappings)} tool mappings from persistence")
-        except Exception as e:
-            logger.warning(f"Failed to load tool mappings: {e}")
+    # Note: tool mappings are now loaded by ToolIdentifier from the database
+    # on init, so no need to load them here.
 
 
 def _save_current_state():
@@ -1805,8 +2118,16 @@ def _collect_assets(asset_type: str) -> Dict[str, List]:
 
 def shutdown_cleanup():
     """Clean up resources on shutdown."""
-    global client, persistence
+    global client, persistence, _databricks_forwarder
     logger.info("Running shutdown cleanup...")
+
+    # Shut down Databricks OTEL forwarder
+    if _databricks_forwarder is not None:
+        try:
+            _databricks_forwarder.shutdown()
+            _databricks_forwarder = None
+        except Exception as e:
+            logger.warning(f"Error shutting down Databricks OTEL forwarder: {e}")
 
     # Save state to persistence before shutdown
     if persistence and client:
@@ -1826,13 +2147,13 @@ def shutdown_cleanup():
                 except Exception as e:
                     logger.warning(f"Error stopping plugin {plugin.instance_id}: {e}")
 
-    # Close persistence connection
-    if persistence:
-        try:
-            persistence.close()
-            logger.info("Closed persistence connection")
-        except Exception as e:
-            logger.warning(f"Error closing persistence: {e}")
+    # Close database engine
+    try:
+        from open_cite.db import close_db
+        close_db()
+        logger.info("Closed database connection")
+    except Exception as e:
+        logger.warning(f"Error closing database: {e}")
 
 
 def auto_configure_plugins(app: Flask):
@@ -1939,31 +2260,68 @@ def run_api(host: str = "0.0.0.0", port: int = 8080, auto_start: bool = True):
 
     app = create_app(config)
 
-    # Register shutdown handler
-    register_shutdown_handler(shutdown_cleanup)
-
     # Note: auto_configure_plugins is already called inside create_app()
     # when config.auto_start is True — no need to call it again here.
 
     print(f"\n{'='*60}")
-    print(f"  OpenCITE API Service")
+    print(f"  OpenCITE API Service (HTTP/2 via Hypercorn)")
     print(f"{'='*60}")
     print(f"  API: http://{host}:{port}")
     print(f"  Health: http://{host}:{port}/healthz")
     print(f"  Readiness: http://{host}:{port}/readyz")
-    if config.enable_otel:
+    if config.otlp_embedded:
+        print(f"  OTLP Traces (JSON): http://{host}:{port}/v1/traces")
+        print(f"  OTLP Logs   (JSON): http://{host}:{port}/v1/logs")
+        print(f"  OTLP (gRPC): http://{host}:{port} (HTTP/2)")
+    elif config.enable_otel:
         print(f"  OTLP Receiver: http://{config.otlp_host}:{config.otlp_port}/v1/traces")
     if config.persistence_enabled:
-        print(f"  Persistence: {config.db_path}")
+        db_url = config.database_url or f"sqlite:///{config.db_path}"
+        # Mask credentials in display
+        display_url = db_url.split("@")[-1] if "@" in db_url else db_url
+        print(f"  Persistence: {display_url}")
     else:
         print(f"  Persistence: disabled (in-memory only)")
     if plugin_store and plugin_store.enabled:
-        print(f"  Plugin Store: {plugin_store._path}")
+        print(f"  Plugin Store: SQLAlchemy (shared database)")
     print(f"{'='*60}\n")
 
-    from gevent.pywsgi import WSGIServer
-    http_server = WSGIServer((host, port), app)
-    http_server.serve_forever()
+    import asyncio
+    import signal
+    from open_cite.asgi.app import create_asgi_app
+    from hypercorn.config import Config as HyperConfig
+    from hypercorn.asyncio import serve
+
+    ingest_fn = _otlp_ingest if _default_otel_plugin else None
+    logs_ingest_fn = _otlp_ingest_logs if _default_otel_plugin else None
+    asgi_app = create_asgi_app(
+        app, sio_server=None, ingest_fn=ingest_fn,
+        logs_ingest_fn=logs_ingest_fn,
+    )
+
+    hconfig = HyperConfig()
+    hconfig.bind = [f"{host}:{port}"]
+
+    async def _serve():
+        shutdown_event = asyncio.Event()
+
+        def _signal_handler():
+            if shutdown_event.is_set():
+                logger.warning("Received second signal, forcing exit")
+                os._exit(1)
+            logger.info("Received shutdown signal, shutting down gracefully... (press Ctrl+C again to force)")
+            shutdown_event.set()
+
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _signal_handler)
+
+        try:
+            await serve(asgi_app, hconfig, shutdown_trigger=shutdown_event.wait)
+        finally:
+            shutdown_cleanup()
+
+    asyncio.run(_serve())
 
 
 # For gunicorn: gunicorn "open_cite.api.app:create_app()"

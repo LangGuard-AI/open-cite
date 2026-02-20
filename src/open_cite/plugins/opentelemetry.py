@@ -51,71 +51,109 @@ class OTLPRequestHandler(BaseHTTPRequestHandler):
     """HTTP request handler for OTLP protocol."""
 
     def do_POST(self):
-        """Handle POST requests for trace ingestion."""
-        # Accept both /v1/traces and /v1/traces/ (with trailing slash)
-        if self.path == "/v1/traces" or self.path == "/v1/traces/":
-            content_length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(content_length)
-
-            # Capture all inbound HTTP headers for webhook forwarding.
-            # Skip hop-by-hop headers that requests manages itself.
-            # Map Host to OTEL-HOST so it doesn't conflict with the
-            # webhook destination's Host header.
-            _SKIP_HEADERS = {"content-length", "transfer-encoding", "connection",
-                             "keep-alive", "te", "trailers", "upgrade"}
-            inbound_headers = {}
-            for key, value in self.headers.items():
-                if key.lower() in _SKIP_HEADERS:
-                    continue
-                if key.lower() == "host":
-                    inbound_headers["OTEL-HOST"] = value
-                else:
-                    inbound_headers[key] = value
-
-            # Store reference to the plugin's trace store
-            plugin = self.server.plugin
-
-            try:
-                # Parse OTLP JSON payload
-                content_type = self.headers.get("Content-Type", "")
-
-                if "application/json" in content_type:
-                    data = json.loads(body.decode("utf-8"))
-
-                    # Log raw OTLP content if DEBUG is enabled
-                    if logger.isEnabledFor(logging.DEBUG):
-                        logger.debug(f"[OTLP] Raw trace data: {json.dumps(data, indent=2)}")
-
-                    plugin._ingest_traces(data)
-
-                    # Forward to webhooks with original inbound headers
-                    plugin._deliver_to_webhooks(data, inbound_headers=inbound_headers)
-
-                    # Log successful trace ingestion
-                    num_spans = sum(len(rs.get("scopeSpans", [])) for rs in data.get("resourceSpans", []))
-                    logger.warning(f"[OTLP] Received trace with {num_spans} scope spans")
-
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(json.dumps({"status": "success"}).encode())
-                else:
-                    # For protobuf support, we'd need the opentelemetry-proto package
-                    self.send_response(415)
-                    self.send_header("Content-Type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(
-                        json.dumps({"error": "Only JSON format supported"}).encode()
-                    )
-            except Exception as e:
-                logger.error(f"Error processing traces: {e}")
-                self.send_response(500)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": str(e)}).encode())
+        """Handle POST requests for trace and log ingestion."""
+        if self.path in ("/v1/traces", "/v1/traces/"):
+            self._handle_traces()
+        elif self.path in ("/v1/logs", "/v1/logs/"):
+            self._handle_logs()
         else:
             self.send_response(404)
             self.end_headers()
+
+    def _read_body_and_headers(self):
+        """Read request body and extract forwarded headers."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+
+        _SKIP_HEADERS = {"content-length", "transfer-encoding", "connection",
+                         "keep-alive", "te", "trailers", "upgrade"}
+        inbound_headers = {}
+        for key, value in self.headers.items():
+            if key.lower() in _SKIP_HEADERS:
+                continue
+            if key.lower() == "host":
+                inbound_headers["OTEL-HOST"] = value
+            else:
+                inbound_headers[key] = value
+
+        return body, inbound_headers
+
+    def _handle_traces(self):
+        """Handle POST /v1/traces for trace ingestion."""
+        body, inbound_headers = self._read_body_and_headers()
+        plugin = self.server.plugin
+
+        try:
+            content_type = self.headers.get("Content-Type", "")
+
+            if "application/json" in content_type:
+                data = json.loads(body.decode("utf-8"))
+                plugin._ingest_traces(data)
+                plugin._deliver_to_webhooks(data, inbound_headers=inbound_headers)
+
+                num_spans = sum(len(rs.get("scopeSpans", [])) for rs in data.get("resourceSpans", []))
+                logger.warning(f"[OTLP] Received trace with {num_spans} scope spans")
+
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "success"}).encode())
+            else:
+                self.send_response(415)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(
+                    json.dumps({"error": "Only JSON format supported"}).encode()
+                )
+        except Exception as e:
+            logger.error(f"Error processing traces: {e}")
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
+
+    def _handle_logs(self):
+        """Handle POST /v1/logs — convert OTLP logs to synthetic traces."""
+        body, inbound_headers = self._read_body_and_headers()
+        plugin = self.server.plugin
+
+        try:
+            content_type = self.headers.get("Content-Type", "")
+
+            if "application/json" in content_type:
+                data = json.loads(body.decode("utf-8"))
+
+                from open_cite.plugins.logs_adapter import convert_logs_to_traces
+                synthetic_traces = convert_logs_to_traces(data)
+
+                if synthetic_traces.get("resourceSpans"):
+                    plugin._ingest_traces(synthetic_traces)
+                    plugin._deliver_to_webhooks(synthetic_traces, inbound_headers=inbound_headers)
+
+                num_log_records = sum(
+                    len(sl.get("logRecords", []))
+                    for rl in data.get("resourceLogs", [])
+                    for sl in rl.get("scopeLogs", [])
+                )
+                logger.warning(f"[OTLP] Received {num_log_records} log records, converted to traces")
+
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "success"}).encode())
+            else:
+                self.send_response(415)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(
+                    json.dumps({"error": "Only JSON format supported"}).encode()
+                )
+        except Exception as e:
+            logger.error(f"Error processing logs: {e}")
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
 
     def log_message(self, format, *args):
         """Override to use Python logging."""
@@ -154,20 +192,22 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
     def from_config(cls, config, instance_id=None, display_name=None, dependencies=None):
         import socket as _socket
 
+        embedded_receiver = config.get('embedded_receiver', False)
         host = config.get('host', '0.0.0.0')
         port = int(config.get('port', 4318))
 
-        # Check that the port is available before creating the instance
-        try:
-            sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
-            sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
-            sock.bind((host, port))
-            sock.close()
-        except OSError:
-            raise ValueError(
-                f"Port {port} is already in use. "
-                f"Choose a different port for this OpenTelemetry instance."
-            )
+        # Only check port availability for standalone (non-embedded) instances
+        if not embedded_receiver:
+            try:
+                sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+                sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+                sock.bind((host, port))
+                sock.close()
+            except OSError:
+                raise ValueError(
+                    f"Port {port} is already in use. "
+                    f"Choose a different port for this OpenTelemetry instance."
+                )
 
         return cls(
             host=host,
@@ -176,19 +216,28 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             display_name=display_name,
             persist_mappings=config.get('persist_mappings', True),
             mapping_store_path=config.get('mapping_store_path'),
+            embedded_receiver=embedded_receiver,
         )
 
     def start(self):
         """Start the OTLP trace receiver."""
-        self.start_receiver()
-        self._status = "running"
-        logger.info(f"Started OpenTelemetry plugin {self.instance_id}")
+        if self._embedded_receiver:
+            self._status = "running"
+            logger.info(f"Started OpenTelemetry plugin {self.instance_id} (embedded receiver — no standalone server)")
+        else:
+            self.start_receiver()
+            self._status = "running"
+            logger.info(f"Started OpenTelemetry plugin {self.instance_id}")
 
     def stop(self):
         """Stop the OTLP trace receiver."""
-        self.stop_receiver()
-        self._status = "stopped"
-        logger.info(f"Stopped OpenTelemetry plugin {self.instance_id}")
+        if self._embedded_receiver:
+            self._status = "stopped"
+            logger.info(f"Stopped OpenTelemetry plugin {self.instance_id} (embedded receiver)")
+        else:
+            self.stop_receiver()
+            self._status = "stopped"
+            logger.info(f"Stopped OpenTelemetry plugin {self.instance_id}")
 
     def __init__(
         self,
@@ -199,6 +248,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         display_name: Optional[str] = None,
         persist_mappings: bool = True,
         mapping_store_path: Optional[str] = None,
+        embedded_receiver: bool = False,
     ):
         """
         Initialize the OpenTelemetry plugin.
@@ -211,10 +261,13 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             display_name: Human-readable name for this instance
             persist_mappings: Whether to persist identity mappings to disk
             mapping_store_path: Path to the mapping JSON file (None = default)
+            embedded_receiver: If True, skip standalone HTTP server (traces arrive
+                via the main app's /v1/traces and gRPC routes instead)
         """
         super().__init__(instance_id=instance_id, display_name=display_name)
         self.host = host
         self.port = port
+        self._embedded_receiver = embedded_receiver
         self._persist_mappings = persist_mappings
         self._mapping_store_path = mapping_store_path
         self.server: Optional[HTTPServer] = None
@@ -389,9 +442,14 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
     def get_config(self) -> Dict[str, Any]:
         """Return plugin configuration."""
+        if self._embedded_receiver:
+            return {
+                "embedded": True,
+            }
         return {
             "host": self.host,
             "port": self.port,
+            "endpoint": f"http://{self.host}:{self.port}/v1/[logs/traces]",
         }
 
     @property
@@ -416,6 +474,19 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         Returns:
             Dict with connection status
         """
+        if self._embedded_receiver:
+            is_running = self._status == "running"
+            return {
+                "success": is_running,
+                "receiver_running": is_running,
+                "embedded": True,
+                "traces_received": len(self.traces),
+                "tools_discovered": len(self.discovered_tools),
+                "mcp_servers_discovered": len(self.mcp_servers),
+                "mcp_tools_discovered": len(self.mcp_tools),
+                "mcp_resources_discovered": len(self.mcp_resources),
+            }
+
         is_running = self.server_thread is not None and self.server_thread.is_alive()
         return {
             "success": is_running,
@@ -492,6 +563,9 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         Args:
             otlp_data: OTLP JSON payload
         """
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"[OTLP] Raw ingested data: {json.dumps(otlp_data, indent=2)}")
+
         try:
             with self._lock:
                 # OTLP format: {"resourceSpans": [...]}
