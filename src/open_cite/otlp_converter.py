@@ -369,7 +369,7 @@ def ai_gateway_usage_to_otlp(row: Dict[str, Any]) -> Dict[str, Any]:
 
     # --- Resource attributes ---
     resource_attrs = [
-        _make_attr("service.name", f"databricks-ai-gateway:{endpoint_name}"),
+        _make_attr("service.name", endpoint_name),
         _make_attr("service.namespace", "databricks"),
         _make_attr("ai_gateway.endpoint.name", endpoint_name),
     ]
