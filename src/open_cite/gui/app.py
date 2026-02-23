@@ -27,7 +27,6 @@ from open_cite.api.app import (
     register_api_routes,
     _restore_saved_plugins,
     _auto_configure_databricks_app,
-    _setup_databricks_otel_forwarding,
     _reclassify_downstream,
     _otlp_ingest,
 )
@@ -58,6 +57,12 @@ logging.basicConfig(
 )
 logging.getLogger('open_cite.plugins.opentelemetry').setLevel(_log_level)
 logging.getLogger('hpack').setLevel(logging.WARNING)
+for _ul in ('urllib3', 'urllib3.util.retry', 'urllib3.connectionpool'):
+    _ulg = logging.getLogger(_ul)
+    _ulg.setLevel(logging.ERROR)
+    _ulg.propagate = False
+logging.getLogger('geventwebsocket.handler').setLevel(logging.ERROR)
+logging.getLogger('databricks.sql.auth').setLevel(logging.WARNING)
 
 
 # =========================================================================
@@ -105,8 +110,6 @@ def _push_assets_update(source_plugin=None):
             "mcp_tools": [],
             "mcp_resources": [],
             "data_assets": [],
-            "gcp_models": [],
-            "gcp_endpoints": []
         }
 
         c = api_app.client
@@ -123,10 +126,6 @@ def _push_assets_update(source_plugin=None):
             plugins_enabled = api_app.discovery_status.get("plugins_enabled", [])
             if "databricks" in plugins_enabled:
                 assets["data_assets"] = api_app.asset_cache.get("assets", {}).get("data_assets", [])
-            if "google_cloud" in plugins_enabled:
-                assets["gcp_models"] = api_app.asset_cache.get("assets", {}).get("gcp_models", [])
-                assets["gcp_endpoints"] = api_app.asset_cache.get("assets", {}).get("gcp_endpoints", [])
-
         _reclassify_downstream(assets)
         totals = {k: len(v) for k, v in assets.items()}
 
@@ -159,7 +158,10 @@ def _push_status_update():
 
 def _gui_start_plugin(plugin):
     """Start a plugin in a background thread and push WebSocket updates."""
-    plugin.on_data_changed = lambda p: _push_assets_update(p)
+    def _on_data(p):
+        api_app._maybe_save_state(p)   # persist first so DB is fresh
+        _push_assets_update(p)          # then read and push to clients
+    plugin.on_data_changed = _on_data
 
     def _run():
         try:
@@ -214,16 +216,17 @@ init_opencite_state(app)
 # Wire up WebSocket push for the embedded OTel plugin (created during init,
 # bypasses _gui_start_plugin which only handles user-started plugins)
 if api_app._default_otel_plugin is not None:
-    api_app._default_otel_plugin.on_data_changed = lambda p: _push_assets_update(p)
+    def _default_otel_on_data(p):
+        api_app._maybe_save_state(p)   # persist first so DB is fresh
+        _push_assets_update(p)          # then read and push to clients
+    api_app._default_otel_plugin.on_data_changed = _default_otel_on_data
 print("  [gui init] Registering API routes...")
 register_api_routes(app)
 print("  [gui init] Restoring saved plugins...")
 _restore_saved_plugins()
-print("  [gui init] Checking Databricks App auto-configure...")
+logger.info("Checking Databricks App auto-configure...")
 _auto_configure_databricks_app()
-print("  [gui init] Setting up Databricks OTEL forwarding...")
-_setup_databricks_otel_forwarding()
-print("  [gui init] Initialization complete.")
+logger.info("GUI initialization complete.")
 
 
 # =========================================================================

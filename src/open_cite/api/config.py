@@ -41,10 +41,6 @@ class OpenCiteConfig:
     databricks_token: Optional[str] = field(default_factory=lambda: os.getenv("DATABRICKS_TOKEN"))
     databricks_warehouse_id: Optional[str] = field(default_factory=lambda: os.getenv("DATABRICKS_WAREHOUSE_ID"))
 
-    # Auto-forward OTLP to Databricks workspace endpoints.
-    # Defaults to true when DATABRICKS_HOST is set or running as a Databricks App.
-    databricks_auto_forward: bool = field(default=None)
-
     # Google Cloud settings (passed through to plugin)
     gcp_project_id: Optional[str] = field(default_factory=lambda: os.getenv("GCP_PROJECT_ID"))
     gcp_location: str = field(default_factory=lambda: os.getenv("GCP_LOCATION", "us-central1"))
@@ -87,15 +83,6 @@ class OpenCiteConfig:
         if self.persist_mappings is None:
             env = os.getenv("OPENCITE_PERSIST_MAPPINGS")
             self.persist_mappings = env.lower() == "true" if env else self.persistence_enabled
-        if self.databricks_auto_forward is None:
-            env = os.getenv("OPENCITE_DATABRICKS_AUTO_FORWARD")
-            if env is not None:
-                self.databricks_auto_forward = env.lower() == "true"
-            else:
-                # Auto-enable when Databricks host is set or running as a Databricks App
-                is_db_app = bool(os.getenv("DATABRICKS_CLIENT_ID") and os.getenv("DATABRICKS_APP_PORT"))
-                self.databricks_auto_forward = bool(self.databricks_host) or is_db_app
-
     @classmethod
     def from_env(cls) -> "OpenCiteConfig":
         """Create configuration from environment variables."""

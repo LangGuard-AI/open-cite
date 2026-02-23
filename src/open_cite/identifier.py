@@ -44,20 +44,23 @@ class ToolIdentifier:
 
         init_db()
         session = get_session()
-        rows = session.query(AssetIdMapping).all()
-        with self._lock:
-            self.mapping = {}
-            for row in rows:
-                plugin = row.plugin_name
-                if plugin not in self.mapping:
-                    self.mapping[plugin] = []
-                self.mapping[plugin].append({
-                    "attributes": row.attributes,
-                    "identity": row.identity,
-                    "match_type": row.match_type or "all",
-                })
-        if rows:
-            logger.info("Loaded %d identity mappings from database", len(rows))
+        try:
+            rows = session.query(AssetIdMapping).all()
+            with self._lock:
+                self.mapping = {}
+                for row in rows:
+                    plugin = row.plugin_name
+                    if plugin not in self.mapping:
+                        self.mapping[plugin] = []
+                    self.mapping[plugin].append({
+                        "attributes": row.attributes,
+                        "identity": row.identity,
+                        "match_type": row.match_type or "all",
+                    })
+            if rows:
+                logger.info("Loaded %d identity mappings from database", len(rows))
+        finally:
+            session.close()
 
     def identify(self, plugin_name: str, attributes: Dict[str, Any]) -> Optional[Dict[str, str]]:
         """
@@ -122,16 +125,22 @@ class ToolIdentifier:
             from open_cite.db import get_session, AssetIdMapping
 
             session = get_session()
-            session.add(AssetIdMapping(
-                plugin_name=plugin_name,
-                attributes=attributes,
-                identity=identity,
-                match_type=match_type,
-                created_at=datetime.utcnow().isoformat(),
-            ))
-            session.commit()
-            logger.info("Saved new identity mapping for plugin '%s'", plugin_name)
-            return True
+            try:
+                session.add(AssetIdMapping(
+                    plugin_name=plugin_name,
+                    attributes=attributes,
+                    identity=identity,
+                    match_type=match_type,
+                    created_at=datetime.utcnow().isoformat(),
+                ))
+                session.commit()
+                logger.info("Saved new identity mapping for plugin '%s'", plugin_name)
+                return True
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
         except Exception as e:
             logger.error("Failed to save identity mapping: %s", e)
             return False

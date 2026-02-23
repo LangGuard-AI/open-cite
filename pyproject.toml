@@ -1,6 +1,6 @@
 [project]
 name = "open-cite"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Open Cite project"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,7 +18,8 @@ dependencies = [
     "protobuf>=4.25.0",
     "pyvis>=0.3.0",
     "sqlalchemy>=2.0",
-    "psycopg2-binary>=2.9"
+    "psycopg2-binary>=2.9",
+    "databricks-sqlalchemy>=1.0"
 ]
 
 [project.scripts]
@@ -27,6 +28,12 @@ opencite = "open_cite.__main__:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+# Timestamp-based version so every build produces a unique wheel,
+# forcing Databricks Apps to reinstall on each deploy.
+source = "code"
+path = "src/open_cite/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/open_cite"]

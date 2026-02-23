@@ -2,13 +2,21 @@
 SQLAlchemy ORM model definitions for all OpenCITE tables.
 
 Uses SQLAlchemy 2.0 DeclarativeBase. ``sqlalchemy.JSON`` maps to TEXT on
-SQLite and JSONB on PostgreSQL — no custom type adapters needed.
+SQLite, JSONB on PostgreSQL, and STRING on Databricks.
+
+Databricks SQL compatibility notes:
+- ``BigInteger`` + ``Identity()`` instead of ``Integer`` + ``autoincrement``
+  (Databricks only supports BIGINT GENERATED ALWAYS AS IDENTITY)
+- ``ForeignKey`` constraints carry explicit ``name=`` (required by dialect)
+- Foreign keys are informational only on Databricks (not enforced)
 """
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Column,
     ForeignKey,
+    Identity,
     Index,
     Integer,
     String,
@@ -17,6 +25,38 @@ from sqlalchemy import (
 )
 from sqlalchemy.types import JSON
 from sqlalchemy.orm import DeclarativeBase, relationship
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.schema import CreateIndex, DropIndex
+
+
+# Databricks SQL has no native JSON type — render as STRING instead.
+@compiles(JSON, "databricks")
+def _compile_json_databricks(type_, compiler, **kw):
+    return "STRING"
+
+
+# Databricks Unity Catalog does not support CREATE INDEX / DROP INDEX.
+@compiles(CreateIndex, "databricks")
+def _skip_create_index_databricks(element, compiler, **kw):
+    return "SELECT 1"
+
+
+@compiles(DropIndex, "databricks")
+def _skip_drop_index_databricks(element, compiler, **kw):
+    return "SELECT 1"
+
+
+# Databricks dialect lacks the _json_serializer/_json_deserializer attrs
+# that SQLAlchemy's JSON type expects.  Patch them in so JSON columns work
+# (uses default json.loads / json.dumps).
+try:
+    from databricks.sqlalchemy import DatabricksDialect
+    if not hasattr(DatabricksDialect, "_json_deserializer"):
+        DatabricksDialect._json_deserializer = None
+    if not hasattr(DatabricksDialect, "_json_serializer"):
+        DatabricksDialect._json_serializer = None
+except ImportError:
+    pass
 
 
 class Base(DeclarativeBase):
@@ -70,7 +110,6 @@ class Agent(Base):
 
     id = Column(String, primary_key=True)
     name = Column(String, nullable=False, index=True)
-    confidence = Column(String, default="medium")
     tools_used = Column(JSON)
     models_used = Column(JSON)
     first_seen = Column(String, nullable=False)
@@ -94,20 +133,14 @@ class DownstreamSystem(Base):
 class Lineage(Base):
     __tablename__ = "lineage"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    source_id = Column(String, nullable=False, index=True)
+    source_id = Column(String, primary_key=True)
+    target_id = Column(String, primary_key=True)
+    relationship_type = Column(String, primary_key=True)
     source_type = Column(String, nullable=False)
-    target_id = Column(String, nullable=False, index=True)
     target_type = Column(String, nullable=False)
-    relationship_type = Column(String, nullable=False)
     weight = Column(Integer, default=1)
     first_seen = Column(String, nullable=False)
     last_seen = Column(String, nullable=False)
-
-    __table_args__ = (
-        UniqueConstraint("source_id", "target_id", "relationship_type",
-                         name="uq_lineage_src_tgt_rel"),
-    )
 
 
 class McpServer(Base):
@@ -133,7 +166,7 @@ class McpTool(Base):
     __tablename__ = "mcp_tools"
 
     id = Column(String, primary_key=True)
-    server_id = Column(String, ForeignKey("mcp_servers.id"), nullable=False, index=True)
+    server_id = Column(String, ForeignKey("mcp_servers.id", name="fk_mcp_tools_server"), nullable=False, index=True)
     name = Column(String, nullable=False)
     description = Column(String)
     schema_ = Column("schema", JSON)
@@ -148,7 +181,7 @@ class McpResource(Base):
     __tablename__ = "mcp_resources"
 
     id = Column(String, primary_key=True)
-    server_id = Column(String, ForeignKey("mcp_servers.id"), nullable=False, index=True)
+    server_id = Column(String, ForeignKey("mcp_servers.id", name="fk_mcp_resources_server"), nullable=False, index=True)
     uri = Column(String, nullable=False)
     name = Column(String)
     type = Column(String)
@@ -176,7 +209,7 @@ class DiscoveryStatus(Base):
 class AssetIdMapping(Base):
     __tablename__ = "asset_id_mappings"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(BigInteger, Identity(always=True), primary_key=True)
     plugin_name = Column(String, nullable=False, index=True)
     attributes = Column(JSON, nullable=False)
     identity = Column(JSON, nullable=False)
