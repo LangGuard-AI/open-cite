@@ -332,3 +332,205 @@ def genie_trace_to_otlp(trace_dict: Dict[str, Any]) -> Dict[str, Any]:
             }],
         }],
     }
+
+
+def ai_gateway_usage_to_otlp(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert a Databricks AI Gateway usage table row to an OTLP JSON payload.
+
+    Creates a 2-span trace:
+      - Root span: the AI Gateway endpoint handling the request
+      - Child span: the downstream LLM call (model, tokens, provider)
+
+    The row dict keys should match the ``system.ai_gateway.usage`` schema
+    columns (snake_case).
+
+    Returns:
+        OTLP JSON dict: ``{"resourceSpans": [...]}``
+    """
+    request_id = str(row.get("request_id", "unknown"))
+    trace_id = _deterministic_id(f"gw-trace:{request_id}", 32)
+    gateway_span_id = _deterministic_id(f"gw-root:{request_id}", 16)
+    llm_span_id = _deterministic_id(f"gw-llm:{request_id}", 16)
+
+    # Timestamps
+    event_time = row.get("event_time")
+    if isinstance(event_time, datetime):
+        start_ns = int(event_time.timestamp() * 1_000_000_000)
+    else:
+        start_ns = int(time.time() * 1_000_000_000)
+
+    latency_ms = row.get("latency_ms")
+    if latency_ms is not None:
+        end_ns = start_ns + int(latency_ms) * 1_000_000
+    else:
+        end_ns = start_ns
+
+    endpoint_name = row.get("endpoint_name") or "ai-gateway"
+
+    # --- Resource attributes ---
+    resource_attrs = [
+        _make_attr("service.name", f"databricks-ai-gateway:{endpoint_name}"),
+        _make_attr("service.namespace", "databricks"),
+        _make_attr("ai_gateway.endpoint.name", endpoint_name),
+    ]
+    endpoint_id = row.get("endpoint_id")
+    if endpoint_id:
+        resource_attrs.append(_make_attr("ai_gateway.endpoint.id", str(endpoint_id)))
+    account_id = row.get("account_id")
+    if account_id:
+        resource_attrs.append(_make_attr("ai_gateway.account_id", str(account_id)))
+    workspace_id = row.get("workspace_id")
+    if workspace_id:
+        resource_attrs.append(_make_attr("ai_gateway.workspace_id", str(workspace_id)))
+
+    # --- Root gateway span ---
+    gw_attrs: List[Dict[str, Any]] = [
+        _make_attr("gen_ai.agent.name", endpoint_name),
+        _make_attr("ai_gateway.request_id", request_id),
+    ]
+
+    # Requester identity
+    requester = row.get("requester")
+    if requester:
+        gw_attrs.append(_make_attr("enduser.id", str(requester)))
+        gw_attrs.append(_make_attr("user.id", str(requester)))
+        # If it looks like an email, also set user.email
+        if "@" in str(requester):
+            gw_attrs.append(_make_attr("user.email", str(requester)))
+    requester_type = row.get("requester_type")
+    if requester_type:
+        gw_attrs.append(_make_attr("user.type", str(requester_type)))
+
+    # Network / HTTP context
+    ip_address = row.get("ip_address")
+    if ip_address:
+        gw_attrs.append(_make_attr("net.peer.ip", str(ip_address)))
+        gw_attrs.append(_make_attr("user.ip_address", str(ip_address)))
+    url = row.get("url")
+    if url:
+        gw_attrs.append(_make_attr("http.url", str(url)))
+    user_agent = row.get("user_agent")
+    if user_agent:
+        gw_attrs.append(_make_attr("http.user_agent", str(user_agent)))
+    status_code = row.get("status_code")
+    if status_code is not None:
+        gw_attrs.append(_make_attr_int("http.status_code", int(status_code)))
+
+    # API type (chat, completions, embeddings)
+    api_type = row.get("api_type")
+    if api_type:
+        gw_attrs.append(_make_attr("gen_ai.operation.name", str(api_type)))
+        gw_attrs.append(_make_attr("ai_gateway.api_type", str(api_type)))
+
+    # Destination info
+    destination_type = row.get("destination_type")
+    if destination_type:
+        gw_attrs.append(_make_attr("ai_gateway.destination_type", str(destination_type)))
+    destination_name = row.get("destination_name")
+    if destination_name:
+        gw_attrs.append(_make_attr("ai_gateway.destination_name", str(destination_name)))
+
+    # Timing
+    if latency_ms is not None:
+        gw_attrs.append(_make_attr_int("ai_gateway.latency_ms", int(latency_ms)))
+    ttfb = row.get("time_to_first_byte_ms")
+    if ttfb is not None:
+        gw_attrs.append(_make_attr_int("ai_gateway.time_to_first_byte_ms", int(ttfb)))
+
+    # Response content type
+    resp_ct = row.get("response_content_type")
+    if resp_ct:
+        gw_attrs.append(_make_attr("http.response.content_type", str(resp_ct)))
+
+    # Endpoint tags (MAP<STRING, STRING>)
+    endpoint_tags = row.get("endpoint_tags")
+    if endpoint_tags and isinstance(endpoint_tags, dict):
+        for k, v in endpoint_tags.items():
+            gw_attrs.append(_make_attr(f"ai_gateway.endpoint_tag.{k}", str(v)))
+
+    # Request tags (MAP<STRING, STRING>)
+    request_tags = row.get("request_tags")
+    if request_tags and isinstance(request_tags, dict):
+        for k, v in request_tags.items():
+            gw_attrs.append(_make_attr(f"ai_gateway.request_tag.{k}", str(v)))
+
+    # Routing information (STRUCT)
+    routing = row.get("routing_information")
+    if routing and isinstance(routing, dict):
+        gw_attrs.append(_make_attr("ai_gateway.routing", json.dumps(routing, default=str)))
+
+    # Endpoint metadata (STRUCT)
+    endpoint_meta = row.get("endpoint_metadata")
+    if endpoint_meta and isinstance(endpoint_meta, dict):
+        gw_attrs.append(_make_attr("ai_gateway.endpoint_metadata", json.dumps(endpoint_meta, default=str)))
+
+    root_span = {
+        "traceId": trace_id,
+        "spanId": gateway_span_id,
+        "name": endpoint_name,
+        "kind": 1,  # SPAN_KIND_INTERNAL
+        "startTimeUnixNano": str(start_ns),
+        "endTimeUnixNano": str(end_ns),
+        "attributes": gw_attrs,
+        "status": {},
+    }
+
+    # --- Child LLM span ---
+    dest_model = row.get("destination_model") or "unknown"
+    provider = row.get("destination_name") or "databricks"
+
+    llm_attrs: List[Dict[str, Any]] = [
+        _make_attr("gen_ai.request.model", str(dest_model)),
+        _make_attr("gen_ai.system", str(provider)),
+    ]
+
+    input_tokens = row.get("input_tokens")
+    if input_tokens is not None:
+        try:
+            llm_attrs.append(_make_attr_int("gen_ai.usage.input_tokens", int(input_tokens)))
+        except (ValueError, TypeError):
+            pass
+    output_tokens = row.get("output_tokens")
+    if output_tokens is not None:
+        try:
+            llm_attrs.append(_make_attr_int("gen_ai.usage.output_tokens", int(output_tokens)))
+        except (ValueError, TypeError):
+            pass
+    total_tokens = row.get("total_tokens")
+    if total_tokens is not None:
+        try:
+            llm_attrs.append(_make_attr_int("gen_ai.usage.total_tokens", int(total_tokens)))
+        except (ValueError, TypeError):
+            pass
+
+    # Token details (STRUCT with cache_read, cache_creation, reasoning tokens)
+    token_details = row.get("token_details")
+    if token_details and isinstance(token_details, dict):
+        for k, v in token_details.items():
+            if v is not None:
+                try:
+                    llm_attrs.append(_make_attr_int(f"gen_ai.usage.{k}", int(v)))
+                except (ValueError, TypeError):
+                    llm_attrs.append(_make_attr(f"gen_ai.usage.{k}", str(v)))
+
+    llm_span = {
+        "traceId": trace_id,
+        "spanId": llm_span_id,
+        "parentSpanId": gateway_span_id,
+        "name": "LLM",
+        "kind": 1,
+        "startTimeUnixNano": str(start_ns),
+        "endTimeUnixNano": str(end_ns),
+        "attributes": llm_attrs,
+        "status": {},
+    }
+
+    return {
+        "resourceSpans": [{
+            "resource": {"attributes": resource_attrs},
+            "scopeSpans": [{
+                "scope": {"name": "open_cite.otlp_converter"},
+                "spans": [root_span, llm_span],
+            }],
+        }],
+    }

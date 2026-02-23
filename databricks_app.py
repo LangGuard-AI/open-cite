@@ -1,8 +1,5 @@
 """Databricks App entry point for OpenCITE."""
 import os
-from gevent import monkey
-monkey.patch_all()
-
 from open_cite.gui.app import run_gui
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OpenCITE - AI Discovery & Cataloging</title>
+    <link rel="icon" type="image/png" href="/static/OpenCiteBear.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&display=swap" rel="stylesheet">
@@ -60,6 +61,7 @@
             --mapping-badge-text: #92400e;
             --close-btn-color: #9ca3af;
             --close-btn-hover: #111827;
+            --text-on-body: rgba(255, 255, 255, 0.8);
         }
 
         /* ===== Databricks Light ===== */
@@ -106,6 +108,7 @@
             --mapping-badge-text: #92400E;
             --close-btn-color: #9CA3AF;
             --close-btn-hover: #0B2026;
+            --text-on-body: #7A7A7A;
         }
 
         /* ===== Databricks Dark ===== */
@@ -152,6 +155,7 @@
             --mapping-badge-text: #FCD34D;
             --close-btn-color: #7A8E96;
             --close-btn-hover: #E8E8E8;
+            --text-on-body: rgba(255, 255, 255, 0.7);
         }
 
         body {
@@ -311,6 +315,8 @@
             padding: 16px;
             margin-bottom: 12px;
             transition: all 0.2s;
+            overflow: hidden;
+            min-width: 0;
         }
 
         .instance-card:hover {
@@ -323,7 +329,7 @@
             align-items: center;
             gap: 10px;
             margin-bottom: 8px;
-            text-overflow: ellipsis;
+            min-width: 0;
         }
 
         .instance-name {
@@ -331,37 +337,26 @@
             color: var(--text-primary);
             font-size: 1.1em;
             flex-grow: 1;
+            overflow: hidden;
             text-overflow: ellipsis;
+            white-space: nowrap;
         }
 
         .instance-type {
-            color: var(--text-muted);
-            font-size: 0.85em;
+            color: var(--text-secondary);
+            font-size: 0.9em;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
 
         .instance-info {
             color: var(--text-secondary);
             font-size: 0.9em;
-            margin-bottom: 8px;
-        }
-
-        .otel-forwarding-info {
-            margin-top: 8px;
-            padding: 8px 10px;
-            border-radius: 6px;
-            background: var(--badge-green-bg);
-            color: var(--badge-green-text);
-            font-size: 0.82em;
-            line-height: 1.5;
-        }
-
-        .otel-forwarding-info .fwd-title {
-            font-weight: 600;
             margin-bottom: 2px;
-        }
-
-        .otel-forwarding-info .fwd-endpoint {
-            opacity: 0.85;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
 
         .instance-actions {
@@ -501,8 +496,25 @@
             border-bottom-color: var(--accent-primary);
         }
 
-        .btn-export-inline {
+        .btn-reset-inline {
             margin-left: auto;
+            margin-bottom: 4px;
+            padding: 8px 16px;
+            background: #ef4444;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+
+        .btn-reset-inline:hover {
+            background: #dc2626;
+        }
+
+        .btn-export-inline {
             margin-bottom: 4px;
             padding: 8px 16px;
             background: #10b981;
@@ -523,6 +535,7 @@
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
             gap: 16px;
+            margin-bottom: 16px;
         }
 
         .asset-card {
@@ -807,8 +820,6 @@
         }
 
         .instances-list {
-            max-height: 400px;
-            overflow-y: auto;
             margin-bottom: 12px;
         }
 
@@ -964,42 +975,30 @@
 </head>
 
 <body data-theme="opencite">
-    <div style="position:absolute;right:20px;top:10px;">
-        <label for="themeSelect" style="color: var(--text-muted); font-size: 0.85em; white-space:nowrap;">Theme:</label>
-        <select id="themeSelect" onchange="setTheme(this.value); refreshLineageGraph();" style="padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border-color);
-                        background: var(--bg-input); color: var(--text-primary); font-size: 0.85em;
-                        font-family: var(--font-family); cursor: pointer;">
-            <option value="opencite">OpenCITE</option>
-            <option value="databricks-light">Databricks Light</option>
-            <option value="databricks-dark">Databricks Dark</option>
-        </select>
-    </div>
     <div class="container" style="margin-top:2em;">
+        <div style="text-align:right;margin-bottom:8px;">
+            <label for="themeSelect" style="color: var(--text-on-body); font-size: 0.85em; white-space:nowrap;">Theme:</label>
+            <select id="themeSelect" onchange="setTheme(this.value); refreshLineageGraph();" style="padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border-color);
+                            background: var(--bg-card); color: var(--text-primary); font-size: 0.85em;
+                            font-family: var(--font-family); cursor: pointer;">
+                <option value="opencite">OpenCITE</option>
+                <option value="databricks-light">Databricks Light</option>
+                <option value="databricks-dark">Databricks Dark</option>
+            </select>
+        </div>
         <div class="header" style="display:flex;align-items:center;">
-            <div style="float:left">
+            <div style="flex:1;">
                 <h1><img src="static/OpenCiteBear.png" /> OpenCITE</h1>
                 <p class="subtitle"><b>Open C</b>atalog of <b>I</b>ntelligent <b>T</b>ools in the <b>E</b>nterprise</p>
             </div>
             <div style="float:right;">
                 <div class="stats" id="statsContainer" style="display: none;"></div>
             </div>
-            <div style="clear:both"></div>
         </div>
 
         <div class="main-grid">
             <!-- Sidebar -->
             <div class="sidebar">
-                <!-- Status Card -->
-                <div class="card">
-                    <h2>
-                        <span class="status-indicator" id="statusIndicator"></span>
-                        Discovery Status
-                    </h2>
-                    <div id="statusText" style="color: var(--text-secondary); margin-bottom: 12px;">Not running</div>
-                    <div id="pluginsActive" style="color: var(--text-secondary); font-size: 0.9em;"></div>
-                    <div id="progressContainer" class="progress-container" style="display: none;"></div>
-                </div>
-
                 <!-- Configured Plugins -->
                 <div class="card">
                     <h2>Configured Plugins</h2>
@@ -1034,6 +1033,9 @@
                         <button class="tab" onclick="switchTab('downstream')">Downstream</button>
                         <button class="tab" onclick="switchTab('mcp')">MCP</button>
                         <button class="tab" onclick="switchTab('data_assets')">Data Assets</button>
+                        <button class="btn-reset-inline" id="resetBtnInline" onclick="resetDiscoveries()" style="display: none;" title="Clear all discovered assets">
+                            Reset
+                        </button>
                         <button class="btn-export-inline" id="exportBtnInline" onclick="exportData()" style="display: none;" title="Download Discovered Assets in JSON">
                             Download JSON
                         </button>
@@ -1157,7 +1159,6 @@
 
         let pluginTypes = {};
         let instances = [];
-        let otelForwardingStatus = null;
         let assets = {};
         let currentTab = 'all';
         let refreshInterval = null;
@@ -1172,7 +1173,6 @@
             try {
                 await loadPluginTypes();
                 await loadInstances();
-                await updateStatus();
 
                 // Track manual edits to instance name field
                 document.getElementById('instanceDisplayName').addEventListener('input', function () {
@@ -1212,17 +1212,14 @@
         // Load configured instances
         async function loadInstances() {
             try {
-                const [instResp, fwdResp] = await Promise.all([
-                    fetch('/api/v1/instances'),
-                    fetch('/api/v1/otel-forwarding-status'),
-                ]);
+                const instResp = await fetch('/api/v1/instances');
                 const data = await instResp.json();
                 instances = data.instances || [];
-                try { otelForwardingStatus = await fwdResp.json(); } catch(e) { otelForwardingStatus = null; }
                 renderInstances();
 
-                // Show export button if there are running instances
+                // Show reset/export buttons if there are running instances
                 const hasRunning = instances.some(i => i.status === 'running');
+                document.getElementById('resetBtnInline').style.display = hasRunning ? 'block' : 'none';
                 document.getElementById('exportBtnInline').style.display = hasRunning ? 'block' : 'none';
             } catch (error) {
                 console.error('Error loading instances:', error);
@@ -1248,34 +1245,24 @@
                 const statusClass = isRunning ? 'running' : (instance.status === 'error' ? 'error' : 'stopped');
                 const pluginInfo = pluginTypes[instance.plugin_type] || {};
 
-                // Show OTEL forwarding info on Databricks cards
-                let fwdHtml = '';
-                if (instance.plugin_type === 'databricks' && otelForwardingStatus?.enabled) {
-                    const fwdParts = [];
-                    if (otelForwardingStatus.traces) fwdParts.push('Traces');
-                    if (otelForwardingStatus.logs) fwdParts.push('Logs');
-                    if (fwdParts.length > 0) {
-                        fwdHtml = `
-                            <div class="otel-forwarding-info">
-                                <div class="fwd-title">OTEL Auto-Forward Active</div>
-                                <div class="fwd-endpoint">${fwdParts.join(' + ')} &rarr; ${otelForwardingStatus.host}</div>
-                            </div>`;
-                    }
-                }
+                const typeText = pluginInfo.name || instance.plugin_type;
+                const endpointText = instance.config?.endpoint
+                    ? instance.config.endpoint.replace('/v1/traces', '/v1/[logs/traces]')
+                    : instance.config?.embedded
+                        ? `${window.location.origin}/v1/[logs/traces]`
+                        : null;
 
                 return `
                     <div class="instance-card">
                         <div class="instance-header">
                             <span class="status-indicator ${statusClass}"></span>
-                            <span class="instance-name">${instance.display_name}</span>
+                            <span class="instance-name" title="${instance.display_name}">${instance.display_name}</span>
                         </div>
-                        <div class="instance-type">Type: ${pluginInfo.name || instance.plugin_type}</div>
-                        <div class="instance-info">ID: ${instance.instance_id}</div>
-                        ${instance.config?.endpoint ? `<div class="instance-info">Endpoint: ${instance.config.endpoint.replace('/v1/traces', '/v1/[logs/traces]')}</div>`
-                          : instance.config?.embedded ? `<div class="instance-info">Endpoint: ${window.location.origin}/v1/[logs/traces]</div>`
-                          : (instance.config?.host ? `<div class="instance-info">Host: ${instance.config.host}</div>` : '')
-                            + (instance.config?.port ? `<div class="instance-info">Port: ${instance.config.port}</div>` : '')}
-                        ${fwdHtml}
+                        <div class="instance-type" title="Type: ${typeText}">Type: ${typeText}</div>
+                        <div class="instance-info" title="ID: ${instance.instance_id}">ID: ${instance.instance_id}</div>
+                        ${endpointText ? `<div class="instance-info" title="Endpoint: ${endpointText}">Endpoint: ${endpointText}</div>`
+                          : (instance.config?.host ? `<div class="instance-info" title="Host: ${instance.config.host}">Host: ${instance.config.host}</div>` : '')
+                            + (instance.config?.port ? `<div class="instance-info" title="Port: ${instance.config.port}">Port: ${instance.config.port}</div>` : '')}
                         <div class="instance-actions">
                             ${isRunning
                         ? `<button class="btn-stop" onclick="stopInstance('${instance.instance_id}')">Stop</button>`
@@ -1528,7 +1515,6 @@
             });
 
             socket.on('status_update', function (data) {
-                _applyStatusUpdate(data);
                 loadInstances();
             });
 
@@ -1550,7 +1536,6 @@
             if (!instances.some(i => i.status === 'running')) return;
             refreshInterval = setInterval(() => {
                 refreshAssets();
-                updateStatus();
             }, 3000);
         }
 
@@ -1593,54 +1578,6 @@
             }
         }
 
-        // Apply status update to DOM (used by both WebSocket and HTTP)
-        function _applyStatusUpdate(status) {
-            const indicator = document.getElementById('statusIndicator');
-            const statusText = document.getElementById('statusText');
-            const pluginsActive = document.getElementById('pluginsActive');
-            const progressContainer = document.getElementById('progressContainer');
-
-            if (status.running) {
-                const hasInProgress = status.progress?.some(p => p.status === 'in_progress');
-                indicator.className = hasInProgress ? 'status-indicator loading' : 'status-indicator running';
-                statusText.textContent = status.current_status || 'Running';
-                pluginsActive.textContent = `Active: ${status.plugins_enabled?.join(', ') || 'none'}`;
-            } else {
-                indicator.className = 'status-indicator stopped';
-                statusText.textContent = status.current_status || 'Stopped';
-                pluginsActive.textContent = '';
-            }
-
-            // Update progress display
-            if (status.progress?.length > 0) {
-                progressContainer.style.display = 'block';
-                progressContainer.innerHTML = status.progress.map(p => {
-                    const icon = p.status === 'success' ? '✓' :
-                        p.status === 'error' ? '✗' :
-                            '<div class="spinner"></div>';
-                    return `
-                        <div class="progress-item ${p.status}">
-                            <span>${icon}</span>
-                            <span>${p.message}</span>
-                        </div>
-                    `;
-                }).join('');
-            } else {
-                progressContainer.style.display = 'none';
-            }
-        }
-
-        // Update status (HTTP fallback)
-        async function updateStatus() {
-            try {
-                const response = await fetch('/api/v1/status');
-                const status = await response.json();
-                _applyStatusUpdate(status);
-            } catch (error) {
-                console.error('Error updating status:', error);
-            }
-        }
-
         // Render stats
         function renderStats(totals) {
             if (!totals) return;
@@ -1648,7 +1585,7 @@
             const container = document.getElementById('statsContainer');
             container.style.display = 'grid';
 
-            const totalModels = (totals.models || 0) + (totals.gcp_models || 0) + (totals.gcp_endpoints || 0);
+            const totalModels = totals.models || 0;
 
             const stats = [
                 { label: 'Tools', value: totals.tools || 0, tab: 'tools' },
@@ -1704,108 +1641,20 @@
             `;
         }
 
+        function _byName(arr) {
+            return (arr || []).slice().sort((a, b) =>
+                (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+        }
+
         function renderAllAssets() {
-            let html = '<div class="asset-grid">';
-            let count = 0;
-
-            // Tools
-            (assets.tools || []).forEach(tool => {
-                count++;
-                const sourceName = tool.tool_source_name || '';
-                const isUnknown = !sourceName;
-                html += `
-                    <div class="asset-card ${isUnknown ? 'unknown' : ''}">
-                        <div class="asset-title">🔧 ${tool.name}</div>
-                        <div class="asset-meta">Type: ${tool.type}</div>
-                        <div class="asset-meta">Source: ${tool.discovery_source}</div>
-                        ${sourceName ? `<div class="asset-meta"><b>Identified:</b> ${sourceName}</div>` :
-                        `<span class="badge" style="background: var(--mapping-badge-bg); color: var(--mapping-badge-text);">Mapping Required</span>`}
-                        <div class="asset-meta">Models: ${tool.models?.length || 0}</div>
-                        <span class="badge badge-blue">Tool</span>
-                        ${isUnknown ? `<br><button class="btn-map" onclick="openMapModal('${tool.name.replace(/'/g, "\\'")}')">Map Source</button>` : ''}
-                    </div>
-                `;
-            });
-
-            // Models
-            (assets.models || []).forEach(model => {
-                count++;
-                html += `
-                    <div class="asset-card">
-                        <div class="asset-title">🤖 ${model.name}</div>
-                        <div class="asset-meta">Provider: ${model.provider}</div>
-                        <span class="badge badge-green">Model</span>
-                    </div>
-                `;
-            });
-
-            // Agents
-            (assets.agents || []).forEach(agent => {
-                count++;
-                const agentSourceName = agent.agent_source_name || '';
-                const isAgentUnknown = !agentSourceName;
-                html += `
-                    <div class="asset-card ${isAgentUnknown ? 'unknown' : ''}">
-                        <div class="asset-title">🤖 ${agent.name}</div>
-                        <div class="asset-meta">Confidence: ${agent.confidence}</div>
-                        ${agentSourceName ? `<div class="asset-meta"><b>Identified:</b> ${agentSourceName}</div>` :
-                        `<span class="badge" style="background: var(--mapping-badge-bg); color: var(--mapping-badge-text);">Mapping Required</span>`}
-                        <div class="asset-meta">Tools: ${agent.tools_used?.length || 0}</div>
-                        <span class="badge badge-purple">Agent</span>
-                        ${isAgentUnknown ? `<br><button class="btn-map" onclick="openAgentMapModal('${agent.name.replace(/'/g, "\\'")}')">Map Source</button>` : ''}
-                    </div>
-                `;
-            });
-
-            // Downstream Systems
-            (assets.downstream_systems || []).forEach(system => {
-                count++;
-                html += `
-                    <div class="asset-card">
-                        <div class="asset-title">🔗 ${system.name}</div>
-                        <div class="asset-meta">Type: ${system.type}</div>
-                        ${system.endpoint ? `<div class="asset-meta">Endpoint: ${system.endpoint}</div>` : ''}
-                        <span class="badge badge-green">Downstream</span>
-                    </div>
-                `;
-            });
-
-            // MCP Servers
-            (assets.mcp_servers || []).forEach(server => {
-                count++;
-                html += `
-                    <div class="asset-card">
-                        <div class="asset-title">🌐 ${server.name}</div>
-                        <div class="asset-meta">Transport: ${server.transport || 'unknown'}</div>
-                        <span class="badge badge-purple">MCP Server</span>
-                    </div>
-                `;
-            });
-
-            // Data Assets
-            (assets.data_assets || []).forEach(asset => {
-                count++;
-                const icon = asset.type === 'catalog' ? '📚' : asset.type === 'schema' ? '📁'
-                    : asset.type === 'database' ? '🗄️' : asset.type === 'dataset' ? '📋'
-                        : asset.type === 'document_store' ? '📂' : '📊';
-                html += `
-                    <div class="asset-card">
-                        <div class="asset-title">${icon} ${asset.name}</div>
-                        <div class="asset-meta">Type: ${asset.type}</div>
-                        ${asset.endpoint ? `<div class="asset-meta">Endpoint: ${asset.endpoint}</div>` : ''}
-                        <span class="badge badge-green">Data Asset</span>
-                    </div>
-                `;
-            });
-
-            html += '</div>';
-            return count === 0 ? '' : html;
+            return renderTools() + renderModels() + renderAgents() +
+                   renderDownstream() + renderMCP() + renderDataAssets();
         }
 
         function renderTools() {
             if (!assets.tools?.length) return '';
             let html = '<div class="asset-grid">';
-            assets.tools.forEach(tool => {
+            _byName(assets.tools).forEach(tool => {
                 const sourceName = tool.tool_source_name || '';
                 const isUnknown = !sourceName;
                 html += `
@@ -1816,6 +1665,7 @@
                         ${sourceName ? `<div class="asset-meta"><b>Identified:</b> ${sourceName}</div>` :
                         `<span class="badge" style="background: var(--mapping-badge-bg); color: var(--mapping-badge-text);">Mapping Required</span>`}
                         <div class="asset-meta">Models: ${tool.models?.join(', ') || 'none'}</div>
+                        <span class="badge badge-blue">Tool</span>
                         ${isUnknown ? `<button class="btn-map" onclick="openMapModal('${tool.name.replace(/'/g, "\\'")}')">Map Source</button>` : ''}
                     </div>
                 `;
@@ -1825,26 +1675,17 @@
         }
 
         function renderModels() {
-            const allModels = [...(assets.models || []), ...(assets.gcp_models || [])];
-            if (!allModels.length) return '';
+            if (!assets.models?.length) return '';
 
             let html = '<div class="asset-grid">';
-            (assets.models || []).forEach(model => {
+            _byName(assets.models).forEach(model => {
                 const source = model.discovery_source || 'unknown';
                 html += `
                     <div class="asset-card">
-                        <div class="asset-title">🤖 ${model.name}</div>
+                        <div class="asset-title">✨ ${model.name}</div>
                         <div class="asset-meta">Provider: ${model.provider}</div>
                         <div class="asset-meta">Usage: ${model.usage_count || 0} calls</div>
-                        <span class="badge badge-blue">${source}</span>
-                    </div>
-                `;
-            });
-            (assets.gcp_models || []).forEach(model => {
-                html += `
-                    <div class="asset-card">
-                        <div class="asset-title">🤖 ${model.display_name || model.name}</div>
-                        <span class="badge badge-green">Vertex AI</span>
+                        <span class="badge badge-green">Model</span>
                     </div>
                 `;
             });
@@ -1855,13 +1696,12 @@
         function renderAgents() {
             if (!assets.agents?.length) return '';
             let html = '<div class="asset-grid">';
-            assets.agents.forEach(agent => {
+            _byName(assets.agents).forEach(agent => {
                 const agentSourceName = agent.agent_source_name || '';
                 const isAgentUnknown = !agentSourceName;
                 html += `
                     <div class="asset-card ${isAgentUnknown ? 'unknown' : ''}">
                         <div class="asset-title">🤖 ${agent.name}</div>
-                        <div class="asset-meta">Confidence: ${agent.confidence}</div>
                         ${agentSourceName ? `<div class="asset-meta"><b>Identified:</b> ${agentSourceName}</div>` :
                         `<span class="badge" style="background: var(--mapping-badge-bg); color: var(--mapping-badge-text);">Mapping Required</span>`}
                         <div class="asset-meta">Tools: ${agent.tools_used?.join(', ') || 'none'}</div>
@@ -1880,7 +1720,7 @@
         function renderDownstream() {
             if (!assets.downstream_systems?.length) return '';
             let html = '<div class="asset-grid">';
-            assets.downstream_systems.forEach(system => {
+            _byName(assets.downstream_systems).forEach(system => {
                 html += `
                     <div class="asset-card">
                         <div class="asset-title">🔗 ${system.name}</div>
@@ -1901,22 +1741,22 @@
             if (!assets.mcp_servers?.length && !assets.mcp_tools?.length) return '';
 
             let html = '<div class="asset-grid">';
-            (assets.mcp_servers || []).forEach(server => {
+            _byName(assets.mcp_servers).forEach(server => {
                 html += `
                     <div class="asset-card">
                         <div class="asset-title">🌐 ${server.name}</div>
                         <div class="asset-meta">Transport: ${server.transport}</div>
                         <div class="asset-meta">Tools: ${server.tools_count || 0}</div>
-                        <span class="badge badge-purple">Server</span>
+                        <span class="badge badge-purple">MCP Server</span>
                     </div>
                 `;
             });
-            (assets.mcp_tools || []).forEach(tool => {
+            _byName(assets.mcp_tools).forEach(tool => {
                 html += `
                     <div class="asset-card">
                         <div class="asset-title">🛠️ ${tool.name}</div>
                         <div class="asset-meta">Server: ${tool.server_id}</div>
-                        <span class="badge badge-blue">Tool</span>
+                        <span class="badge badge-blue">MCP Tool</span>
                     </div>
                 `;
             });
@@ -1928,7 +1768,7 @@
             if (!assets.data_assets?.length) return '';
 
             let html = '<div class="asset-grid">';
-            assets.data_assets.forEach(asset => {
+            _byName(assets.data_assets).forEach(asset => {
                 const icon = asset.type === 'catalog' ? '📚' : asset.type === 'schema' ? '📁'
                     : asset.type === 'database' ? '🗄️' : asset.type === 'dataset' ? '📋'
                         : asset.type === 'document_store' ? '📂' : '📊';
@@ -1954,6 +1794,24 @@
             document.querySelectorAll('.tab').forEach(btn => btn.classList.remove('active'));
             event.target.classList.add('active');
             renderAssets();
+        }
+
+        async function resetDiscoveries() {
+            if (!confirm('This will erase all discovered assets from the database. Plugin configurations will not be affected.\n\nContinue?')) {
+                return;
+            }
+            try {
+                const resp = await fetch('/api/v1/reset-discoveries', { method: 'POST' });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                // Clear local UI state
+                assets = {};
+                renderStats({});
+                renderAssets();
+                refreshLineageGraph();
+            } catch (error) {
+                console.error('Reset failed:', error);
+                alert('Reset failed: ' + error.message);
+            }
         }
 
         async function exportData() {
@@ -2211,7 +2069,7 @@
         // =========================================================================
 
         const _assetTypeEmoji = {
-            tool: '🔧', model: '🤖', agent: '🤖', downstream: '🔗',
+            tool: '🔧', model: '✨', agent: '🤖', downstream: '🔗',
             data_asset: '📊', mcp_server: '🌐', mcp_tool: '🛠️'
         };
 
@@ -2343,10 +2201,6 @@
             if (!list) return null;
             // Try name, then display_name
             let found = list.find(a => a.name === name) || list.find(a => a.display_name === name);
-            // For models, also check gcp_models
-            if (!found && type === 'model' && assets.gcp_models) {
-                found = assets.gcp_models.find(a => a.name === name) || assets.gcp_models.find(a => a.display_name === name);
-            }
             return found || null;
         }
 

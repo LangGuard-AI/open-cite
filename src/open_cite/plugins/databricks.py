@@ -11,7 +11,7 @@ from collections import defaultdict
 from databricks.sdk import WorkspaceClient
 import mlflow
 from mlflow import MlflowClient
-from ..core import BaseDiscoveryPlugin
+from ..core import BaseDiscoveryPlugin, LoggingDefaultDict
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,9 @@ def _databricks_mlflow_env(host: str, token: Optional[str] = None):
             if token:
                 os.environ["DATABRICKS_TOKEN"] = token
                 token_was_set = True
+                logger.debug("[mlflow_env] Set DATABRICKS_TOKEN (length=%d)", len(token))
+            else:
+                logger.warning("[mlflow_env] No token provided — MLflow may trigger OAuth")
             yield
         finally:
             if old_host is not None:
@@ -142,6 +145,8 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                 "token": {"label": "Personal Access Token", "default": "", "required": False, "type": "password", "help": "Leave blank for OAuth/service principal auth"},
                 "warehouse_id": {"label": "Warehouse ID (optional)", "default": "", "required": False},
                 "lookback_days": {"label": "Initial Lookback (days)", "default": "90", "required": False, "type": "number", "min": 1, "max": 180},
+                "ai_gateway_usage_table": {"label": "AI Gateway Usage Table", "default": os.environ.get("OPENCITE_AI_GATEWAY_USAGE_TABLE", ""), "required": False, "help": "e.g. system.ai_gateway.usage — leave blank to disable"},
+                "gateway_poll_interval": {"label": "Gateway Poll Interval (seconds)", "default": "10", "required": False, "type": "number", "min": 5, "max": 300},
             },
         }
 
@@ -153,6 +158,11 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             lookback = int(lookback) if lookback else 90
         except (ValueError, TypeError):
             lookback = 90
+        poll_interval = config.get('gateway_poll_interval')
+        try:
+            poll_interval = int(poll_interval) if poll_interval else 10
+        except (ValueError, TypeError):
+            poll_interval = 10
         return cls(
             host=config.get('host') or None,
             token=config.get('token') or None,
@@ -161,6 +171,8 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             http_client=dependencies.get('http_client'),
             instance_id=instance_id,
             display_name=display_name,
+            ai_gateway_usage_table=config.get('ai_gateway_usage_table') or None,
+            gateway_poll_interval=poll_interval,
         )
 
     def __init__(
@@ -172,6 +184,8 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         http_client: Any = None,
         instance_id: Optional[str] = None,
         display_name: Optional[str] = None,
+        ai_gateway_usage_table: Optional[str] = None,
+        gateway_poll_interval: int = 10,
     ):
         super().__init__(instance_id=instance_id, display_name=display_name)
         self.host = host
@@ -206,11 +220,67 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         print(f"  [DatabricksPlugin] WorkspaceClient created, auth_type={self.workspace_client.config.auth_type}")
 
         # MLflow client pointed at Databricks tracking server
-        print(f"  [DatabricksPlugin] Creating MLflow client (host={self.host}, token={'set' if self.token else 'None'})...")
-        with _databricks_mlflow_env(self.host, self.token):
+        # Extract token from SDK if not explicitly provided (Databricks App OAuth flow)
+        import sys
+        sys.stderr.write(f"[DatabricksPlugin MLflow setup] self.token={self.token!r}\n")
+        sys.stderr.flush()
+        mlflow_token = self.token
+        sys.stderr.write(f"[DatabricksPlugin MLflow setup] mlflow_token={mlflow_token!r}, entering token extraction\n")
+        sys.stderr.flush()
+        if not mlflow_token:
+            sys.stderr.write("[DatabricksPlugin MLflow setup] Token is None, extracting from SDK...\n")
+            sys.stderr.flush()
+            print("  [DatabricksPlugin] No static token, extracting from SDK for MLflow...")
+            try:
+                # SDK API varies: some versions take a headers dict, others return headers
+                try:
+                    headers = {}
+                    self.workspace_client.config.authenticate(headers)
+                except TypeError:
+                    result = self.workspace_client.config.authenticate()
+                    if callable(result):
+                        headers = result() or {}
+                    else:
+                        headers = result or {}
+                auth = headers.get("Authorization", "")
+                if auth.startswith("Bearer "):
+                    mlflow_token = auth[7:]
+                    # Store in self.token so subsequent MLflow operations have it
+                    self.token = mlflow_token
+                    print(f"  [DatabricksPlugin] Extracted token from SDK (length={len(mlflow_token)})")
+                else:
+                    print(f"  [DatabricksPlugin] WARNING: SDK did not return Bearer token: {repr(auth[:50] if auth else auth)}")
+            except Exception as exc:
+                print(f"  [DatabricksPlugin] WARNING: Failed to extract token from SDK: {exc}")
+
+        if not mlflow_token:
+            import traceback
+            logger.error("[DatabricksPlugin] MLflow client creation with NO TOKEN — will trigger OAuth! Stack:\n%s",
+                        ''.join(traceback.format_stack()))
+
+        print(f"  [DatabricksPlugin] Creating MLflow client (host={self.host}, token={'set' if mlflow_token else 'MISSING'})...")
+        with _databricks_mlflow_env(self.host, mlflow_token):
             mlflow.set_tracking_uri("databricks")
             self.mlflow_client = MlflowClient("databricks")
         print("  [DatabricksPlugin] MLflow client created")
+
+        # Disable urllib3 connection retries on the MLflow client's HTTP session
+        # to avoid retry spam when artifact storage is unreachable.
+        try:
+            from urllib3.util.retry import Retry
+            from requests.adapters import HTTPAdapter
+            no_connect_retry = HTTPAdapter(max_retries=Retry(connect=0, read=2, status=2))
+            store = getattr(self.mlflow_client, "_tracking_client", None)
+            store = getattr(store, "store", None) if store else None
+            sess = getattr(store, "_session", None) if store else None
+            if sess and hasattr(sess, "mount"):
+                sess.mount("https://", no_connect_retry)
+                sess.mount("http://", no_connect_retry)
+                print("  [DatabricksPlugin] Patched MLflow session: connect retries disabled")
+            else:
+                print("  [DatabricksPlugin] Could not patch MLflow session (structure changed)")
+        except Exception as exc:
+            print(f"  [DatabricksPlugin] Could not patch MLflow session retries: {exc}")
 
         # Inject custom session if provided
         if http_client:
@@ -233,20 +303,22 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         self.mcp_tools: Dict[str, Dict[str, Any]] = {}
 
         # MLflow trace-based discoveries (matching OTLP plugin pattern)
-        self.discovered_agents: Dict[str, Dict[str, Any]] = defaultdict(
+        _pid = self._instance_id
+        self.discovered_agents: Dict[str, Dict[str, Any]] = LoggingDefaultDict(
             lambda: {
                 "tools_used": set(),
                 "models_used": set(),
-                "confidence": "low",
                 "first_seen": None,
                 "last_seen": None,
                 "metadata": {},
-            }
+            },
+            asset_type="agent", plugin_id=_pid,
         )
-        self.discovered_tools: Dict[str, Dict[str, Any]] = defaultdict(
-            lambda: {"models": set(), "traces": [], "metadata": {}}
+        self.discovered_tools: Dict[str, Dict[str, Any]] = LoggingDefaultDict(
+            lambda: {"models": set(), "traces": [], "metadata": {}},
+            asset_type="tool", plugin_id=_pid,
         )
-        self.discovered_models: Dict[str, Dict[str, Any]] = defaultdict(
+        self.discovered_models: Dict[str, Dict[str, Any]] = LoggingDefaultDict(
             lambda: {
                 "provider": "unknown",
                 "tools_using": set(),
@@ -254,9 +326,10 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                 "usage_count": 0,
                 "first_seen": None,
                 "last_seen": None,
-            }
+            },
+            asset_type="model", plugin_id=_pid,
         )
-        self.discovered_downstream: Dict[str, Dict[str, Any]] = defaultdict(
+        self.discovered_downstream: Dict[str, Dict[str, Any]] = LoggingDefaultDict(
             lambda: {
                 "name": "",
                 "type": "unknown",
@@ -265,12 +338,24 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                 "first_seen": None,
                 "last_seen": None,
                 "metadata": {},
-            }
+            },
+            asset_type="downstream_system", plugin_id=_pid,
         )
         self.lineage: Dict[str, Dict[str, Any]] = {}
         self.model_token_usage: Dict[str, Dict[str, int]] = defaultdict(
             lambda: {"input_tokens": 0, "output_tokens": 0}
         )
+
+        # AI Gateway usage table monitoring
+        self._ai_gateway_table = (
+            ai_gateway_usage_table
+            or os.environ.get("OPENCITE_AI_GATEWAY_USAGE_TABLE")
+            or None
+        )
+        self._gateway_poll_interval = gateway_poll_interval
+        self._gateway_poll_stop = threading.Event()
+        self._gateway_poll_thread: Optional[threading.Thread] = None
+        self._last_gateway_event_time: Optional[datetime] = None
 
     def export_assets(self) -> Dict[str, Any]:
         """Export Databricks data assets used by AI/ML tools."""
@@ -404,6 +489,22 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             "warehouse_id": self.warehouse_id,
             "lookback_days": self.lookback_days,
         }
+
+    def update_token(self, token: str):
+        """Hot-swap the OAuth token used by all Databricks clients.
+
+        Called when a new ``x-forwarded-access-token`` arrives from the
+        Databricks App proxy.  Reference assignment is atomic under the
+        GIL so in-flight calls on old clients complete safely.
+        """
+        logger.info("[DatabricksPlugin] Updating token (length=%d)", len(token))
+        self.token = token
+        self.workspace_client = WorkspaceClient(host=self.host, token=token)
+        self.genie_client = _GenieClient(self.workspace_client.api_client)
+        with _databricks_mlflow_env(self.host, token):
+            mlflow.set_tracking_uri("databricks")
+            self.mlflow_client = MlflowClient("databricks")
+        logger.info("[DatabricksPlugin] All clients recreated with new token")
 
     @property
     def supported_asset_types(self) -> Set[str]:
@@ -943,6 +1044,112 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             logger.warning(f"MCP discovery failed ({label}): {e}")
         logger.info(f"Discovery complete ({label}) for {self.instance_id}")
 
+    def _forward_to_otel(self, otlp: dict):
+        """Forward an OTLP payload to the embedded OTel plugin for discovery.
+
+        This ensures that Databricks-sourced traces (MLflow, Genie) go through
+        the OTel plugin's model/agent detection pipeline.
+        """
+        try:
+            from open_cite.api import app as api_app
+            otel = api_app._default_otel_plugin
+            if otel is not None:
+                otel._ingest_traces(otlp)
+        except Exception as e:
+            logger.debug("Could not forward to OTel plugin: %s", e)
+
+    # =========================================================================
+    # AI Gateway Usage Table Monitoring
+    # =========================================================================
+
+    def _poll_ai_gateway_usage(self):
+        """Background loop that polls the AI Gateway usage table for new rows."""
+        logger.info("AI Gateway usage polling thread started (interval=%ds)", self._gateway_poll_interval)
+        poll_interval = self._gateway_poll_interval
+
+        # Initial lookback: use plugin's lookback_days for first fetch
+        if self._last_gateway_event_time is None:
+            from datetime import timedelta, timezone
+            self._last_gateway_event_time = (
+                datetime.now(timezone.utc) - timedelta(days=self.lookback_days)
+            )
+
+        while not self._gateway_poll_stop.is_set():
+            try:
+                self._fetch_and_process_gateway_usage()
+            except Exception as e:
+                logger.warning(f"AI Gateway usage poll error: {e}")
+
+            # Sleep in small increments to allow fast shutdown
+            self._gateway_poll_stop.wait(timeout=poll_interval)
+
+        logger.info("AI Gateway usage polling thread stopped")
+
+    def _fetch_and_process_gateway_usage(self):
+        """Execute a single poll: query new rows and convert to OTLP traces."""
+        from databricks import sql
+        from open_cite.otlp_converter import ai_gateway_usage_to_otlp
+
+        wh_id = self._get_warehouse_id()
+        if not wh_id:
+            logger.debug("No SQL warehouse available for AI Gateway usage polling")
+            return
+
+        http_path = f"/sql/1.0/warehouses/{wh_id}"
+        table = self._ai_gateway_table
+
+        query = f"""
+        SELECT *
+        FROM {table}
+        WHERE event_time > :high_water
+        ORDER BY event_time ASC
+        LIMIT 500
+        """
+
+        try:
+            with sql.connect(**self._sql_connect_kwargs(http_path)) as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        query,
+                        {"high_water": self._last_gateway_event_time},
+                    )
+                    columns = [desc[0] for desc in cursor.description]
+                    rows = cursor.fetchall()
+        except Exception as e:
+            logger.warning(f"AI Gateway usage query failed: {e}")
+            return
+
+        if not rows:
+            return
+
+        logger.info(f"[AI Gateway] Fetched {len(rows)} new usage rows")
+
+        new_high_water = self._last_gateway_event_time
+        forwarded = 0
+
+        for raw_row in rows:
+            row = dict(zip(columns, raw_row))
+
+            # Update high-water mark
+            evt = row.get("event_time")
+            if evt is not None and (new_high_water is None or evt > new_high_water):
+                new_high_water = evt
+
+            try:
+                otlp = ai_gateway_usage_to_otlp(row)
+                self._forward_to_otel(otlp)
+                self._deliver_to_webhooks(otlp)
+                forwarded += 1
+            except Exception as e:
+                logger.warning(
+                    f"Failed to convert AI Gateway row {row.get('request_id')}: {e}"
+                )
+
+        self._last_gateway_event_time = new_high_water
+        logger.info(
+            f"[AI Gateway] Forwarded {forwarded}/{len(rows)} rows as OTLP traces"
+        )
+
     def start(self):
         """Start the plugin — runs initial discovery in a background thread
         so the API remains responsive (gunicorn single-worker safe)."""
@@ -953,7 +1160,36 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             daemon=True,
         )
         thread.start()
+
+        # Start AI Gateway usage table polling if configured
+        if self._ai_gateway_table:
+            self._gateway_poll_stop.clear()
+            self._gateway_poll_thread = threading.Thread(
+                target=self._poll_ai_gateway_usage,
+                daemon=True,
+                name=f"gw-poll-{self.instance_id}",
+            )
+            self._gateway_poll_thread.start()
+            logger.info(
+                f"Started AI Gateway usage polling: table={self._ai_gateway_table}"
+            )
+
         logger.info(f"Started Databricks plugin {self.instance_id} (discovery running in background)")
+
+    def stop(self):
+        """Stop the plugin and any background threads."""
+        # Stop AI Gateway polling thread
+        if self._gateway_poll_thread is not None:
+            self._gateway_poll_stop.set()
+            self._gateway_poll_thread.join(timeout=5.0)
+            self._gateway_poll_thread = None
+            logger.info("AI Gateway usage polling stopped")
+
+        self._status = "stopped"
+        if self._webhook_executor:
+            self._webhook_executor.shutdown(wait=False)
+            self._webhook_executor = None
+        logger.info(f"Stopped plugin {self.instance_id}")
 
     # =========================================================================
     # MLflow Trace Discovery
@@ -1046,14 +1282,10 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                         for trace in results:
                             if trace.data.spans:
                                 self._process_trace_object(trace, exp_name)
+                                from open_cite.otlp_converter import mlflow_trace_to_otlp
+                                otlp = mlflow_trace_to_otlp(trace, exp_name)
+                                self._forward_to_otel(otlp)
                                 if self._webhook_urls:
-                                    from open_cite.otlp_converter import mlflow_trace_to_otlp
-                                    otlp = mlflow_trace_to_otlp(trace, exp_name)
-                                    logger.debug(
-                                        "Sending MLflow trace to webhooks: experiment=%s, spans=%d",
-                                        exp_name,
-                                        len(trace.data.spans) if trace.data and trace.data.spans else 0,
-                                    )
                                     self._deliver_to_webhooks(otlp)
                                 total_traces += 1
                             exp_traces += 1
@@ -1069,6 +1301,17 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                     if "ENDPOINT_NOT_FOUND" in error_str or "404" in error_str:
                         logger.debug("MLflow Traces API not available — using run-level discovery")
                         return False
+                    if "INVALID_PARAMETER_VALUE" in error_str and "trace storage schema" in error_str.lower():
+                        logger.debug(
+                            "Experiment %s (%s) has no trace storage schema — skipping trace search",
+                            exp_id, exp_name,
+                        )
+                        continue
+                    if "Connection refused" in error_str or "NewConnectionError" in error_str:
+                        logger.warning(
+                            "MLflow trace fetch hit connection refused — stopping trace discovery: %s", e
+                        )
+                        break
                     failed += 1
                     logger.warning(f"Error fetching traces for experiment {exp_id} ({exp_name}): {e}")
 
@@ -1239,7 +1482,6 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             if not agent["first_seen"]:
                 agent["first_seen"] = now
             agent["last_seen"] = now
-            agent["confidence"] = "high"
             agent["metadata"]["discovery_source"] = self.display_name
             agent["metadata"]["genie_space_id"] = space_id
             agent["metadata"]["agent_type"] = "sql-assistant"
@@ -1373,7 +1615,6 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         # Register Genie agent (per-space)
         agent_name = f"Genie ({space_title})"
         agent = self.discovered_agents[agent_name]
-        agent["confidence"] = "high"
         if not agent["first_seen"]:
             agent["first_seen"] = now
         agent["last_seen"] = now
@@ -1469,13 +1710,12 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         }
         self.genie_traces.append(trace_dict)
 
+        # Convert to OTLP and feed into the OTel plugin for model/agent
+        # discovery, plus forward to any configured webhooks.
+        from open_cite.otlp_converter import genie_trace_to_otlp
+        otlp = genie_trace_to_otlp(trace_dict)
+        self._forward_to_otel(otlp)
         if self._webhook_urls:
-            from open_cite.otlp_converter import genie_trace_to_otlp
-            otlp = genie_trace_to_otlp(trace_dict)
-            logger.debug(
-                "Sending Genie trace to webhooks: conversation=%s",
-                trace_dict.get("trace_id", "unknown"),
-            )
             self._deliver_to_webhooks(otlp)
 
     # =========================================================================
@@ -1541,10 +1781,6 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         # --- Register agent only with evidence ---
         if agent_name:
             agent = self.discovered_agents[agent_name]
-            if has_agent_span or has_explicit_agent_name:
-                agent["confidence"] = "high"
-            else:
-                agent["confidence"] = "medium"  # tool+model co-occurrence
             if not agent["first_seen"]:
                 agent["first_seen"] = now
             agent["last_seen"] = now
@@ -1570,7 +1806,6 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                 if not sub_agent["first_seen"]:
                     sub_agent["first_seen"] = now
                 sub_agent["last_seen"] = now
-                sub_agent["confidence"] = "high"
                 sub_agent["metadata"]["discovery_source"] = self.display_name
                 if agent_name:
                     self._add_lineage(agent_name, "agent", span_name, "agent", "calls")
@@ -1754,7 +1989,6 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         # Register agent
         if agent_name:
             agent = self.discovered_agents[agent_name]
-            agent["confidence"] = "high" if explicit_agent_name else "medium"
             if not agent["first_seen"]:
                 agent["first_seen"] = now
             agent["last_seen"] = now
@@ -2134,7 +2368,6 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                 "name": agent_name,
                 "type": "agent",
                 "discovery_source": self.display_name,
-                "confidence": agent_data["confidence"],
                 "tools_used": list(agent_data["tools_used"]),
                 "models_used": list(agent_data["models_used"]),
                 "first_seen": agent_data["first_seen"],

@@ -3,6 +3,7 @@ OpenCITE Core - Base classes and interfaces.
 """
 
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from typing import List, Dict, Any, Optional, Set
 from concurrent.futures import ThreadPoolExecutor
 import logging
@@ -12,6 +13,29 @@ import warnings
 import requests
 
 logger = logging.getLogger(__name__)
+
+
+class LoggingDefaultDict(defaultdict):
+    """A defaultdict that logs at INFO level when a new key is first created.
+
+    Used for ``discovered_agents``, ``discovered_tools``, etc. so that every
+    newly-discovered asset is visible in the logs without requiring changes at
+    every call-site in every plugin.
+
+    Args:
+        default_factory: Same as ``defaultdict``.
+        asset_type: Human-readable label (e.g. ``"agent"``).
+        plugin_id: The owning plugin's ``instance_id`` for log context.
+    """
+
+    def __init__(self, default_factory=None, *, asset_type: str = "asset", plugin_id: str = ""):
+        super().__init__(default_factory)
+        self._asset_type = asset_type
+        self._plugin_id = plugin_id
+
+    def __missing__(self, key):
+        logger.info("Discovered new %s: %s (plugin=%s)", self._asset_type, key, self._plugin_id)
+        return super().__missing__(key)
 
 
 class BaseDiscoveryPlugin(ABC):

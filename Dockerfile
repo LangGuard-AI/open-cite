@@ -73,6 +73,7 @@ CMD ["gunicorn", \
      "--workers", "1", \
      "--threads", "4", \
      "--timeout", "120", \
+     "--worker-tmp-dir", "/dev/shm", \
      "--access-logfile", "-", \
      "--error-logfile", "-", \
      "open_cite.api.app:create_app()"]

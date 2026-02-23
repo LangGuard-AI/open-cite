@@ -269,9 +269,19 @@ def _build_resource_span(session: SessionGroup) -> Optional[dict]:
         if model:
             child_attrs.append(_make_attr("gen_ai.request.model", str(model)))
 
-        # Tool
+        # Tool — include tool.call.id so the detection engine recognises
+        # these child spans as explicit tool invocations.
         if tool:
             child_attrs.append(_make_attr("gen_ai.tool.name", str(tool)))
+            _is_tool_event = evt.event_name in (
+                "tool_use", "tool_result", "tool_decision",
+            )
+            if _is_tool_event:
+                _call_id = _deterministic_id(
+                    f"{session.session_id}-{tool}-{evt.timestamp_ns}-{evt.event_index}",
+                    16,
+                )
+                child_attrs.append(_make_attr("gen_ai.tool.call.id", _call_id))
 
         # Tokens
         if inp:
@@ -282,6 +292,11 @@ def _build_resource_span(session: SessionGroup) -> Optional[dict]:
         # Cost
         if cost:
             child_attrs.append(_make_attr_double("gen_ai.usage.cost", cost))
+
+        # Tool parameters (Claude Code logs include input/parameters for tool calls)
+        tool_params = merged.get("tool_parameters") or merged.get("tool_input") or ""
+        if tool_params:
+            child_attrs.append(_make_attr("tool_parameters", str(tool_params)))
 
         # Agent
         if an:
@@ -316,7 +331,11 @@ def _build_resource_span(session: SessionGroup) -> Optional[dict]:
 
         child_spans.append(child_span)
 
-    # Build root "Session" span
+    # Resolve agent name: explicit from events, else fall back to service.name
+    if not agent_name and session.source:
+        agent_name = session.source
+
+    # Build root span (named after the agent, not generic "Session")
     root_attrs = [
         _make_attr("logs.adapter", "opencite-logs-adapter"),
         _make_attr("logs.session_id", session.session_id),
@@ -355,10 +374,11 @@ def _build_resource_span(session: SessionGroup) -> Optional[dict]:
     if has_error:
         root_status = {"code": 2, "message": "error"}
 
+    root_span_name = agent_name or session.source or "Session"
     root_span = {
         "traceId": trace_id,
         "spanId": root_span_id,
-        "name": "Session",
+        "name": root_span_name,
         "kind": 1,  # SPAN_KIND_INTERNAL
         "startTimeUnixNano": str(first_ts),
         "endTimeUnixNano": str(last_ts),

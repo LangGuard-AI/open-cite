@@ -85,6 +85,8 @@ class PluginConfigStore:
         except Exception:
             session.rollback()
             raise
+        finally:
+            session.close()
 
     def delete(self, instance_id: str) -> None:
         """Remove a plugin instance configuration."""
@@ -101,6 +103,8 @@ class PluginConfigStore:
         except Exception:
             session.rollback()
             raise
+        finally:
+            session.close()
 
     def load_all(self) -> List[Dict[str, Any]]:
         """Return all saved instance configs as a list of dicts.
@@ -112,16 +116,19 @@ class PluginConfigStore:
             return []
 
         session = get_session()
-        rows = session.query(PluginConfig).all()
-        return [
-            {
-                "instance_id": r.instance_id,
-                "plugin_type": r.plugin_type,
-                "display_name": r.display_name,
-                "config": r.config,
-                "auto_start": r.auto_start,
-                "created_at": r.created_at,
-                "updated_at": r.updated_at,
-            }
-            for r in rows
-        ]
+        try:
+            rows = session.query(PluginConfig).all()
+            return [
+                {
+                    "instance_id": r.instance_id,
+                    "plugin_type": r.plugin_type,
+                    "display_name": r.display_name,
+                    "config": r.config,
+                    "auto_start": r.auto_start,
+                    "created_at": r.created_at,
+                    "updated_at": r.updated_at,
+                }
+                for r in rows
+            ]
+        finally:
+            session.close()
