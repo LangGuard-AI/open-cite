@@ -237,7 +237,7 @@ The payload must follow the [OTLP JSON Traces](https://opentelemetry.io/docs/spe
       ]
     },
     "scopeSpans": [{
-      "scope": {"name": "open_cite.otlp_converter"},
+      "scope": {"name": "open_cite.plugins.databricks_otlp_converter"},
       "spans": [{
         "traceId": "abc123...",
         "spanId": "def456...",
@@ -257,10 +257,10 @@ The payload must follow the [OTLP JSON Traces](https://opentelemetry.io/docs/spe
 
 ### OTLP Converter Utilities
 
-`open_cite.otlp_converter` provides helpers for building OTLP attribute dicts:
+Each plugin keeps its own OTLP converters alongside its plugin file. For example, the Databricks plugin uses `plugins/databricks_otlp_converter.py` with helpers for building OTLP attribute dicts:
 
 ```python
-from open_cite.otlp_converter import _make_attr, _make_attr_int
+from open_cite.plugins.databricks_otlp_converter import _make_attr, _make_attr_int
 
 attrs = [
     _make_attr("gen_ai.request.model", "gpt-4"),
@@ -268,9 +268,12 @@ attrs = [
 ]
 ```
 
-It also includes ready-made converters for Databricks data:
+The Databricks converter includes:
 - `mlflow_trace_to_otlp(trace, experiment_name)` -- MLflow Trace object to OTLP
 - `genie_trace_to_otlp(trace_dict)` -- Genie message trace dict to OTLP
+- `ai_gateway_usage_to_otlp(row)` -- AI Gateway usage table row to OTLP
+
+When writing a new plugin, create your own converter module (e.g. `plugins/my_source_otlp_converter.py`) to keep source-specific code inside the plugin.
 
 ### Webhook REST Endpoints
 
@@ -313,11 +316,11 @@ When building OTLP payloads for AI workloads, use these attribute keys for inter
 ```
 src/open_cite/
   core.py                   # BaseDiscoveryPlugin (the base class)
-  otlp_converter.py         # OTLP JSON builders
   plugins/
     registry.py             # Auto-discovery and factory
     opentelemetry.py         # OTLP receiver plugin
     databricks.py            # Databricks + MLflow + Genie
+    databricks_otlp_converter.py  # OTLP builders for Databricks data
     google_cloud.py          # Vertex AI + Compute Engine
     aws/
       base.py                # Shared AWS auth mixin
@@ -325,6 +328,42 @@ src/open_cite/
       sagemaker.py           # AWS SageMaker
     zscaler.py               # Zscaler ZIA + NSS
 ```
+
+## Databricks Plugin Requirements
+
+The Databricks plugin discovers assets from three subsystems. Each has its own permission requirements.
+
+### Genie
+
+Genie discovery queries Databricks system tables for table lineage and query history. The service principal or user running OpenCITE needs:
+
+- **`USE SCHEMA`** on `system.access` — required for querying `system.access.table_lineage`
+- **`USE SCHEMA`** on `system.query` — required for querying `system.query.history`
+- **SQL warehouse access** — queries run via the configured SQL warehouse
+
+Without these permissions, Genie spaces and conversations are still discovered, but table usage lineage will be unavailable. The log will show:
+
+```
+WARNING - Could not query Genie table usage: [INSUFFICIENT_PERMISSIONS]
+  User does not have USE SCHEMA on Schema 'system.access'. SQLSTATE: 42501
+```
+
+Grant access in Unity Catalog:
+
+```sql
+GRANT USE SCHEMA ON SCHEMA system.access TO `<principal>`;
+GRANT USE SCHEMA ON SCHEMA system.query TO `<principal>`;
+GRANT SELECT ON TABLE system.access.table_lineage TO `<principal>`;
+GRANT SELECT ON TABLE system.query.history TO `<principal>`;
+```
+
+### AI Gateway
+
+Requires access to the AI Gateway usage system table (default `system.ai_gateway.usage`). Set via `OPENCITE_AI_GATEWAY_USAGE_TABLE`.
+
+### MLflow
+
+Requires access to MLflow experiment tracking APIs. The configured Databricks credentials must have at least read access to the experiments being monitored.
 
 ## Testing Your Plugin
 

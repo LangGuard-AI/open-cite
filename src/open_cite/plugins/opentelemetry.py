@@ -393,7 +393,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             tools.append(ToolFormatter.format_tool(
                 tool_id=tool["name"],
                 name=tool["name"],
-                discovery_source="opentelemetry",
+                discovery_source=tool.get("metadata", {}).get("discovery_source", "opentelemetry"),
                 type="application",
                 models_used=models_used,
                 provider=None,
@@ -662,6 +662,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 span_parents: Dict[str, str] = {}   # span_id -> parent_span_id
                 span_attrs: Dict[str, Dict[str, Any]] = {}  # span_id -> merged attributes
                 span_traces: Dict[str, str] = {}   # span_id -> trace_id
+                span_times: Dict[str, str] = {}    # span_id -> ISO timestamp from span
 
                 for resource_span in resource_spans:
                     resource = resource_span.get("resource", {})
@@ -677,6 +678,15 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                             span_name = span.get("name", "")
                             attributes = span.get("attributes", [])
 
+                            # Extract span timestamp (prefer startTimeUnixNano)
+                            _start_ns = span.get("startTimeUnixNano")
+                            if _start_ns:
+                                try:
+                                    _ts_sec = int(_start_ns) / 1_000_000_000
+                                    span_times[span_id] = datetime.utcfromtimestamp(_ts_sec).isoformat()
+                                except (ValueError, TypeError, OSError):
+                                    pass
+
                             # Enrich with session-level user attributes
                             attributes = self._enrich_session_user_attrs(
                                 attributes, resource)
@@ -689,7 +699,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                                 self.traces[trace_id] = {
                                     "trace_id": trace_id,
                                     "spans": [],
-                                    "first_seen": datetime.utcnow().isoformat(),
+                                    "first_seen": span_times.get(span_id) or datetime.utcnow().isoformat(),
                                 }
 
                             self.traces[trace_id]["spans"].append({
@@ -701,7 +711,8 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
                             # Detect OpenRouter usage (tools/models)
                             tool_name = self._detect_tool_usage(
-                                trace_id, span_id, span_name, attributes, resource
+                                trace_id, span_id, span_name, attributes, resource,
+                                span_time=span_times.get(span_id),
                             )
                             if tool_name:
                                 span_tools[span_id] = tool_name
@@ -724,7 +735,8 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
                             # Detect agents
                             agent_name = self._detect_agent(
-                                trace_id, span_id, span_name, attributes, resource
+                                trace_id, span_id, span_name, attributes, resource,
+                                span_time=span_times.get(span_id),
                             )
                             if agent_name:
                                 span_agents[span_id] = agent_name
@@ -745,7 +757,8 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                             # Detect tools from span events (e.g. Claude Code
                             # tool_result / tool_use events)
                             event_tools = self._detect_tools_from_events(
-                                trace_id, span_id, span_name, span, resource
+                                trace_id, span_id, span_name, span, resource,
+                                span_time=span_times.get(span_id),
                             )
 
                             # When a span emits tool-use events it is
@@ -768,13 +781,14 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                                     )
                                     if _auto_agent:
                                         _ag = self.discovered_agents[_auto_agent]
-                                        _now = datetime.utcnow().isoformat()
-                                        if not _ag["first_seen"]:
+                                        _now = span_times.get(span_id) or datetime.utcnow().isoformat()
+                                        if not _ag["first_seen"] or _now < _ag["first_seen"]:
                                             _ag["first_seen"] = _now
-                                        _ag["last_seen"] = _now
+                                        if not _ag["last_seen"] or _now > _ag["last_seen"]:
+                                            _ag["last_seen"] = _now
                                         _ag["metadata"].update({
-                                            "last_seen": _now,
-                                            "discovery_source": "opentelemetry",
+                                            "last_seen": _ag["last_seen"],
+                                            "discovery_source": _ev_m.get("opencite.discovery_source", "opentelemetry"),
                                         })
                                         for _k in ("service.name",
                                                     "service.version",
@@ -832,18 +846,25 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 for _sid, _model in span_models.items():
                     if _sid in span_agents or _sid in span_tools:
                         continue
+                    # Skip child spans whose parent is already an agent —
+                    # these are LLM calls made by the agent, not agents
+                    # themselves (e.g. AI Gateway child LLM span).
+                    _parent = span_parents.get(_sid)
+                    if _parent and _parent in span_agents:
+                        continue
                     _m = span_attrs.get(_sid, {})
                     _svc = _m.get("service.name") or _m.get("app.name")
                     if not _svc:
                         continue
                     _ag = self.discovered_agents[_svc]
-                    _now = datetime.utcnow().isoformat()
-                    if not _ag["first_seen"]:
+                    _now = span_times.get(_sid) or datetime.utcnow().isoformat()
+                    if not _ag["first_seen"] or _now < _ag["first_seen"]:
                         _ag["first_seen"] = _now
-                    _ag["last_seen"] = _now
+                    if not _ag["last_seen"] or _now > _ag["last_seen"]:
+                        _ag["last_seen"] = _now
                     _ag["metadata"].update({
-                        "last_seen": _now,
-                        "discovery_source": "opentelemetry",
+                        "last_seen": _ag["last_seen"],
+                        "discovery_source": _m.get("opencite.discovery_source", "opentelemetry"),
                     })
                     for _k in ("service.name", "service.version",
                                 "gen_ai.system", "gen_ai.operation.name",
@@ -923,6 +944,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         span_name: str,
         attributes: List[Dict[str, Any]],
         resource: Dict[str, Any],
+        span_time: Optional[str] = None,
     ) -> Optional[str]:
         """
         Detect if a span represents tool or LLM usage.
@@ -1133,12 +1155,15 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 else:
                     self.discovered_tools[tool_name]["metadata"][attr_key] = attr_val
 
+        _tool_time = span_time or datetime.utcnow().isoformat()
+        _prev_last = self.discovered_tools[tool_name]["metadata"].get("last_seen")
+        if not _prev_last or _tool_time > _prev_last:
+            self.discovered_tools[tool_name]["metadata"]["last_seen"] = _tool_time
         self.discovered_tools[tool_name]["metadata"].update({
-            "last_seen": datetime.utcnow().isoformat(),
             "url": url,
             "provider": provider,
             "source": source,
-            "discovery_source": "opentelemetry"
+            "discovery_source": merged_attrs.get("opencite.discovery_source", "opentelemetry"),
         })
 
         # Check for attributes matching configured patterns
@@ -1178,6 +1203,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         span_name: str,
         span: Dict[str, Any],
         resource: Dict[str, Any],
+        span_time: Optional[str] = None,
     ) -> List[str]:
         """Extract tool names from span events.
 
@@ -1228,9 +1254,12 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
             # Register the tool
             tool = self.discovered_tools[tool_name]
+            _evt_time = span_time or datetime.utcnow().isoformat()
+            _prev = tool["metadata"].get("last_seen")
+            if not _prev or _evt_time > _prev:
+                tool["metadata"]["last_seen"] = _evt_time
             tool["metadata"].update({
-                "last_seen": datetime.utcnow().isoformat(),
-                "discovery_source": "opentelemetry",
+                "discovery_source": merged_span.get("opencite.discovery_source", "opentelemetry"),
             })
 
             # Carry over useful event attributes as metadata
@@ -1326,7 +1355,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 "id": tool_name,  # Use name as ID
                 "name": tool_name,
                 "type": "llm_client",  # OpenCITE schema compliance
-                "discovery_source": "opentelemetry",  # OpenCITE schema compliance
+                "discovery_source": metadata.get("discovery_source", "opentelemetry"),
                 "models": list(tool_data["models"]),
                 "trace_count": len(tool_data["traces"]),
                 "tool_source_name": metadata.get("tool_source_name"),
@@ -1414,7 +1443,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             agents.append({
                 "id": agent_name,
                 "name": agent_name,
-                "discovery_source": "opentelemetry",
+                "discovery_source": metadata.get("discovery_source", "opentelemetry"),
                 "tools_used": list(agent_data["tools_used"]),
                 "models_used": list(agent_data["models_used"]),
                 "first_seen": agent_data["first_seen"],
@@ -1458,6 +1487,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         span_name: str,
         attributes: List[Dict[str, Any]],
         resource: Dict[str, Any],
+        span_time: Optional[str] = None,
     ) -> Optional[str]:
         """
         Detect if a span represents an agent.
@@ -1471,7 +1501,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         attr_dict = self._attrs_to_dict(attributes)
         resource_dict = self._attrs_to_dict(resource.get("attributes", []))
         merged = {**resource_dict, **attr_dict}
-        now = datetime.utcnow().isoformat()
+        now = span_time or datetime.utcnow().isoformat()
 
         # Only detect agents via explicit attributes
         agent_name = (
@@ -1484,12 +1514,16 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             return None
 
         agent = self.discovered_agents[agent_name]
-        if not agent["first_seen"]:
+        if not agent["first_seen"] or now < agent["first_seen"]:
             agent["first_seen"] = now
-        agent["last_seen"] = now
+        if not agent["last_seen"] or now > agent["last_seen"]:
+            agent["last_seen"] = now
 
         # Track tools and models used by this agent
-        # Prefer explicit tool attributes; fall back to service.name only if distinct from agent
+        # Only use explicit tool attributes — do NOT fall back to service.name
+        # (service.name is the service identity, not a tool; using it here
+        # causes endpoint/model names like "databricks-claude-sonnet-4-5"
+        # to appear in tools_used).
         is_tool_call = "gen_ai.tool.call.id" in merged
         tool_name = (
             merged.get("gen_ai.tool.name")
@@ -1497,10 +1531,6 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         )
         if not tool_name and is_tool_call and span_name:
             tool_name = span_name
-        if not tool_name:
-            svc = merged.get("service.name")
-            if svc and svc != agent_name:
-                tool_name = svc
 
         model_name = (
             merged.get("gen_ai.request.model")
@@ -1531,8 +1561,8 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
         # Store additional useful attributes
         agent["metadata"].update({
-            "last_seen": now,
-            "discovery_source": "opentelemetry",
+            "last_seen": agent["last_seen"],
+            "discovery_source": merged.get("opencite.discovery_source", "opentelemetry"),
         })
         for key in ("service.name", "service.version", "gen_ai.system",
                      "gen_ai.operation.name", "enduser.id",

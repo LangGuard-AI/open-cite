@@ -584,26 +584,36 @@ class PersistenceManager:
             'mcp_resources': self.load_mcp_resources(),
         }
 
-    def clear_all(self):
-        """Clear all asset data (useful for testing)."""
-        session = get_session()
-        try:
-            session.query(Lineage).delete()
-            session.query(DownstreamSystem).delete()
-            session.query(Agent).delete()
-            session.query(McpResource).delete()
-            session.query(McpTool).delete()
-            session.query(McpServer).delete()
-            session.query(Model).delete()
-            session.query(Tool).delete()
-            session.query(DiscoveryStatus).delete()
-            session.commit()
-            logger.info("Cleared all persistence data")
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
+    def clear_all(self, max_retries: int = 5):
+        """Clear all asset data with retries for concurrent write conflicts."""
+        import time as _time
+
+        for attempt in range(1, max_retries + 1):
+            session = get_session()
+            try:
+                session.query(Lineage).delete()
+                session.query(DownstreamSystem).delete()
+                session.query(Agent).delete()
+                session.query(McpResource).delete()
+                session.query(McpTool).delete()
+                session.query(McpServer).delete()
+                session.query(Model).delete()
+                session.query(Tool).delete()
+                session.query(DiscoveryStatus).delete()
+                session.commit()
+                logger.info("Cleared all persistence data")
+                return
+            except Exception as e:
+                session.rollback()
+                if attempt < max_retries:
+                    delay = 0.5 * attempt
+                    logger.warning("clear_all attempt %d/%d failed: %s — retrying in %.1fs",
+                                   attempt, max_retries, e, delay)
+                    _time.sleep(delay)
+                else:
+                    raise
+            finally:
+                session.close()
 
     def close(self):
         """Close database connections (delegates to close_db)."""
