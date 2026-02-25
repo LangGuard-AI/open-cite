@@ -116,9 +116,9 @@ class AWSSageMakerPlugin(AWSClientMixin, BaseDiscoveryPlugin):
             "description": "Discovers endpoints, models, model packages, and training jobs in AWS SageMaker",
             "required_fields": {
                 "region": {"label": "AWS Region", "default": "us-east-1", "required": False},
-                "profile": {"label": "AWS Profile", "default": "", "required": False},
                 "access_key_id": {"label": "Access Key ID", "default": "", "required": False},
                 "secret_access_key": {"label": "Secret Access Key", "default": "", "required": False, "type": "password"},
+                "profile": {"label": "AWS Profile (optional)", "default": "", "required": False},
                 "role_arn": {"label": "Role ARN (optional)", "default": "", "required": False},
             },
         }

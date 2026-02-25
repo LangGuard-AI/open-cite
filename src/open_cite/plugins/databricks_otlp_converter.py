@@ -1,8 +1,9 @@
 """
-OTLP Converter — Convert MLflow traces and Genie messages to OTLP JSON format.
+Databricks OTLP Converter — Convert Databricks-specific trace formats to OTLP JSON.
 
-Produces standard OpenTelemetry Protocol (OTLP) JSON payloads with GenAI
-semantic conventions, suitable for forwarding to any OTLP-compatible backend.
+Converts MLflow traces, Genie messages, and AI Gateway usage rows to standard
+OpenTelemetry Protocol (OTLP) JSON payloads with GenAI semantic conventions,
+suitable for forwarding to any OTLP-compatible backend.
 """
 
 import hashlib
@@ -88,6 +89,7 @@ def mlflow_trace_to_otlp(
     resource_attrs = [
         _make_attr("service.name", service_name),
         _make_attr("service.namespace", "databricks"),
+        _make_attr("opencite.discovery_source", "databricks/mlflow"),
         _make_attr("mlflow.experiment.name", experiment_name),
     ]
     if mlflow_request_id:
@@ -248,6 +250,7 @@ def genie_trace_to_otlp(trace_dict: Dict[str, Any]) -> Dict[str, Any]:
     resource_attrs = [
         _make_attr("service.name", "databricks-genie"),
         _make_attr("service.namespace", "databricks"),
+        _make_attr("opencite.discovery_source", "databricks/genie"),
     ]
     if space_name:
         resource_attrs.append(_make_attr("genie.space_name", space_name))
@@ -301,8 +304,10 @@ def genie_trace_to_otlp(trace_dict: Dict[str, Any]) -> Dict[str, Any]:
         "status": {},
     }
 
-    # Child LLM span
+    # Child LLM span — include agent name so OTel plugin can correlate
+    agent_name = trace_dict.get("agent_name", "Genie")
     llm_attrs = [
+        _make_attr("gen_ai.agent.name", agent_name),
         _make_attr("gen_ai.request.model", trace_dict.get("model", "databricks-genie")),
         _make_attr("gen_ai.system", trace_dict.get("provider", "databricks")),
     ]
@@ -371,6 +376,7 @@ def ai_gateway_usage_to_otlp(row: Dict[str, Any]) -> Dict[str, Any]:
     resource_attrs = [
         _make_attr("service.name", endpoint_name),
         _make_attr("service.namespace", "databricks"),
+        _make_attr("opencite.discovery_source", "databricks/ai-gateway"),
         _make_attr("ai_gateway.endpoint.name", endpoint_name),
     ]
     endpoint_id = row.get("endpoint_id")
@@ -385,7 +391,6 @@ def ai_gateway_usage_to_otlp(row: Dict[str, Any]) -> Dict[str, Any]:
 
     # --- Root gateway span ---
     gw_attrs: List[Dict[str, Any]] = [
-        _make_attr("gen_ai.agent.name", endpoint_name),
         _make_attr("ai_gateway.request_id", request_id),
     ]
 
@@ -412,6 +417,16 @@ def ai_gateway_usage_to_otlp(row: Dict[str, Any]) -> Dict[str, Any]:
     user_agent = row.get("user_agent")
     if user_agent:
         gw_attrs.append(_make_attr("http.user_agent", str(user_agent)))
+
+    # Agent name: derive from user_agent type + user.id when available
+    agent_name = endpoint_name
+    if user_agent:
+        agent_type = str(user_agent).split("/")[0]
+        if requester:
+            agent_name = f"{agent_type}/{requester}"
+        else:
+            agent_name = agent_type
+    gw_attrs.append(_make_attr("gen_ai.agent.name", agent_name))
     status_code = row.get("status_code")
     if status_code is not None:
         gw_attrs.append(_make_attr_int("http.status_code", int(status_code)))
@@ -476,11 +491,28 @@ def ai_gateway_usage_to_otlp(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
     # --- Child LLM span ---
-    dest_model = row.get("destination_model") or "unknown"
+    # Extract model ID from routing_information.attempts (last attempt's
+    # destination, minus the "system.ai." prefix).  Falls back to
+    # destination_model display name normalized to a slug.
+    dest_model_display = row.get("destination_model") or "unknown"
+    model_id = ""
+    if routing and isinstance(routing, dict):
+        attempts = routing.get("attempts")
+        if attempts and isinstance(attempts, list):
+            # Take the last (highest-index) attempt
+            last_attempt = attempts[-1]
+            dest = last_attempt.get("destination") or ""
+            if dest.startswith("system.ai."):
+                model_id = dest[len("system.ai."):]
+            elif dest:
+                model_id = dest
+    if not model_id:
+        # Normalize display name to ID: "Claude Sonnet 4.5" -> "claude-sonnet-4-5"
+        model_id = str(dest_model_display).lower().replace(" ", "-").replace(".", "-")
     provider = row.get("destination_name") or "databricks"
 
     llm_attrs: List[Dict[str, Any]] = [
-        _make_attr("gen_ai.request.model", str(dest_model)),
+        _make_attr("gen_ai.request.model", str(model_id)),
         _make_attr("gen_ai.system", str(provider)),
     ]
 

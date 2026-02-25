@@ -1088,7 +1088,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
     def _fetch_and_process_gateway_usage(self):
         """Execute a single poll: query new rows and convert to OTLP traces."""
         from databricks import sql
-        from open_cite.otlp_converter import ai_gateway_usage_to_otlp
+        from open_cite.plugins.databricks_otlp_converter import ai_gateway_usage_to_otlp
 
         wh_id = self._get_warehouse_id()
         if not wh_id:
@@ -1126,6 +1126,8 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
 
         new_high_water = self._last_gateway_event_time
         forwarded = 0
+        # Batch all rows into a single OTLP payload for one _ingest_traces call
+        batched_resource_spans = []
 
         for raw_row in rows:
             row = dict(zip(columns, raw_row))
@@ -1137,14 +1139,24 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
 
             try:
                 otlp = ai_gateway_usage_to_otlp(row)
-                self._forward_to_otel(otlp)
-                self._deliver_to_webhooks(otlp)
+                batched_resource_spans.extend(otlp.get("resourceSpans", []))
                 forwarded += 1
             except Exception as e:
                 logger.warning(
                     f"Failed to convert AI Gateway row {row.get('request_id')}: {e}"
                 )
 
+        if batched_resource_spans:
+            batched_otlp = {"resourceSpans": batched_resource_spans}
+            self._forward_to_otel(batched_otlp)
+            self._deliver_to_webhooks(batched_otlp)
+
+        # Advance high-water mark by at least 1 second since event_time
+        # has only second-level granularity — without this, rows at the
+        # exact same second would be re-fetched on every poll.
+        if new_high_water is not None and new_high_water != self._last_gateway_event_time:
+            from datetime import timedelta
+            new_high_water = new_high_water + timedelta(seconds=1)
         self._last_gateway_event_time = new_high_water
         logger.info(
             f"[AI Gateway] Forwarded {forwarded}/{len(rows)} rows as OTLP traces"
@@ -1263,6 +1275,8 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         failed = 0
         total_traces = 0
 
+        batched_resource_spans = []
+
         with _databricks_mlflow_env(self.host, self.token):
             for exp in experiments:
                 exp_id = exp.experiment_id
@@ -1282,11 +1296,9 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                         for trace in results:
                             if trace.data.spans:
                                 self._process_trace_object(trace, exp_name)
-                                from open_cite.otlp_converter import mlflow_trace_to_otlp
+                                from open_cite.plugins.databricks_otlp_converter import mlflow_trace_to_otlp
                                 otlp = mlflow_trace_to_otlp(trace, exp_name)
-                                self._forward_to_otel(otlp)
-                                if self._webhook_urls:
-                                    self._deliver_to_webhooks(otlp)
+                                batched_resource_spans.extend(otlp.get("resourceSpans", []))
                                 total_traces += 1
                             exp_traces += 1
 
@@ -1314,6 +1326,12 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                         break
                     failed += 1
                     logger.warning(f"Error fetching traces for experiment {exp_id} ({exp_name}): {e}")
+
+        if batched_resource_spans:
+            batched_otlp = {"resourceSpans": batched_resource_spans}
+            self._forward_to_otel(batched_otlp)
+            if self._webhook_urls:
+                self._deliver_to_webhooks(batched_otlp)
 
         logger.info(
             f"Trace discovery: {succeeded} experiments succeeded, "
@@ -1458,6 +1476,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
 
         messages_processed = 0
         now = datetime.utcnow().isoformat()
+        batched_resource_spans = []
 
         for space in spaces:
             if messages_processed >= max_messages:
@@ -1482,11 +1501,17 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             if not agent["first_seen"]:
                 agent["first_seen"] = now
             agent["last_seen"] = now
-            agent["metadata"]["discovery_source"] = self.display_name
+            agent["metadata"]["discovery_source"] = "databricks/genie"
             agent["metadata"]["genie_space_id"] = space_id
+            agent["metadata"]["genie_space_name"] = space_title
             agent["metadata"]["agent_type"] = "sql-assistant"
             if space.get("description"):
                 agent["metadata"]["description"] = space["description"]
+            if space.get("warehouse_id"):
+                agent["metadata"]["warehouse_id"] = space["warehouse_id"]
+            table_ids = space.get("table_identifiers") or []
+            if table_ids:
+                agent["metadata"]["configured_tables"] = ", ".join(table_ids)
 
             # Register configured tables as downstream data assets
             for table_ref in (space.get("table_identifiers") or []):
@@ -1498,7 +1523,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                 if not ds["first_seen"]:
                     ds["first_seen"] = now
                 ds["last_seen"] = now
-                ds["metadata"]["discovery_source"] = self.display_name
+                ds["metadata"]["discovery_source"] = "databricks/genie"
                 ds["metadata"]["genie_space_id"] = space_id
                 self._add_lineage(agent_name, "agent", ds_id, "downstream", "queries")
 
@@ -1528,8 +1553,16 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                 for message in messages:
                     if messages_processed >= max_messages:
                         break
-                    self._process_genie_message(message, space, conv, now)
+                    otlp = self._process_genie_message(message, space, conv, now)
+                    if otlp:
+                        batched_resource_spans.extend(otlp.get("resourceSpans", []))
                     messages_processed += 1
+
+        if batched_resource_spans:
+            batched_otlp = {"resourceSpans": batched_resource_spans}
+            self._forward_to_otel(batched_otlp)
+            if self._webhook_urls:
+                self._deliver_to_webhooks(batched_otlp)
 
         logger.info(
             f"Genie discovery complete: {len(self.genie_spaces)} spaces, "
@@ -1618,8 +1651,14 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         if not agent["first_seen"]:
             agent["first_seen"] = now
         agent["last_seen"] = now
-        agent["metadata"]["discovery_source"] = self.display_name
+        agent["metadata"]["discovery_source"] = "databricks/genie"
         agent["metadata"]["genie_space_id"] = space_id
+        agent["metadata"]["genie_space_name"] = space_title
+        user_email = self._resolve_user_email(str(message.get("user_id", "")))
+        if user_email:
+            agent["metadata"]["last_user"] = user_email
+        agent["metadata"]["last_conversation_id"] = conv_id
+        agent["metadata"]["message_count"] = agent["metadata"].get("message_count", 0) + 1
 
         # Register databricks-genie model with token estimation
         model_name = "databricks-genie"
@@ -1657,7 +1696,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                 if not ds["first_seen"]:
                     ds["first_seen"] = now
                 ds["last_seen"] = now
-                ds["metadata"]["discovery_source"] = self.display_name
+                ds["metadata"]["discovery_source"] = "databricks/genie"
                 ds["metadata"]["genie_space_id"] = space_id
                 self._add_lineage(agent_name, "agent", ds_id, "downstream", "queries")
 
@@ -1688,7 +1727,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             "status": status,
             "model": model_name,
             "provider": "databricks",
-            "user_id": self._resolve_user_email(str(message.get("user_id", ""))),
+            "user_id": user_email,
             "session_id": conv_id,
             "input": {"prompt": user_prompt},
             "output": {"generated_sql": generated_sql, "text_response": text_response},
@@ -1710,13 +1749,9 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         }
         self.genie_traces.append(trace_dict)
 
-        # Convert to OTLP and feed into the OTel plugin for model/agent
-        # discovery, plus forward to any configured webhooks.
-        from open_cite.otlp_converter import genie_trace_to_otlp
-        otlp = genie_trace_to_otlp(trace_dict)
-        self._forward_to_otel(otlp)
-        if self._webhook_urls:
-            self._deliver_to_webhooks(otlp)
+        # Convert to OTLP and return for batched delivery by the caller.
+        from open_cite.plugins.databricks_otlp_converter import genie_trace_to_otlp
+        return genie_trace_to_otlp(trace_dict)
 
     # =========================================================================
     # MLflow Trace/Span Processing (via MLflow SDK)
@@ -1784,7 +1819,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             if not agent["first_seen"]:
                 agent["first_seen"] = now
             agent["last_seen"] = now
-            agent["metadata"]["discovery_source"] = self.display_name
+            agent["metadata"]["discovery_source"] = "databricks/mlflow"
 
         # --- Process each span ---
         for span in spans:
@@ -1806,7 +1841,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                 if not sub_agent["first_seen"]:
                     sub_agent["first_seen"] = now
                 sub_agent["last_seen"] = now
-                sub_agent["metadata"]["discovery_source"] = self.display_name
+                sub_agent["metadata"]["discovery_source"] = "databricks/mlflow"
                 if agent_name:
                     self._add_lineage(agent_name, "agent", span_name, "agent", "calls")
 
@@ -1876,7 +1911,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             return
 
         tool = self.discovered_tools[tool_name]
-        tool["metadata"]["discovery_source"] = self.display_name
+        tool["metadata"]["discovery_source"] = "databricks/mlflow"
         tool["metadata"]["last_seen"] = now
         if "first_seen" not in tool["metadata"]:
             tool["metadata"]["first_seen"] = now
@@ -1902,7 +1937,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             if not ds["first_seen"]:
                 ds["first_seen"] = now
             ds["last_seen"] = now
-            ds["metadata"]["discovery_source"] = self.display_name
+            ds["metadata"]["discovery_source"] = "databricks/mlflow"
             self._add_lineage(tool_name, "tool", ds_id, "downstream", "connects_to")
 
         # RETRIEVER: extract document sources as downstream systems
@@ -1928,7 +1963,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                             if not ds["first_seen"]:
                                 ds["first_seen"] = now
                             ds["last_seen"] = now
-                            ds["metadata"]["discovery_source"] = self.display_name
+                            ds["metadata"]["discovery_source"] = "databricks/mlflow"
                             self._add_lineage(tool_name, "tool", ds_id, "downstream", "connects_to")
 
     # =========================================================================
@@ -1992,7 +2027,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             if not agent["first_seen"]:
                 agent["first_seen"] = now
             agent["last_seen"] = now
-            agent["metadata"]["discovery_source"] = self.display_name
+            agent["metadata"]["discovery_source"] = "databricks/mlflow"
             agent["metadata"]["experiment_name"] = experiment_name
 
         # --- Discover model from tags/params ---
@@ -2044,7 +2079,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             if key.startswith("tool.") or key.startswith("mlflow.tool."):
                 tool_name = key.split(".")[-1]
                 tool = self.discovered_tools[tool_name]
-                tool["metadata"]["discovery_source"] = self.display_name
+                tool["metadata"]["discovery_source"] = "databricks/mlflow"
                 tool["metadata"]["last_seen"] = now
                 if "first_seen" not in tool["metadata"]:
                     tool["metadata"]["first_seen"] = now
@@ -2069,7 +2104,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             if not ds["first_seen"]:
                 ds["first_seen"] = now
             ds["last_seen"] = now
-            ds["metadata"]["discovery_source"] = self.display_name
+            ds["metadata"]["discovery_source"] = "databricks/mlflow"
             self._add_lineage(agent_name or ds_name, "agent", ds_id, "downstream", "uses")
 
         # --- Track token usage from metrics ---
@@ -2200,7 +2235,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                     "server_type": server_info["server_type"],
                     "url": server_info.get("url"),
                     "transport": "http",
-                    "discovery_source": self.display_name,
+                    "discovery_source": "databricks",
                     "first_seen": now,
                     "last_seen": now,
                     "tools_count": len(tools),
@@ -2223,7 +2258,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                         "server_id": server_id,
                         "description": tool.get("description"),
                         "input_schema": tool.get("inputSchema"),
-                        "discovery_source": self.display_name,
+                        "discovery_source": "databricks",
                         "first_seen": now,
                         "last_seen": now,
                     }
@@ -2350,7 +2385,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                 "id": tool_name,
                 "name": tool_name,
                 "type": "tool",
-                "discovery_source": self.display_name,
+                "discovery_source": metadata.get("discovery_source", "databricks"),
                 "models": list(tool_data["models"]),
                 "trace_count": len(tool_data["traces"]),
                 "first_seen": metadata.get("first_seen"),
@@ -2367,7 +2402,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                 "id": agent_name,
                 "name": agent_name,
                 "type": "agent",
-                "discovery_source": self.display_name,
+                "discovery_source": agent_data.get("metadata", {}).get("discovery_source", "databricks"),
                 "tools_used": list(agent_data["tools_used"]),
                 "models_used": list(agent_data["models_used"]),
                 "first_seen": agent_data["first_seen"],
@@ -2385,7 +2420,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                 "id": f"trace:{model_name}",
                 "name": model_name,
                 "type": "model",
-                "discovery_source": self.display_name,
+                "discovery_source": "databricks",
                 "source": "mlflow_trace",
                 "provider": model_data["provider"],
                 "agents_using": list(model_data["agents_using"]),
@@ -2406,7 +2441,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                 "id": system_id,
                 "name": system_data["name"],
                 "type": system_data["type"],
-                "discovery_source": self.display_name,
+                "discovery_source": system_data.get("metadata", {}).get("discovery_source", "databricks"),
                 "endpoint": system_data["endpoint"],
                 "tools_connecting": list(system_data["tools_connecting"]),
                 "first_seen": system_data["first_seen"],

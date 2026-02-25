@@ -420,7 +420,7 @@ class OpenCiteClient:
             agents.append({
                 "id": agent_id,
                 "name": data.get("name", agent_id),
-                "discovery_source": "opentelemetry",
+                "discovery_source": metadata.get("discovery_source", "opentelemetry"),
                 "tools_used": list(data.get("tools_used", [])),
                 "models_used": list(data.get("models_used", [])),
                 "first_seen": data.get("first_seen"),

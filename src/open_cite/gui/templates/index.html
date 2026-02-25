@@ -184,9 +184,8 @@
             font-size: 2.5em;
         }
 
-        h1 img {
+        .header>div>img {
             height: 128px;
-            vertical-align: middle;
         }
 
         .subtitle {
@@ -975,7 +974,12 @@
 </head>
 
 <body data-theme="opencite">
-    <div class="container" style="margin-top:2em;">
+    <div id="promoBanner" style="display:none;position:fixed;top:0;left:0;right:0;height:auto;min-height:50px;background:var(--accent-primary);color:var(--text-on-accent);font-size:16px;line-height:50px;text-align:center;z-index:9999;padding:0 40px;overflow:hidden;transform:translateY(-100%);opacity:0;transition:transform 0.4s ease,opacity 0.4s ease;border-bottom:1px solid var(--border-color);">
+        <img src="static/LangGuard Logo Text.png" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);height:22px;" />
+        <span>Want to govern and monitor the AI assets you have discovered? <a href="https://langguard.ai/trial" target="_blank" style="color:var(--text-on-accent);text-decoration:underline;">Click here</a> to sign up for a free trial of LangGuard, our Enterprise AI Control Plane!</span>
+        <button onclick="closeBanner()" style="position:absolute;right:12px;top:0;background:none;border:none;color:var(--text-on-accent);font-size:22px;line-height:50px;cursor:pointer;padding:0 4px;" aria-label="Close">&times;</button>
+    </div>
+    <div class="container" style="margin-top:calc(2em + 4px);">
         <div style="text-align:right;margin-bottom:8px;">
             <label for="themeSelect" style="color: var(--text-on-body); font-size: 0.85em; white-space:nowrap;">Theme:</label>
             <select id="themeSelect" onchange="setTheme(this.value); refreshLineageGraph();" style="padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border-color);
@@ -986,14 +990,20 @@
                 <option value="databricks-dark">Databricks Dark</option>
             </select>
         </div>
-        <div class="header" style="display:flex;align-items:center;">
-            <div style="flex:1;">
-                <h1><img src="static/OpenCiteBear.png" /> OpenCITE</h1>
-                <p class="subtitle"><b>Open C</b>atalog of <b>I</b>ntelligent <b>T</b>ools in the <b>E</b>nterprise</p>
+        <div class="header">
+            <div style="display:flex;align-items:center;">
+                <div style="display:flex;align-items:center;flex:2;gap:20px;">
+                    <img src="static/OpenCiteBear.png" />
+                    <div>
+                        <h1 style="margin:0">OpenCITE</h1>
+                        <p style="margin:4px 0;font-size:0.95em;font-style:italic;color:var(--text-secondary);text-align:right">powered by <a href="https://langguard.ai" target="_blank"><img style="height:18px;vertical-align:middle;margin-top:-4px;" src="static/LangGuard Logo Text.png" /></a></p>
+                    </div>
+                </div>
+                <div>
+                    <div class="stats" id="statsContainer" style="display: none;"></div>
+                </div>
             </div>
-            <div style="float:right;">
-                <div class="stats" id="statsContainer" style="display: none;"></div>
-            </div>
+            <p class="subtitle" style="margin:8px 0 0"><b>Open C</b>atalog of <b>I</b>ntelligent <b>T</b>ools in the <b>E</b>nterprise</p>
         </div>
 
         <div class="main-grid">
@@ -1261,8 +1271,8 @@
                         <div class="instance-type" title="Type: ${typeText}">Type: ${typeText}</div>
                         <div class="instance-info" title="ID: ${instance.instance_id}">ID: ${instance.instance_id}</div>
                         ${endpointText ? `<div class="instance-info" title="Endpoint: ${endpointText}">Endpoint: ${endpointText}</div>`
-                          : (instance.config?.host ? `<div class="instance-info" title="Host: ${instance.config.host}">Host: ${instance.config.host}</div>` : '')
-                            + (instance.config?.port ? `<div class="instance-info" title="Port: ${instance.config.port}">Port: ${instance.config.port}</div>` : '')}
+                        : (instance.config?.host ? `<div class="instance-info" title="Host: ${instance.config.host}">Host: ${instance.config.host}</div>` : '')
+                        + (instance.config?.port ? `<div class="instance-info" title="Port: ${instance.config.port}">Port: ${instance.config.port}</div>` : '')}
                         <div class="instance-actions">
                             ${isRunning
                         ? `<button class="btn-stop" onclick="stopInstance('${instance.instance_id}')">Stop</button>`
@@ -1604,6 +1614,28 @@
                         <div class="stat-label">${s.label}</div>
                     </div>
                 `).join('');
+
+            // Show promo banner if assets exist and user hasn't dismissed it, or if ?showBanner=true
+            const forceBanner = new URLSearchParams(window.location.search).get('showBanner') === 'true';
+            const hasAssets = (totals.tools || 0) + (totals.models || 0) + (totals.agents || 0) > 0;
+            if (forceBanner || (hasAssets && !document.cookie.includes('opencite_banner_dismissed=1'))) {
+                const banner = document.getElementById('promoBanner');
+                banner.style.display = 'block';
+                // Force browser to paint the off-screen state before transitioning in
+                banner.offsetHeight;
+                requestAnimationFrame(() => {
+                    banner.style.transform = 'translateY(0)';
+                    banner.style.opacity = '1';
+                });
+            }
+        }
+
+        function closeBanner() {
+            const banner = document.getElementById('promoBanner');
+            banner.style.transform = 'translateY(-100%)';
+            banner.style.opacity = '0';
+            setTimeout(() => { banner.style.display = 'none'; }, 400);
+            document.cookie = 'opencite_banner_dismissed=1;path=/;max-age=' + (365 * 24 * 60 * 60);
         }
 
         // Render assets
@@ -1648,7 +1680,7 @@
 
         function renderAllAssets() {
             return renderTools() + renderModels() + renderAgents() +
-                   renderDownstream() + renderMCP() + renderDataAssets();
+                renderDownstream() + renderMCP() + renderDataAssets();
         }
 
         function renderTools() {

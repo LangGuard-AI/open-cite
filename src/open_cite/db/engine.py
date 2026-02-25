@@ -259,6 +259,20 @@ def get_session():
     return _session_factory()
 
 
+def _drop_table(engine, table_name: str):
+    """Drop a table, using fully-qualified name on Databricks."""
+    if engine.dialect.name == "databricks":
+        catalog = os.getenv("OPENCITE_DATABRICKS_CATALOG", _DATABRICKS_CATALOG)
+        schema = os.getenv("OPENCITE_DATABRICKS_SCHEMA", _DATABRICKS_SCHEMA)
+        fqn = f"`{catalog}`.`{schema}`.`{table_name}`"
+    else:
+        fqn = table_name
+    with engine.connect() as conn:
+        conn.execute(sqltext(f"DROP TABLE IF EXISTS {fqn}"))
+        conn.commit()
+    logger.info("[db] Dropped table %s", fqn)
+
+
 def _run_migrations(engine):
     """One-time schema migrations for tables whose columns have changed."""
     from sqlalchemy import inspect as sa_inspect
@@ -270,18 +284,14 @@ def _run_migrations(engine):
             columns = {c["name"] for c in insp.get_columns("lineage")}
             if "id" in columns:
                 logger.info("[db] Migrating lineage table: dropping old schema with 'id' column")
-                with engine.connect() as conn:
-                    conn.execute(sqltext("DROP TABLE lineage"))
-                    conn.commit()
+                _drop_table(engine, "lineage")
 
         # Agents: removed `confidence` column
         if insp.has_table("agents"):
             columns = {c["name"] for c in insp.get_columns("agents")}
             if "confidence" in columns:
                 logger.info("[db] Migrating agents table: dropping old schema with 'confidence' column")
-                with engine.connect() as conn:
-                    conn.execute(sqltext("DROP TABLE agents"))
-                    conn.commit()
+                _drop_table(engine, "agents")
 
     except Exception as exc:
         logger.warning("[db] Migration check failed (non-fatal): %s", exc)

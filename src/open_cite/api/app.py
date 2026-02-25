@@ -1521,48 +1521,85 @@ def register_api_routes(app: Flask):
                 level=level, title=title or f"{ntype}: {label}", size=30,
             )
 
+        # Collect all edges first so we can skip orphan nodes
+        edges = []       # list of (source_id, target_id)
+        connected = set() # node ids that participate in at least one edge
+
         for a in agents:
             nid = f"agent:{a['name']}"
-            add_node(nid, a["name"], "agent", f"Agent: {a['name']}")
             for t in (a.get("tools_used") or []):
                 tid = f"tool:{t}"
-                add_node(tid, t, "tool")
-                net.add_edge(nid, tid)
+                edges.append((nid, tid))
+                connected.update((nid, tid))
             for m in (a.get("models_used") or []):
                 mid = f"model:{m}"
-                add_node(mid, m, "model")
-                net.add_edge(nid, mid)
+                edges.append((nid, mid))
+                connected.update((nid, mid))
 
         for t in tools:
             tid = f"tool:{t['name']}"
-            add_node(tid, t["name"], "tool")
             for m in (t.get("models") or []):
                 mid = f"model:{m}"
-                add_node(mid, m, "model")
-                net.add_edge(tid, mid)
-
-        for m in models:
-            mid = f"model:{m['name']}"
-            add_node(mid, m["name"], "model",
-                     f"Model: {m['name']}\nProvider: {m.get('provider','')}")
+                edges.append((tid, mid))
+                connected.update((tid, mid))
 
         for d in data_assets_list:
             did = f"data:{d['name']}"
-            add_node(did, d["name"], "data_asset",
-                     f"Data: {d['name']}\nType: {d.get('type','')}")
             for t in (d.get("tools_connecting") or []):
                 tid = f"tool:{t}"
-                add_node(tid, t, "tool")
-                net.add_edge(tid, did)
+                edges.append((tid, did))
+                connected.update((tid, did))
 
         for d in downstream:
             did = f"ds:{d['name']}"
-            add_node(did, d["name"], "downstream",
-                     f"Downstream: {d['name']}\nType: {d.get('type','')}")
             for t in (d.get("tools_connecting") or []):
                 tid = f"tool:{t}"
-                add_node(tid, t, "tool")
-                net.add_edge(tid, did)
+                edges.append((tid, did))
+                connected.update((tid, did))
+
+        # Only add nodes that have at least one connection
+        for a in agents:
+            nid = f"agent:{a['name']}"
+            if nid in connected:
+                add_node(nid, a["name"], "agent", f"Agent: {a['name']}")
+
+        for t in tools:
+            tid = f"tool:{t['name']}"
+            if tid in connected:
+                add_node(tid, t["name"], "tool")
+
+        for m in models:
+            mid = f"model:{m['name']}"
+            if mid in connected:
+                add_node(mid, m["name"], "model",
+                         f"Model: {m['name']}\nProvider: {m.get('provider','')}")
+
+        for d in data_assets_list:
+            did = f"data:{d['name']}"
+            if did in connected:
+                add_node(did, d["name"], "data_asset",
+                         f"Data: {d['name']}\nType: {d.get('type','')}")
+
+        for d in downstream:
+            did = f"ds:{d['name']}"
+            if did in connected:
+                add_node(did, d["name"], "downstream",
+                         f"Downstream: {d['name']}\nType: {d.get('type','')}")
+
+        # Add edges (nodes referenced by edges but not in the asset lists
+        # were already added via add_node calls in the edge collection phase
+        # won't exist — add_node is safe to call for missing types)
+        for src, tgt in edges:
+            if src not in added:
+                # Node referenced by edge but not in any asset list — add as generic
+                label = src.split(":", 1)[-1] if ":" in src else src
+                ntype = src.split(":", 1)[0] if ":" in src else "default"
+                add_node(src, label, ntype)
+            if tgt not in added:
+                label = tgt.split(":", 1)[-1] if ":" in tgt else tgt
+                ntype = tgt.split(":", 1)[0] if ":" in tgt else "default"
+                add_node(tgt, label, ntype)
+            net.add_edge(src, tgt)
 
         if not added:
             return ("<html><body style='display:flex;align-items:center;justify-content:center;"
