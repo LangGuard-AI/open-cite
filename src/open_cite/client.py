@@ -67,6 +67,27 @@ class OpenCiteClient:
         self._plugin_types[plugin.plugin_type].append(instance_id)
         logger.info(f"Registered plugin: {instance_id} (type: {plugin.plugin_type})")
 
+        # Auto-wire AgentCore <-> OpenTelemetry for trace correlation
+        self._wire_agentcore_otel(plugin)
+
+    def _wire_agentcore_otel(self, newly_registered):
+        """
+        Auto-wire AgentCore and OpenTelemetry plugins for trace correlation.
+
+        Called after every register_plugin().  If the newly registered plugin
+        is AgentCore, find the OTel plugin and link them.  If it's OTel,
+        find any existing AgentCore plugins and link them.
+        """
+        if newly_registered.plugin_type == "aws_agentcore":
+            otel_plugins = self.get_plugins_by_type("opentelemetry")
+            if otel_plugins and hasattr(newly_registered, "set_otel_plugin"):
+                newly_registered.set_otel_plugin(otel_plugins[0])
+
+        elif newly_registered.plugin_type == "opentelemetry":
+            for ac_plugin in self.get_plugins_by_type("aws_agentcore"):
+                if hasattr(ac_plugin, "set_otel_plugin"):
+                    ac_plugin.set_otel_plugin(newly_registered)
+
     def unregister_plugin(self, instance_id: str):
         """
         Unregister a plugin instance.
@@ -754,6 +775,52 @@ class OpenCiteClient:
         """Refresh AWS SageMaker discovery data."""
         self._aws_sagemaker.refresh_discovery()
 
+    # Convenience methods for the AWS AgentCore plugin
+    @property
+    def _aws_agentcore(self) -> 'AWSAgentCorePlugin':
+        """Get the AWS AgentCore plugin."""
+        return self.get_plugin("aws_agentcore")  # type: ignore
+
+    def list_agentcore_runtimes(self) -> List[Dict[str, Any]]:
+        """
+        List AgentCore agent runtimes.
+
+        Returns:
+            List of deployed agent runtimes
+        """
+        return self._aws_agentcore.list_assets("agent_runtime")
+
+    def list_agentcore_memories(self) -> List[Dict[str, Any]]:
+        """
+        List AgentCore memory stores.
+
+        Returns:
+            List of memory resources
+        """
+        return self._aws_agentcore.list_assets("memory")
+
+    def list_agentcore_gateways(self) -> List[Dict[str, Any]]:
+        """
+        List AgentCore gateways and their targets.
+
+        Returns:
+            List of gateways with target configurations
+        """
+        return self._aws_agentcore.list_assets("gateway")
+
+    def verify_agentcore_connection(self) -> Dict[str, Any]:
+        """
+        Verify connection to AWS Bedrock AgentCore.
+
+        Returns:
+            Dict with connection status
+        """
+        return self._aws_agentcore.verify_connection()
+
+    def refresh_agentcore_discovery(self):
+        """Refresh AWS AgentCore discovery data."""
+        self._aws_agentcore.refresh_discovery()
+
     # Export methods
     def export_to_json(
         self,
@@ -763,6 +830,7 @@ class OpenCiteClient:
         include_google_cloud: bool = False,
         include_aws_bedrock: bool = False,
         include_aws_sagemaker: bool = False,
+        include_aws_agentcore: bool = False,
         filepath: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
@@ -775,6 +843,7 @@ class OpenCiteClient:
             include_google_cloud: Include Google Cloud discoveries
             include_aws_bedrock: Include AWS Bedrock discoveries
             include_aws_sagemaker: Include AWS SageMaker discoveries
+            include_aws_agentcore: Include AWS AgentCore discoveries
             filepath: Optional path to save JSON file
 
         Returns:
@@ -803,6 +872,9 @@ class OpenCiteClient:
         aws_sagemaker_packages = []
         aws_sagemaker_training_jobs = []
         aws_sagemaker_usage = {}
+        aws_agentcore_runtimes = []
+        aws_agentcore_memories = []
+        aws_agentcore_gateways = []
         plugins_info = []
 
         # Gather OpenTelemetry data
@@ -878,6 +950,17 @@ class OpenCiteClient:
                 "version": "1.0.0",
             })
 
+        # Gather AWS AgentCore data
+        if include_aws_agentcore and "aws_agentcore" in self.plugins:
+            aws_agentcore_runtimes = self.list_agentcore_runtimes()
+            aws_agentcore_memories = self.list_agentcore_memories()
+            aws_agentcore_gateways = self.list_agentcore_gateways()
+
+            plugins_info.append({
+                "name": "aws_agentcore",
+                "version": "1.0.0",
+            })
+
         # Build metadata
         metadata = {
             "generated_by": "opencite-client",
@@ -915,6 +998,11 @@ class OpenCiteClient:
         export_data["aws_sagemaker_model_packages"] = aws_sagemaker_packages
         export_data["aws_sagemaker_training_jobs"] = aws_sagemaker_training_jobs
         export_data["aws_sagemaker_usage_summary"] = aws_sagemaker_usage
+
+        # Add AWS AgentCore entities
+        export_data["aws_agentcore_runtimes"] = aws_agentcore_runtimes
+        export_data["aws_agentcore_memories"] = aws_agentcore_memories
+        export_data["aws_agentcore_gateways"] = aws_agentcore_gateways
 
         # Save to file if requested
         if filepath:

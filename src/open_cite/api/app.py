@@ -365,7 +365,8 @@ def register_api_routes(app: Flask):
                 include_otel="opentelemetry" in include_plugins,
                 include_mcp="mcp" in include_plugins,
                 include_databricks="databricks" in include_plugins,
-                include_google_cloud="google_cloud" in include_plugins
+                include_google_cloud="google_cloud" in include_plugins,
+                include_aws_agentcore="aws_agentcore" in include_plugins,
             )
 
             return jsonify(export_data)

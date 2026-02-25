@@ -8,7 +8,7 @@ OpenCITE provides a unified interface for discovering and cataloging AI/ML resou
 
 ## Key Capabilities
 
-- **Multi-Platform Discovery**: Automatic discovery of AI/ML resources across Databricks, Google Cloud, and custom infrastructure
+- **Multi-Platform Discovery**: Automatic discovery of AI/ML resources across AWS (Bedrock, SageMaker, AgentCore), Databricks, Google Cloud, and custom infrastructure
 - **Protocol Support**: Native support for OpenTelemetry, MCP (Model Context Protocol), and major cloud APIs
 - **Trace Analysis**: Collect and analyze traces from AI agents, tools, and model invocations
 - **Model Cataloging**: Track models, endpoints, deployments, and usage patterns
@@ -39,6 +39,13 @@ OpenCITE provides a unified interface for discovering and cataloging AI/ML resou
 - **OpenRouter Broadcast support**: Zero-code integration via OpenRouter's built-in trace broadcasting
 - Real-time analytics on tool and model usage
 - Requires: OTLP endpoint configuration
+
+### AWS Plugins
+- **Bedrock**: Foundation model, custom model, and invocation discovery via CloudTrail
+- **SageMaker**: Endpoint, model, model package, and training job discovery
+- **AgentCore**: Agent runtime, memory store, and gateway discovery with live OTel trace correlation
+- Shared authentication (profiles, env vars, IAM roles, SSO)
+- Requires: AWS credentials (`AWS_PROFILE` or `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`)
 
 ### MCP Plugin (Model Context Protocol)
 - Trace-based MCP server discovery
@@ -198,6 +205,39 @@ print(f"Connected to project: {status['project_id']}")
 
 For detailed Google Cloud plugin documentation, see [docs/plugins/GOOGLE_CLOUD_PLUGIN.md](docs/plugins/GOOGLE_CLOUD_PLUGIN.md).
 
+### AWS Bedrock AgentCore Plugin
+
+```python
+from open_cite.client import OpenCiteClient
+from open_cite.plugins.registry import create_plugin_instance
+
+client = OpenCiteClient()
+
+# Start OTel receiver (receives traces from your agents)
+otel = create_plugin_instance("opentelemetry", {"port": 4318})
+client.register_plugin(otel)
+otel.start()
+
+# Start AgentCore discovery (auto-links to OTel for trace correlation)
+ac = create_plugin_instance("aws_agentcore", {"region": "us-east-1"})
+client.register_plugin(ac)
+ac.start()
+
+# List deployed agent runtimes — enriched with live OTel trace data
+runtimes = client.list_agentcore_runtimes()
+for rt in runtimes:
+    print(f"{rt['name']}: {rt['status']}")
+    if rt.get('otel_correlated'):
+        print(f"  Models used: {rt['models_used']}")
+        print(f"  Token usage: {rt['token_usage']}")
+
+# List memory stores and gateways
+memories = client.list_agentcore_memories()
+gateways = client.list_agentcore_gateways()
+```
+
+For detailed AWS plugin documentation, see [docs/plugins/AWS_PLUGINS.md](docs/plugins/AWS_PLUGINS.md).
+
 ### Exporting to JSON
 
 ```python
@@ -227,14 +267,15 @@ open-cite/
 ├── src/open_cite/          # Main library code
 │   ├── client.py           # Unified client interface
 │   ├── plugins/            # Discovery plugins
+│   │   ├── opentelemetry.py # OpenTelemetry receiver plugin
 │   │   ├── databricks.py   # Databricks/Unity Catalog plugin
 │   │   ├── google_cloud.py # Google Cloud/Vertex AI plugin
-│   │   ├── opentelemetry.py # OpenTelemetry plugin
-│   │   └── mcp.py          # MCP plugin
+│   │   └── aws/            # AWS plugins
+│   │       ├── bedrock.py  # Bedrock foundation models & invocations
+│   │       ├── sagemaker.py # SageMaker endpoints & models
+│   │       └── agentcore.py # AgentCore runtimes, memory, gateways
+│   ├── api/                # Headless REST API
 │   ├── gui/                # Web GUI application
-│   │   ├── app.py          # Flask server
-│   │   ├── templates/      # HTML templates
-│   │   └── static/         # Static assets
 │   └── schema.py           # Export schema definitions
 ├── docs/                   # Documentation
 └── README.md               # This file

@@ -30,6 +30,7 @@ class OpenCiteConfig:
     enable_mcp: bool = field(default_factory=lambda: os.getenv("OPENCITE_ENABLE_MCP", "true").lower() == "true")
     enable_databricks: bool = field(default_factory=lambda: os.getenv("OPENCITE_ENABLE_DATABRICKS", "false").lower() == "true")
     enable_google_cloud: bool = field(default_factory=lambda: os.getenv("OPENCITE_ENABLE_GOOGLE_CLOUD", "false").lower() == "true")
+    enable_agentcore: bool = field(default_factory=lambda: os.getenv("OPENCITE_ENABLE_AGENTCORE", "false").lower() == "true")
 
     # Databricks settings (passed through to plugin)
     databricks_host: Optional[str] = field(default_factory=lambda: os.getenv("DATABRICKS_HOST"))
@@ -93,6 +94,24 @@ class OpenCiteConfig:
                     "project_id": self.gcp_project_id,
                     "location": self.gcp_location,
                 }
+            })
+
+        if self.enable_agentcore:
+            # AgentCore needs the OTel receiver for trace correlation.
+            # Auto-enable it if the user hasn't already.
+            otel_already_added = any(p["name"] == "opentelemetry" for p in plugins)
+            if not otel_already_added:
+                plugins.append({
+                    "name": "opentelemetry",
+                    "config": {
+                        "host": self.otlp_host,
+                        "port": self.otlp_port,
+                    }
+                })
+
+            plugins.append({
+                "name": "aws_agentcore",
+                "config": {},
             })
 
         return plugins

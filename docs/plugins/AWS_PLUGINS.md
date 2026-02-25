@@ -2,12 +2,13 @@
 
 ## Overview
 
-OpenCITE includes two AWS plugins for discovering AI/ML assets:
+OpenCITE includes three AWS plugins for discovering AI/ML assets:
 
 - **AWS Bedrock** (`aws_bedrock`) — Foundation models, custom models, provisioned throughput, and model invocations
 - **AWS SageMaker** (`aws_sagemaker`) — Endpoints, models, model packages, and training jobs
+- **AWS Bedrock AgentCore** (`aws_agentcore`) — Agent runtimes, memory stores, and gateways
 
-Both plugins share authentication via `AWSClientMixin` and support the same credential methods.
+All plugins share authentication via `AWSClientMixin` and support the same credential methods.
 
 ## Authentication
 
@@ -188,9 +189,152 @@ print(f"Active endpoints: {summary['summary']['active_endpoints']}")
 print(f"Total invocations: {summary['summary']['total_invocations_last_n_days']}")
 ```
 
+## AWS Bedrock AgentCore Plugin
+
+### What It Discovers
+
+| Asset Type | Description | Source |
+|------------|-------------|--------|
+| `agent_runtime` | Deployed agent runtimes | AgentCore API |
+| `memory` | Memory stores attached to agents | AgentCore API |
+| `gateway` | API gateways / MCP tool configurations | AgentCore API |
+
+### Required IAM Permissions
+
+```yaml
+# Core discovery
+bedrock-agentcore:ListAgentRuntimes
+bedrock-agentcore:GetAgentRuntime
+bedrock-agentcore:ListMemories
+bedrock-agentcore:ListGateways
+bedrock-agentcore:ListGatewayTargets
+
+# Account ID (optional)
+sts:GetCallerIdentity
+```
+
+### Configuration Fields
+
+Same as Bedrock — `region`, `profile`, `access_key_id`, `secret_access_key`, `role_arn`.
+
+### Programmatic Usage
+
+```python
+from open_cite.plugins.registry import create_plugin_instance
+
+plugin = create_plugin_instance("aws_agentcore", {
+    "region": "us-east-1",
+})
+
+# Verify connection
+status = plugin.verify_connection()
+print(status)
+
+# List deployed agent runtimes
+runtimes = plugin.list_assets("agent_runtime")
+for rt in runtimes:
+    print(f"{rt['name']}: {rt['status']} (region: {rt['region']})")
+
+# List memory stores
+memories = plugin.list_assets("memory")
+
+# List gateways and their targets
+gateways = plugin.list_assets("gateway")
+for gw in gateways:
+    print(f"{gw['name']}: {len(gw['targets'])} targets")
+```
+
+### OTel Trace Correlation
+
+When the OpenTelemetry receiver is also running, the AgentCore plugin automatically correlates incoming traces with discovered runtimes. The OTel receiver is **auto-enabled** whenever AgentCore is enabled.
+
+This means each runtime shows not just deployment info, but also **live telemetry**:
+
+| Enriched Field | Description |
+|---------------|-------------|
+| `otel_correlated` | `true` if matching traces were found |
+| `otel_agents` | Agents discovered via OTel matching this runtime |
+| `models_used` | Models the agent called (from traces) |
+| `tools_used` | Tools the agent invoked (from traces) |
+| `token_usage` | Input/output token counts per model |
+| `last_trace_seen` | Most recent activity timestamp |
+
+To receive traces from your AgentCore agent, point its OTel exporter at OpenCITE:
+
+```bash
+# In your AgentCore agent's environment / runtime config:
+OTEL_EXPORTER_OTLP_ENDPOINT=http://<opencite-host>:4318
+```
+
+### Testing: Verify OTel Receiver Captures AgentCore Traces
+
+```python
+import time
+from open_cite.client import OpenCiteClient
+from open_cite.plugins.registry import create_plugin_instance
+
+client = OpenCiteClient()
+
+# 1. Start the OTel receiver
+otel = create_plugin_instance("opentelemetry", {"host": "0.0.0.0", "port": 4318})
+client.register_plugin(otel)
+otel.start()
+print(f"OTLP receiver listening on http://0.0.0.0:4318/v1/traces")
+print(f"Point your AgentCore agent here: OTEL_EXPORTER_OTLP_ENDPOINT=http://<this-host>:4318")
+
+# 2. Start AgentCore discovery (auto-wired to OTel)
+ac = create_plugin_instance("aws_agentcore", {"region": "us-east-1"})
+client.register_plugin(ac)
+ac.start()
+print(f"AgentCore linked to OTel: {ac.get_config()['otel_linked']}")
+
+# 3. Check if any traces have arrived
+status = otel.verify_connection()
+print(f"Traces received so far: {status.get('traces_received', 0)}")
+print(f"Tools discovered: {status.get('tools_discovered', 0)}")
+
+# 4. Invoke your AgentCore agent, wait for traces, then check again
+print("\n--- Invoke your agent now, then press Enter ---")
+input()
+
+status = otel.verify_connection()
+print(f"Traces received: {status.get('traces_received', 0)}")
+print(f"Tools discovered: {status.get('tools_discovered', 0)}")
+
+# 5. List discovered tools & agents from traces
+tools = client.list_tools()
+print(f"\nDiscovered tools ({len(tools)}):")
+for t in tools:
+    print(f"  {t['name']}")
+
+agents = client.list_agents()
+print(f"\nDiscovered agents ({len(agents)}):")
+for a in agents:
+    print(f"  {a['name']}")
+
+# 6. List runtimes — now enriched with OTel data
+runtimes = client.list_agentcore_runtimes()
+print(f"\nAgent runtimes ({len(runtimes)}):")
+for rt in runtimes:
+    corr = rt.get('otel_correlated', False)
+    print(f"  {rt['name']} — status: {rt['status']}, otel_correlated: {corr}")
+    if corr:
+        print(f"    models_used: {rt.get('models_used', [])}")
+        print(f"    tools_used: {rt.get('tools_used', [])}")
+        print(f"    token_usage: {rt.get('token_usage', {})}")
+        print(f"    last_trace_seen: {rt.get('last_trace_seen')}")
+```
+
+### Environment Variable Quick Start
+
+```bash
+# Enable AgentCore discovery + OTel receiver (auto-enabled)
+set OPENCITE_ENABLE_AGENTCORE=true
+```
+
 ## GUI Usage
 
-Both plugins appear in the GUI plugin list automatically. Add an instance, provide credentials (or leave blank to use the default credential chain), and start it. Discovered assets appear in the asset tabs.
+All three plugins appear in the GUI plugin list automatically. Add an instance, provide credentials (or leave blank to use the default credential chain), and start it. Discovered assets appear in the asset tabs.
 
 ## Troubleshooting
 
@@ -201,6 +345,10 @@ Both plugins appear in the GUI plugin list automatically. Add an instance, provi
 **No invocations found (Bedrock)** — CloudTrail may not have events for the time range, or Bedrock hasn't been used in the target region. Try increasing the `days` parameter.
 
 **Empty endpoints (SageMaker)** — No endpoints exist in the configured region. Try a different region.
+
+**`UnknownServiceError: Unknown service: 'bedrock-agentcore'`** — Your boto3 version doesn't include the AgentCore service definition. Upgrade with `pip install --upgrade boto3 botocore`.
+
+**Empty runtimes (AgentCore)** — No agent runtimes deployed in the configured region. Verify you deployed your agent in the same region you're querying.
 
 ## Related Documentation
 
