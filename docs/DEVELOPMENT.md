@@ -1,17 +1,16 @@
-# OpenCITE GUI Development Guide
+# OpenCITE Development Guide
 
 ## Quick Start
 
 ```bash
-# Simple way - use the dev script
-./run_dev.sh
+# GUI (with browser UI)
+./run_dev.sh            # or: opencite gui --debug
+# → http://127.0.0.1:5000
 
-# Or manually
-source venv/bin/activate
-opencite gui --debug
+# Headless API (REST only, for Kubernetes / CI)
+opencite api            # or: python -m open_cite.api.app
+# → http://0.0.0.0:8080
 ```
-
-Open browser to: **http://127.0.0.1:5000**
 
 ## Development Mode Features
 
@@ -36,84 +35,46 @@ See detailed logs in terminal:
 ## Project Structure
 
 ```
-src/open_cite/gui/
-├── app.py              # Flask backend
-│   ├── REST API endpoints
-│   ├── Plugin management
-│   ├── State management
-│   └── Discovery orchestration
+src/open_cite/
+├── core.py                 # BaseDiscoveryPlugin base class
+├── client.py               # OpenCiteClient (plugin-agnostic orchestrator)
+├── otlp_converter.py       # MLflow/Genie → OTLP JSON converters
+├── identifier.py           # Tool identification / mapping
+├── schema.py               # OpenCITE JSON export schema
 │
-└── templates/
-    └── index.html      # Frontend UI
-        ├── HTML structure
-        ├── CSS styling
-        └── JavaScript logic
+├── gui/
+│   ├── app.py              # Flask + SocketIO backend (WebSocket push)
+│   └── templates/
+│       └── index.html      # Single-page frontend (HTML/CSS/JS)
+│
+├── api/
+│   ├── app.py              # Headless REST API (Flask, no GUI)
+│   ├── config.py           # Environment-based configuration
+│   ├── health.py           # /healthz and /readyz endpoints
+│   ├── shutdown.py         # Graceful shutdown handler
+│   └── persistence.py      # SQLite persistence manager
+│
+└── plugins/
+    ├── registry.py          # Auto-discovery and factory
+    ├── opentelemetry.py     # OTLP trace receiver
+    ├── databricks.py        # Databricks MLflow + Genie + Unity Catalog
+    ├── google_cloud.py      # Vertex AI + Compute Engine MCP
+    ├── zscaler.py           # ZIA DLP + NSS shadow MCP detection
+    └── aws/
+        ├── base.py          # Shared AWS auth mixin
+        ├── bedrock.py       # AWS Bedrock
+        └── sagemaker.py     # AWS SageMaker
 ```
 
 ## Common Development Tasks
 
 ### 1. Add a New Plugin
 
-Plugins are auto-discovered via `plugins/registry.py`. Create a single file in `src/open_cite/plugins/` and the GUI, API, and client pick it up automatically — no other files need editing.
+See **[docs/PLUGINS.md](PLUGINS.md)** for the full plugin authoring guide, including the minimal template, required interface, lifecycle methods, webhook trace forwarding, and OTLP conventions.
 
-**Step 1: Create `src/open_cite/plugins/your_plugin.py`**
+**Short version**: create a single `.py` file in `src/open_cite/plugins/` with a concrete `BaseDiscoveryPlugin` subclass. The registry auto-discovers it and the GUI/API expose it automatically.
 
-```python
-from open_cite.core import BaseDiscoveryPlugin
-
-class YourPlugin(BaseDiscoveryPlugin):
-    plugin_type = "your_plugin"
-
-    @classmethod
-    def plugin_metadata(cls):
-        return {
-            "name": "Your Plugin",
-            "description": "What your plugin discovers",
-            "required_fields": {
-                "api_key": {
-                    "label": "API Key",
-                    "default": "",
-                    "required": True,
-                    "type": "password"
-                }
-            },
-            "env_vars": ["YOUR_PLUGIN_API_KEY"],
-        }
-
-    @classmethod
-    def from_config(cls, config, instance_id=None, display_name=None, dependencies=None):
-        return cls(
-            api_key=config.get("api_key"),
-            instance_id=instance_id,
-            display_name=display_name,
-        )
-
-    def __init__(self, api_key=None, instance_id=None, display_name=None):
-        super().__init__(instance_id=instance_id, display_name=display_name)
-        self.api_key = api_key
-
-    @property
-    def supported_asset_types(self):
-        return {"your_asset"}
-
-    @property
-    def supports_multiple_instances(self):
-        return True
-
-    def verify_connection(self):
-        return {"success": True}
-
-    def list_assets(self, asset_type=None):
-        # Return discovered assets
-        return []
-
-    def get_identification_attributes(self):
-        return []
-```
-
-That's it. The registry auto-discovers the class, the GUI shows it as a configurable plugin, and the API serves its assets.
-
-### 3. Debug Issues
+### 2. Debug Issues
 
 **Backend debugging (Python):**
 ```python
@@ -144,21 +105,20 @@ debugger;  // Browser will pause here
 
 ## Testing During Development
 
-### Manual Testing
+### Manual Testing (GUI)
 
 1. **Start GUI in debug mode**
    ```bash
    opencite gui --debug
    ```
 
-2. **Configure test plugin** (e.g., OpenTelemetry)
-   - Check "OpenTelemetry" box
-   - Use defaults: host=localhost, port=4318
-   - Click "Start Discovery"
+2. **Create an OpenTelemetry plugin instance** via the GUI
+   - Select "OpenTelemetry" plugin type
+   - Use defaults: host=0.0.0.0, port=4318
+   - Start the instance
 
 3. **Send test trace**
    ```bash
-   # In another terminal
    curl -X POST http://localhost:4318/v1/traces \
      -H "Content-Type: application/json" \
      -d '{
@@ -176,7 +136,7 @@ debugger;  // Browser will pause here
              "name": "chat.completions",
              "attributes": [
                {"key": "gen_ai.request.model", "value": {"stringValue": "openai/gpt-4"}},
-               {"key": "gen_ai.system", "value": {"stringValue": "openrouter"}}
+               {"key": "gen_ai.system", "value": {"stringValue": "openai"}}
              ]
            }]
          }]
@@ -184,16 +144,53 @@ debugger;  // Browser will pause here
      }'
    ```
 
-4. **Verify in GUI**
-   - Should see "test-tool" appear in Tools tab
-   - Should see "openai/gpt-4" appear in Models tab
-   - Stats should update
+4. **Verify in GUI** -- "test-tool" should appear in the Tools tab and "openai/gpt-4" in Models. Updates arrive via WebSocket (no refresh needed).
+
+### Manual Testing (Headless API)
+
+```bash
+# Start API
+opencite api
+
+# Create an instance
+curl -X POST http://localhost:8080/api/v1/instances \
+  -H 'Content-Type: application/json' \
+  -d '{"plugin_type":"opentelemetry","auto_start":true}'
+
+# List instances
+curl http://localhost:8080/api/v1/instances
+
+# Get assets
+curl http://localhost:8080/api/v1/assets
+```
+
+### Testing Webhook Forwarding
+
+```bash
+# 1. Find your plugin instance ID
+curl http://localhost:5000/api/instances
+# → note the instance_id
+
+# 2. Subscribe a webhook (e.g. a local OTLP collector or a request bin)
+curl -X POST http://localhost:5000/api/instances/<instance_id>/webhooks \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"http://localhost:4318/v1/traces"}'
+
+# 3. List subscribed webhooks
+curl http://localhost:5000/api/instances/<instance_id>/webhooks
+
+# 4. Trigger discovery (start the plugin or send traces)
+# → OTLP payloads are POSTed to the webhook URL as traces are processed
+
+# 5. Unsubscribe
+curl -X DELETE http://localhost:5000/api/instances/<instance_id>/webhooks \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"http://localhost:4318/v1/traces"}'
+```
 
 ### Automated Testing
 
-Run integration tests while GUI is running:
 ```bash
-# In another terminal
 source venv/bin/activate
 pytest tests/integration/ -v
 ```
@@ -290,16 +287,52 @@ For development, start with just one plugin to reduce noise.
 
 ## Environment Variables
 
-Set these for development:
+### GUI development
 
 ```bash
 export FLASK_ENV=development
 export FLASK_DEBUG=1
+```
 
-# Plugin credentials (optional)
-export DATABRICKS_HOST="https://..."
+### Headless API configuration
+
+These control the API service when run via `opencite api` or gunicorn:
+
+```bash
+# Server
+export OPENCITE_HOST="0.0.0.0"           # default: 0.0.0.0
+export OPENCITE_PORT="8080"              # default: 8080
+export OPENCITE_LOG_LEVEL="DEBUG"        # default: INFO
+export OPENCITE_AUTO_START="true"        # auto-configure plugins on startup
+
+# OTLP receiver
+export OPENCITE_OTLP_HOST="0.0.0.0"     # default: 0.0.0.0
+export OPENCITE_OTLP_PORT="4318"        # default: 4318
+export OPENCITE_ENABLE_OTEL="true"       # default: true
+
+# Persistence
+export OPENCITE_PERSISTENCE_ENABLED="true"
+export OPENCITE_DB_PATH="./opencite.db"  # default: /data/opencite.db
+```
+
+### Plugin credentials (optional)
+
+```bash
+# Databricks
+export DATABRICKS_HOST="https://dbc-xxx.cloud.databricks.com"
 export DATABRICKS_TOKEN="dapi..."
+export DATABRICKS_WAREHOUSE_ID="..."
+export OPENCITE_ENABLE_DATABRICKS="true"
+
+# Google Cloud
 export GCP_PROJECT_ID="your-project"
+export GCP_LOCATION="us-central1"
+export OPENCITE_ENABLE_GOOGLE_CLOUD="true"
+
+# AWS (uses standard AWS credential chain)
+export AWS_ACCESS_KEY_ID="AKIA..."
+export AWS_SECRET_ACCESS_KEY="..."
+export AWS_REGION="us-east-1"
 ```
 
 ## IDE Setup
@@ -321,8 +354,16 @@ export GCP_PROJECT_ID="your-project"
             "type": "python",
             "request": "launch",
             "module": "open_cite.gui.app",
+            "env": { "FLASK_DEBUG": "1" }
+        },
+        {
+            "name": "OpenCITE API",
+            "type": "python",
+            "request": "launch",
+            "module": "open_cite.api.app",
             "env": {
-                "FLASK_DEBUG": "1"
+                "OPENCITE_LOG_LEVEL": "DEBUG",
+                "OPENCITE_ENABLE_OTEL": "true"
             }
         }
     ]
@@ -355,8 +396,17 @@ git commit -m "Add new feature to GUI"
 git push origin feature/gui-improvement
 ```
 
-## Resources
+## Related Documentation
+
+- [Plugin Authoring Guide](PLUGINS.md) -- creating a new plugin, webhook forwarding, OTLP conventions
+- [OpenTelemetry Plugin](plugins/OPENTELEMETRY_PLUGIN.md) -- OTLP receiver setup and trace format
+- [AWS Plugins](plugins/AWS_PLUGINS.md) -- Bedrock and SageMaker discovery
+- [Google Cloud Plugin](plugins/GOOGLE_CLOUD_PLUGIN.md) -- Vertex AI and Compute Engine discovery
+- [Schema Documentation](SCHEMA_DOCUMENTATION.md) -- JSON export format
+
+## External Resources
 
 - [Flask Documentation](https://flask.palletsprojects.com/)
-- [Flask Debug Mode](https://flask.palletsprojects.com/en/latest/debugging/)
+- [Flask-SocketIO](https://flask-socketio.readthedocs.io/)
+- [OpenTelemetry Semantic Conventions](https://opentelemetry.io/docs/specs/semconv/)
 - [Browser DevTools Guide](https://developer.chrome.com/docs/devtools/)

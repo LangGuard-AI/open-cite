@@ -1,0 +1,22 @@
+command:
+  - "bash"
+  - "-c"
+  - "pip install --no-cache-dir -e . && python databricks_app.py"
+resources:
+  - name: "sql-warehouse"
+    sql_warehouse: {}
+env:
+  - name: "OPENCITE_ENABLE_OTEL"
+    value: "true"
+  - name: "OPENCITE_ENABLE_DATABRICKS"
+    value: "true"
+  - name: "OPENCITE_PERSISTENCE_ENABLED"
+    value: "true"
+  - name: "DATABRICKS_WAREHOUSE_ID"
+    valueFrom: "<SQL Warehouse Resource Variable>"
+  - name: "OPENCITE_DATABRICKS_CATALOG"
+    value: "<catalog to store database; must have permissions>"
+  - name: "OPENCITE_DATABRICKS_SCHEMA"
+    value: "<schema to store database; must have permissions>"
+#  - name: "OPENCITE_AI_GATEWAY_USAGE_TABLE"
+#    value: "<table with read access>"

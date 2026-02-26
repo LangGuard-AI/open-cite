@@ -7,22 +7,15 @@ from .core import BaseDiscoveryPlugin
 from .plugins.registry import create_plugin_instance
 from .http_client import get_http_client, OpenCiteHttpClient
 
-from .schema import (
-    OpenCiteExporter,
-    ToolFormatter,
-    ModelFormatter,
-    DataAssetFormatter,
-    MCPServerFormatter,
-    MCPToolFormatter,
-    MCPResourceFormatter,
-    GoogleCloudModelFormatter,
-    GoogleCloudEndpointFormatter,
-    GoogleCloudDeploymentFormatter,
-    GoogleCloudGenerativeModelFormatter,
-    parse_model_id,
-)
 
 logger = logging.getLogger(__name__)
+
+# Asset types that are read from the DB (when persistence is available)
+# rather than from plugin in-memory structures.
+_PERSISTED_ASSET_TYPES = {
+    "tool", "model", "agent", "downstream_system",
+    "mcp_server", "mcp_tool", "mcp_resource",
+}
 
 
 def _deprecated(message: str):
@@ -44,6 +37,10 @@ class OpenCiteClient:
         self.plugins: Dict[str, BaseDiscoveryPlugin] = {}
         # Track which instances belong to which plugin type
         self._plugin_types: Dict[str, List[str]] = defaultdict(list)
+
+        # Optional persistence layer — when set, list methods merge
+        # persisted data with live plugin data so assets survive restarts.
+        self.persistence = None
 
         # Initialize central HTTP client
         self.http_client = get_http_client()
@@ -198,10 +195,12 @@ class OpenCiteClient:
 
     def list_assets(self, asset_type: str, **kwargs) -> List[Dict[str, Any]]:
         """
-        List assets of a specific type from all registered plugins.
+        List assets of a specific type.
 
-        This is the primary method for querying assets across all plugins.
-        It aggregates results from every plugin that supports the given asset type.
+        For persisted asset types (tool, model, agent, downstream_system,
+        mcp_server, mcp_tool, mcp_resource), reads directly from the database
+        when persistence is available.  For all other types, aggregates results
+        from registered plugins.
 
         Args:
             asset_type: Type of asset to list (e.g., 'tool', 'model', 'mcp_server')
@@ -220,16 +219,47 @@ class OpenCiteClient:
             # List with filters (passed to plugins)
             tools = client.list_assets("mcp_tool", server_id="my-server")
         """
+        # For persisted types, merge DB rows with live plugin data so that
+        # newly-discovered items appear immediately (from plugin memory)
+        # while previously-saved items survive restarts (from DB).
+        if self.persistence and asset_type in _PERSISTED_ASSET_TYPES:
+            merged: Dict[str, Dict[str, Any]] = {}
+
+            # 1. DB data (primary — survives restarts)
+            try:
+                for item in self._list_from_db(asset_type, **kwargs):
+                    key = item.get("name") or item.get("id") or item.get("uri", "")
+                    merged[key] = item
+            except Exception as e:
+                logger.warning(
+                    f"DB read failed for {asset_type}: {e}"
+                )
+
+            # 2. Live plugin data (fills gaps for items not yet saved)
+            for plugin in self.get_plugins_for_asset_type(asset_type):
+                try:
+                    for item in plugin.list_assets(asset_type, **kwargs):
+                        if "discovery_source" not in item:
+                            item["discovery_source"] = plugin.display_name
+                        key = item.get("name") or item.get("id") or item.get("uri", "")
+                        if key not in merged:
+                            merged[key] = item
+                except Exception as e:
+                    logger.warning(f"Failed to list {asset_type} from plugin {plugin.instance_id}: {e}")
+
+            return list(merged.values())
+
+        # Non-persisted types: aggregate from plugins only
         results = []
         plugins = self.get_plugins_for_asset_type(asset_type)
 
         for plugin in plugins:
             try:
                 assets = plugin.list_assets(asset_type, **kwargs)
-                # Ensure each asset has discovery_source set to the plugin instance_id
+                # Ensure each asset has discovery_source set to a readable name
                 for asset in assets:
                     if "discovery_source" not in asset:
-                        asset["discovery_source"] = plugin.instance_id
+                        asset["discovery_source"] = plugin.display_name
                 results.extend(assets)
             except Exception as e:
                 logger.warning(f"Failed to list {asset_type} from plugin {plugin.instance_id}: {e}")
@@ -315,7 +345,10 @@ class OpenCiteClient:
 
     def list_lineage(self, source_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        List all lineage relationships from OpenTelemetry plugin.
+        List all lineage relationships.
+
+        Reads from the database when persistence is available, otherwise
+        aggregates from plugins.
 
         Args:
             source_id: Optional asset ID to filter by
@@ -323,6 +356,12 @@ class OpenCiteClient:
         Returns:
             List of lineage relationships
         """
+        if self.persistence:
+            try:
+                return self.persistence.load_lineage(source_id=source_id)
+            except Exception as e:
+                logger.warning(f"DB read failed for lineage, falling back to plugins: {e}")
+
         results = []
         for plugin in self.plugins.values():
             if hasattr(plugin, 'list_lineage'):
@@ -332,6 +371,184 @@ class OpenCiteClient:
                 except Exception as e:
                     logger.warning(f"Failed to get lineage from {plugin.instance_id}: {e}")
         return results
+
+    # =========================================================================
+    # Private DB read methods (used when persistence is available)
+    # =========================================================================
+
+    def _list_from_db(self, asset_type: str, **kwargs) -> List[Dict[str, Any]]:
+        """Dispatch a DB read for a persisted asset type."""
+        dispatch = {
+            "tool": self._list_tools_from_db,
+            "model": self._list_models_from_db,
+            "agent": self._list_agents_from_db,
+            "downstream_system": self._list_downstream_from_db,
+            "mcp_server": self._list_mcp_servers_from_db,
+            "mcp_tool": self._list_mcp_tools_from_db,
+            "mcp_resource": self._list_mcp_resources_from_db,
+        }
+        handler = dispatch[asset_type]
+        return handler(**kwargs)
+
+    def _list_tools_from_db(self, **kwargs) -> List[Dict[str, Any]]:
+        """Read tools from the database."""
+        rows = self.persistence.load_tools()
+        tools = []
+        for name, data in rows.items():
+            metadata = data.get("metadata", {})
+            tool = {
+                "id": name,
+                "name": name,
+                "type": "llm_client",
+                "discovery_source": metadata.get("discovery_source", "opentelemetry"),
+                "models": list(data.get("models", set())),
+                "trace_count": data.get("trace_count", 0),
+                "metadata": metadata,
+            }
+            # Surface identification fields from metadata as top-level keys
+            if metadata.get("tool_source_name"):
+                tool["tool_source_name"] = metadata["tool_source_name"]
+            if metadata.get("tool_source_id"):
+                tool["tool_source_id"] = metadata["tool_source_id"]
+            # Surface any other metadata fields that the plugin would
+            # have exposed at the top level
+            for key in ("source", "service_name", "http_method",
+                        "http_url", "db_system", "db_statement"):
+                if key in metadata:
+                    tool[key] = metadata[key]
+            tools.append(tool)
+        return tools
+
+    def _list_models_from_db(self, **kwargs) -> List[Dict[str, Any]]:
+        """Read models from the database."""
+        rows = self.persistence.load_models()
+        models = []
+        for name, data in rows.items():
+            models.append({
+                "name": name,
+                "provider": data.get("provider", "unknown"),
+                "tools": list(data.get("tools", set())),
+                "usage_count": data.get("usage_count", 0),
+            })
+        return models
+
+    def _list_agents_from_db(self, **kwargs) -> List[Dict[str, Any]]:
+        """Read agents from the database."""
+        rows = self.persistence.load_agents()
+        agents = []
+        for agent_id, data in rows.items():
+            metadata = data.get("metadata", {})
+            agents.append({
+                "id": agent_id,
+                "name": data.get("name", agent_id),
+                "discovery_source": metadata.get("discovery_source", "opentelemetry"),
+                "tools_used": list(data.get("tools_used", [])),
+                "models_used": list(data.get("models_used", [])),
+                "first_seen": data.get("first_seen"),
+                "last_seen": data.get("last_seen"),
+                "agent_source_name": metadata.get("agent_source_name"),
+                "agent_source_id": metadata.get("agent_source_id"),
+                "metadata": metadata,
+            })
+        return agents
+
+    def _list_downstream_from_db(self, **kwargs) -> List[Dict[str, Any]]:
+        """Read downstream systems from the database."""
+        rows = self.persistence.load_downstream_systems()
+        systems = []
+        for sys_id, data in rows.items():
+            systems.append({
+                "id": sys_id,
+                "name": data.get("name", ""),
+                "type": data.get("type", "unknown"),
+                "endpoint": data.get("endpoint"),
+                "tools_connecting": list(data.get("tools_connecting", [])),
+                "first_seen": data.get("first_seen"),
+                "last_seen": data.get("last_seen"),
+                "metadata": data.get("metadata", {}),
+            })
+        return systems
+
+    def _list_mcp_servers_from_db(self, **kwargs) -> List[Dict[str, Any]]:
+        """Read MCP servers from the database."""
+        rows = self.persistence.load_mcp_servers()
+        servers = []
+        for server_id, data in rows.items():
+            server = {
+                "id": data.get("id", server_id),
+                "name": data.get("name", ""),
+                "discovery_source": "opentelemetry",
+                "transport": data.get("transport", "unknown"),
+                "metadata": data.get("metadata", {}),
+            }
+            if data.get("endpoint"):
+                server["endpoint"] = data["endpoint"]
+            if data.get("command"):
+                server["command"] = data["command"]
+            if data.get("args"):
+                server["args"] = data["args"]
+            if data.get("env"):
+                server["env"] = data["env"]
+            if data.get("source_file"):
+                server["source_file"] = data["source_file"]
+            if data.get("source_env_var"):
+                server["source_env_var"] = data["source_env_var"]
+            servers.append(server)
+        return servers
+
+    def _list_mcp_tools_from_db(self, **kwargs) -> List[Dict[str, Any]]:
+        """Read MCP tools from the database."""
+        server_id = kwargs.get("server_id")
+        rows = self.persistence.load_mcp_tools()
+        tools = []
+        for tool_id, data in rows.items():
+            if server_id and data.get("server_id") != server_id:
+                continue
+            usage = data.get("usage") or {}
+            tool = {
+                "id": data.get("id", tool_id),
+                "name": data.get("name", ""),
+                "server_id": data.get("server_id", ""),
+                "discovery_source": "opentelemetry",
+                "usage": usage,
+                "call_count": usage.get("call_count", 0),
+                "metadata": data.get("metadata", {}),
+            }
+            if data.get("description"):
+                tool["description"] = data["description"]
+            if data.get("schema"):
+                tool["schema"] = data["schema"]
+            tools.append(tool)
+        return tools
+
+    def _list_mcp_resources_from_db(self, **kwargs) -> List[Dict[str, Any]]:
+        """Read MCP resources from the database."""
+        server_id = kwargs.get("server_id")
+        rows = self.persistence.load_mcp_resources()
+        resources = []
+        for resource_id, data in rows.items():
+            if server_id and data.get("server_id") != server_id:
+                continue
+            usage = data.get("usage") or {}
+            resource = {
+                "id": data.get("id", resource_id),
+                "uri": data.get("uri", ""),
+                "server_id": data.get("server_id", ""),
+                "discovery_source": "opentelemetry",
+                "usage": usage,
+                "access_count": usage.get("access_count", 0),
+                "metadata": data.get("metadata", {}),
+            }
+            if data.get("name"):
+                resource["name"] = data["name"]
+            if data.get("type"):
+                resource["type"] = data["type"]
+            if data.get("mime_type"):
+                resource["mime_type"] = data["mime_type"]
+            if data.get("description"):
+                resource["description"] = data["description"]
+            resources.append(resource)
+        return resources
 
     def list_endpoints(self) -> List[Dict[str, Any]]:
         """
@@ -547,50 +764,6 @@ class OpenCiteClient:
         _deprecated("list_otel_models() is deprecated. Use list_models() instead.")
         return self._opentelemetry.list_assets("model")
 
-    def list_gcp_models(self) -> List[Dict[str, Any]]:
-        """
-        List Vertex AI models.
-
-        Deprecated: Use list_models() to aggregate from all plugins.
-        """
-        _deprecated("list_gcp_models() is deprecated. Use list_models() instead.")
-        return self._google_cloud.list_assets("model")
-
-    def list_gcp_endpoints(self) -> List[Dict[str, Any]]:
-        """
-        List Vertex AI endpoints.
-
-        Deprecated: Use list_endpoints() to aggregate from all plugins.
-        """
-        _deprecated("list_gcp_endpoints() is deprecated. Use list_endpoints() instead.")
-        return self._google_cloud.list_assets("endpoint")
-
-    def list_gcp_deployments(self) -> List[Dict[str, Any]]:
-        """
-        List model deployments.
-
-        Deprecated: Use list_deployments() to aggregate from all plugins.
-        """
-        _deprecated("list_gcp_deployments() is deprecated. Use list_deployments() instead.")
-        return self._google_cloud.list_assets("deployment")
-
-    def list_gcp_generative_models(self) -> List[Dict[str, Any]]:
-        """
-        List available generative AI models.
-
-        Deprecated: Use list_generative_models() to aggregate from all plugins.
-        """
-        _deprecated("list_gcp_generative_models() is deprecated. Use list_generative_models() instead.")
-        return self._google_cloud.list_assets("generative_model")
-
-    def list_gcp_mcp_servers(self, **kwargs) -> List[Dict[str, Any]]:
-        """
-        List MCP servers running on GCP Compute Engine instances.
-
-        Deprecated: Use list_mcp_servers() to aggregate from all plugins.
-        """
-        _deprecated("list_gcp_mcp_servers() is deprecated. Use list_mcp_servers() instead.")
-        return self._google_cloud.list_assets("mcp_server", **kwargs)
 
     # Convenience methods for the AWS Bedrock plugin
     @property

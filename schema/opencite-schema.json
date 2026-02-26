@@ -133,8 +133,8 @@
         },
         "discovery_source": {
           "type": "string",
-          "enum": ["opentelemetry", "databricks", "manual"],
-          "description": "How this tool was discovered"
+          "enum": ["opentelemetry", "databricks", "databricks/mlflow", "databricks/genie", "databricks/ai-gateway", "manual"],
+          "description": "How this tool was discovered (plugin/subsystem)"
         },
         "models_used": {
           "type": "array",
@@ -281,8 +281,8 @@
         },
         "discovery_source": {
           "type": "string",
-          "enum": ["opentelemetry", "databricks", "manual"],
-          "description": "How this model was discovered"
+          "enum": ["opentelemetry", "databricks", "databricks/mlflow", "databricks/genie", "databricks/ai-gateway", "manual"],
+          "description": "How this model was discovered (plugin/subsystem)"
         },
         "usage": {
           "type": "object",
