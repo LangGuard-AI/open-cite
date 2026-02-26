@@ -25,6 +25,11 @@ class OpenCiteConfig:
     otlp_host: str = field(default_factory=lambda: os.getenv("OPENCITE_OTLP_HOST", "0.0.0.0"))
     otlp_port: int = field(default_factory=lambda: int(os.getenv("OPENCITE_OTLP_PORT", "4318")))
 
+    # Embedded OTLP receiver (traces served on the main web port via HTTP/2 + gRPC)
+    otlp_embedded: bool = field(
+        default_factory=lambda: os.getenv("OPENCITE_OTLP_EMBEDDED", "true").lower() == "true"
+    )
+
     # Plugin toggles
     enable_otel: bool = field(default_factory=lambda: os.getenv("OPENCITE_ENABLE_OTEL", "true").lower() == "true")
     enable_mcp: bool = field(default_factory=lambda: os.getenv("OPENCITE_ENABLE_MCP", "true").lower() == "true")
@@ -47,7 +52,14 @@ class OpenCiteConfig:
     # Logging
     log_level: str = field(default_factory=lambda: os.getenv("OPENCITE_LOG_LEVEL", "INFO"))
 
-    # Persistence
+    # Database URL (SQLAlchemy — supports SQLite and PostgreSQL)
+    database_url: Optional[str] = field(
+        default_factory=lambda: os.getenv("OPENCITE_DATABASE_URL")
+    )
+
+    # Master persistence toggle — when true, assets, plugins, and mappings
+    # are all persisted by default.  Each can be individually overridden to
+    # false via its own env var.
     persistence_enabled: bool = field(
         default_factory=lambda: os.getenv("OPENCITE_PERSISTENCE_ENABLED", "false").lower() == "true"
     )
@@ -55,6 +67,23 @@ class OpenCiteConfig:
         default_factory=lambda: os.getenv("OPENCITE_DB_PATH", "/data/opencite.db")
     )
 
+    # Plugin config persistence (defaults to OPENCITE_PERSISTENCE_ENABLED)
+    persist_plugins: bool = field(default=None)
+
+    # Identity mapping persistence (defaults to OPENCITE_PERSISTENCE_ENABLED)
+    persist_mappings: bool = field(default=None)
+    mapping_store_path: Optional[str] = field(
+        default_factory=lambda: os.getenv("OPENCITE_MAPPING_STORE_PATH")
+    )
+
+    def __post_init__(self):
+        """Resolve defaults that depend on other fields or env detection."""
+        if self.persist_plugins is None:
+            env = os.getenv("OPENCITE_PERSIST_PLUGINS")
+            self.persist_plugins = env.lower() == "true" if env else self.persistence_enabled
+        if self.persist_mappings is None:
+            env = os.getenv("OPENCITE_PERSIST_MAPPINGS")
+            self.persist_mappings = env.lower() == "true" if env else self.persistence_enabled
     @classmethod
     def from_env(cls) -> "OpenCiteConfig":
         """Create configuration from environment variables."""

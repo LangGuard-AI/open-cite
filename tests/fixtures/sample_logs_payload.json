@@ -1,0 +1,302 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "claude-code"
+            }
+          },
+          {
+            "key": "session.id",
+            "value": {
+              "stringValue": "claude-logs-session-001"
+            }
+          },
+          {
+            "key": "user.id",
+            "value": {
+              "stringValue": "developer-123"
+            }
+          }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": {
+            "name": "@anthropic/claude-code",
+            "version": "1.0.0"
+          },
+          "logRecords": [
+            {
+              "timeUnixNano": "1700000000000000000",
+              "severityNumber": 9,
+              "spanId": "1111111111111111",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "user_prompt"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "claude-logs-session-001"
+                  }
+                },
+                {
+                  "key": "prompt",
+                  "value": {
+                    "stringValue": "Fix failing tests"
+                  }
+                }
+              ],
+              "body": {
+                "kvlistValue": {
+                  "values": [
+                    {
+                      "key": "prompt",
+                      "value": {
+                        "stringValue": "Fix failing tests"
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "timeUnixNano": "1700000000500000000",
+              "severityNumber": 9,
+              "spanId": "2222222222222222",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "api_request"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "claude-3.5-sonnet"
+                  }
+                },
+                {
+                  "key": "provider",
+                  "value": {
+                    "stringValue": "anthropic"
+                  }
+                },
+                {
+                  "key": "input_tokens",
+                  "value": {
+                    "intValue": 120
+                  }
+                },
+                {
+                  "key": "output_tokens",
+                  "value": {
+                    "intValue": 0
+                  }
+                },
+                {
+                  "key": "cost_usd",
+                  "value": {
+                    "doubleValue": 0.012
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1700000001000000000",
+              "severityNumber": 9,
+              "spanId": "3333333333333333",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "claude_code.api_response"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "claude-3.5-sonnet"
+                  }
+                },
+                {
+                  "key": "output_tokens",
+                  "value": {
+                    "intValue": 80
+                  }
+                },
+                {
+                  "key": "cost_usd",
+                  "value": {
+                    "doubleValue": 0.018
+                  }
+                }
+              ],
+              "body": {
+                "kvlistValue": {
+                  "values": [
+                    {
+                      "key": "result",
+                      "value": {
+                        "stringValue": "All tests passed after fix"
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "timeUnixNano": "1700000001200000000",
+              "severityNumber": 9,
+              "spanId": "4444444444444444",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "tool_use"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "Bash"
+                  }
+                },
+                {
+                  "key": "tool_parameters",
+                  "value": {
+                    "stringValue": "{\"bash_command\":\"npm test\",\"full_command\":\"npm test --watch=false\"}"
+                  }
+                }
+              ],
+              "body": {
+                "kvlistValue": {
+                  "values": [
+                    {
+                      "key": "bash_command",
+                      "value": {
+                        "stringValue": "npm test"
+                      }
+                    },
+                    {
+                      "key": "full_command",
+                      "value": {
+                        "stringValue": "npm test --watch=false"
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "timeUnixNano": "1700000001300000000",
+              "severityNumber": 9,
+              "spanId": "5555555555555555",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "tool_decision"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "Bash"
+                  }
+                },
+                {
+                  "key": "decision",
+                  "value": {
+                    "stringValue": "approve"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1700000001500000000",
+              "severityNumber": 17,
+              "spanId": "6666666666666666",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "tool_result"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "Bash"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "retry_attempt",
+                  "value": {
+                    "intValue": 2
+                  }
+                },
+                {
+                  "key": "input_tokens",
+                  "value": {
+                    "intValue": 5
+                  }
+                },
+                {
+                  "key": "output_tokens",
+                  "value": {
+                    "intValue": 2
+                  }
+                },
+                {
+                  "key": "cost_usd",
+                  "value": {
+                    "doubleValue": 0.001
+                  }
+                }
+              ],
+              "body": {
+                "kvlistValue": {
+                  "values": [
+                    {
+                      "key": "result",
+                      "value": {
+                        "stringValue": "2 tests failed"
+                      }
+                    },
+                    {
+                      "key": "error",
+                      "value": {
+                        "stringValue": "exit status 1"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

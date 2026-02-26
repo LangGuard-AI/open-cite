@@ -91,6 +91,16 @@ class AWSSageMakerPlugin(AWSClientMixin, BaseDiscoveryPlugin):
     def get_identification_attributes(self) -> List[str]:
         return ["aws.sagemaker.endpoint_name", "aws.sagemaker.region", "aws.account_id"]
 
+    def export_assets(self) -> Dict[str, Any]:
+        """Export AWS SageMaker assets."""
+        return {
+            "aws_sagemaker_endpoints": self.list_assets("endpoint"),
+            "aws_sagemaker_models": self.list_assets("model"),
+            "aws_sagemaker_model_packages": self.list_assets("model_package"),
+            "aws_sagemaker_training_jobs": self.list_assets("training_job", days=30),
+            "aws_sagemaker_usage_summary": self.get_usage_summary(days=7),
+        }
+
     def get_config(self) -> Dict[str, Any]:
         """Return plugin configuration (sensitive values masked)."""
         return {
@@ -106,12 +116,11 @@ class AWSSageMakerPlugin(AWSClientMixin, BaseDiscoveryPlugin):
             "description": "Discovers endpoints, models, model packages, and training jobs in AWS SageMaker",
             "required_fields": {
                 "region": {"label": "AWS Region", "default": "us-east-1", "required": False},
-                "profile": {"label": "AWS Profile", "default": "", "required": False},
                 "access_key_id": {"label": "Access Key ID", "default": "", "required": False},
                 "secret_access_key": {"label": "Secret Access Key", "default": "", "required": False, "type": "password"},
+                "profile": {"label": "AWS Profile (optional)", "default": "", "required": False},
                 "role_arn": {"label": "Role ARN (optional)", "default": "", "required": False},
             },
-            "env_vars": ["AWS_REGION", "AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
         }
 
     @classmethod

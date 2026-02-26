@@ -3,11 +3,39 @@ OpenCITE Core - Base classes and interfaces.
 """
 
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from typing import List, Dict, Any, Optional, Set
+from concurrent.futures import ThreadPoolExecutor
 import logging
+import time
 import warnings
 
+import requests
+
 logger = logging.getLogger(__name__)
+
+
+class LoggingDefaultDict(defaultdict):
+    """A defaultdict that logs at INFO level when a new key is first created.
+
+    Used for ``discovered_agents``, ``discovered_tools``, etc. so that every
+    newly-discovered asset is visible in the logs without requiring changes at
+    every call-site in every plugin.
+
+    Args:
+        default_factory: Same as ``defaultdict``.
+        asset_type: Human-readable label (e.g. ``"agent"``).
+        plugin_id: The owning plugin's ``instance_id`` for log context.
+    """
+
+    def __init__(self, default_factory=None, *, asset_type: str = "asset", plugin_id: str = ""):
+        super().__init__(default_factory)
+        self._asset_type = asset_type
+        self._plugin_id = plugin_id
+
+    def __missing__(self, key):
+        logger.info("Discovered new %s: %s (plugin=%s)", self._asset_type, key, self._plugin_id)
+        return super().__missing__(key)
 
 
 class BaseDiscoveryPlugin(ABC):
@@ -48,6 +76,8 @@ class BaseDiscoveryPlugin(ABC):
         self._display_name = display_name or self.plugin_type.replace('_', ' ').title()
         self._status = "stopped"  # running, stopped, error
         self._on_data_changed = None
+        self._webhook_urls: Set[str] = set()
+        self._webhook_executor: Optional[ThreadPoolExecutor] = None
 
     @classmethod
     def plugin_metadata(cls) -> Dict[str, Any]:
@@ -113,6 +143,9 @@ class BaseDiscoveryPlugin(ABC):
         Default implementation just sets status to 'stopped'.
         """
         self._status = "stopped"
+        if self._webhook_executor:
+            self._webhook_executor.shutdown(wait=False)
+            self._webhook_executor = None
         logger.info(f"Stopped plugin {self.instance_id}")
 
     def notify_data_changed(self):
@@ -255,6 +288,20 @@ class BaseDiscoveryPlugin(ABC):
         """
         pass
 
+    def export_assets(self) -> Dict[str, Any]:
+        """
+        Export discovered assets for the OpenCITE JSON export.
+
+        Returns a dict whose keys are export categories (e.g. ``"tools"``,
+        ``"models"``, ``"data_assets"``) and values are lists of
+        schema-formatted dicts.  ``export_to_json`` merges these across all
+        active plugins.
+
+        The default implementation returns an empty dict.  Override in
+        subclasses that contribute to the export.
+        """
+        return {}
+
     def get_config(self) -> Dict[str, Any]:
         """
         Get the current configuration of this plugin instance.
@@ -282,4 +329,123 @@ class BaseDiscoveryPlugin(ABC):
             "supports_multiple_instances": self.supports_multiple_instances,
             "supported_asset_types": list(self.supported_asset_types),
             "config": self.get_config(),
+            "webhooks": self.list_webhooks(),
         }
+
+    # =========================================================================
+    # Webhook Trace Forwarding
+    # =========================================================================
+
+    def subscribe_webhook(self, url: str) -> bool:
+        """
+        Subscribe a webhook URL to receive OTLP trace payloads.
+
+        Args:
+            url: HTTP(S) URL to POST OTLP JSON to
+
+        Returns:
+            True if newly added, False if already subscribed
+        """
+        if url in self._webhook_urls:
+            return False
+        self._webhook_urls.add(url)
+        if self._webhook_executor is None:
+            self._webhook_executor = ThreadPoolExecutor(max_workers=2)
+        logger.info(f"Webhook subscribed: {url} (plugin={self.instance_id})")
+        return True
+
+    def unsubscribe_webhook(self, url: str) -> bool:
+        """
+        Unsubscribe a webhook URL.
+
+        Args:
+            url: URL to remove
+
+        Returns:
+            True if found and removed, False if not found
+        """
+        if url not in self._webhook_urls:
+            return False
+        self._webhook_urls.discard(url)
+        logger.info(f"Webhook unsubscribed: {url} (plugin={self.instance_id})")
+        return True
+
+    def list_webhooks(self) -> List[str]:
+        """Return list of subscribed webhook URLs."""
+        return list(self._webhook_urls)
+
+    def _deliver_to_webhooks(self, otlp_payload: dict, inbound_headers: Optional[Dict[str, str]] = None):
+        """
+        Deliver an OTLP payload to all subscribed webhooks (fire-and-forget).
+
+        Each delivery is submitted to a thread pool so it doesn't block
+        the discovery loop.
+
+        Args:
+            otlp_payload: OTLP JSON payload to forward
+            inbound_headers: HTTP headers from the original inbound request.
+                             These are forwarded to the webhook with the Host
+                             header mapped to OTEL-HOST.
+        """
+        if not self._webhook_urls:
+            return
+        span_count = sum(
+            len(ss.get("spans", []))
+            for rs in otlp_payload.get("resourceSpans", [])
+            for ss in rs.get("scopeSpans", [])
+        )
+        logger.debug(
+            "Delivering OTLP payload to %d webhook(s): %d resourceSpans, %d spans (plugin=%s)",
+            len(self._webhook_urls),
+            len(otlp_payload.get("resourceSpans", [])),
+            span_count,
+            self.instance_id,
+        )
+        if self._webhook_executor is None:
+            self._webhook_executor = ThreadPoolExecutor(max_workers=2)
+        for url in list(self._webhook_urls):
+            self._webhook_executor.submit(self._send_webhook, url, otlp_payload, inbound_headers)
+
+    def _send_webhook(self, url: str, otlp_payload: dict, inbound_headers: Optional[Dict[str, str]] = None):
+        """POST an OTLP JSON payload to a webhook URL with retries."""
+        # Build outbound headers: start with forwarded inbound headers,
+        # then ensure Content-Type is set for JSON
+        headers = dict(inbound_headers) if inbound_headers else {}
+        headers["Content-Type"] = "application/json"
+
+        # Mask token in debug output
+        masked_url = url.split("?")[0] + ("?token=***" if "token=" in url else "")
+        backoffs = [0.5, 1.0]
+        for attempt in range(3):
+            try:
+                resp = requests.post(
+                    url,
+                    json=otlp_payload,
+                    headers=headers,
+                    timeout=10,
+                )
+                if resp.status_code < 400:
+                    logger.debug(
+                        "Webhook delivered successfully: %s status=%d (plugin=%s)",
+                        masked_url,
+                        resp.status_code,
+                        self.instance_id,
+                    )
+                    return
+                logger.warning(
+                    "Webhook %s returned %d (attempt %d/3, plugin=%s)",
+                    masked_url,
+                    resp.status_code,
+                    attempt + 1,
+                    self.instance_id,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Webhook %s failed (attempt %d/3, plugin=%s): %s",
+                    masked_url,
+                    attempt + 1,
+                    self.instance_id,
+                    e,
+                )
+            if attempt < len(backoffs):
+                time.sleep(backoffs[attempt])

@@ -31,7 +31,6 @@ class ZscalerPlugin(BaseDiscoveryPlugin):
                 "cloud_name": {"label": "Cloud Name", "default": "zscaler.net", "required": False},
                 "nss_port": {"label": "NSS Port (optional)", "default": "", "required": False},
             },
-            "env_vars": ["ZSCALER_API_KEY", "ZSCALER_USERNAME", "ZSCALER_PASSWORD", "ZSCALER_CLOUD_NAME", "ZSCALER_NSS_PORT"],
         }
 
     @classmethod
@@ -73,10 +72,10 @@ class ZscalerPlugin(BaseDiscoveryPlugin):
         display_name: Optional[str] = None,
     ):
         super().__init__(instance_id=instance_id, display_name=display_name)
-        self.api_key = api_key or os.getenv("ZSCALER_API_KEY")
-        self.username = username or os.getenv("ZSCALER_USERNAME")
-        self.password = password or os.getenv("ZSCALER_PASSWORD")
-        self.cloud_name = cloud_name or os.getenv("ZSCALER_CLOUD_NAME", "zscaler.net")
+        self.api_key = api_key
+        self.username = username
+        self.password = password
+        self.cloud_name = cloud_name or "zscaler.net"
         
         self.base_url = f"https://zsapi.{self.cloud_name}/api/v1"
         self.session_token = None
