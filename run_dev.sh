@@ -1,7 +1,7 @@
 #!/usr/bin/bash
-# Development startup script for OpenCITE GUI
+# Development startup script for Open-CITE GUI
 
-echo "🚀 Starting OpenCITE GUI in Development Mode"
+echo "🚀 Starting Open-CITE GUI in Development Mode"
 echo ""
 
 # Activate virtual environment

@@ -1,5 +1,5 @@
 """
-OpenCITE SQLAlchemy Persistence Layer.
+Open-CITE SQLAlchemy Persistence Layer.
 
 Provides durable storage for discovered assets (tools, models, agents,
 downstream systems, lineage, MCP entities, and discovery status).
@@ -54,7 +54,7 @@ def _retry_on_concurrent_write(func):
 
 class PersistenceManager:
     """
-    SQLAlchemy-based persistence for OpenCITE discovered assets.
+    SQLAlchemy-based persistence for Open-CITE discovered assets.
 
     Thread-safe storage for tools, models, agents, downstream systems,
     lineage, MCP entities, and discovery status.

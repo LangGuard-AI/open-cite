@@ -608,7 +608,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             catalogs.append({
                 "name": catalog.name,
                 "id": catalog.name,  # Databricks uses name as unique identifier
-                "type": "catalog",   # Add type for OpenCITE schema compliance
+                "type": "catalog",   # Add type for Open-CITE schema compliance
                 "owner": catalog.owner,
                 "comment": catalog.comment
             })
@@ -621,7 +621,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         for schema in self.workspace_client.schemas.list(catalog_name=catalog_name):
             schemas.append({
                 "name": schema.name,
-                "catalog": schema.catalog_name,  # Normalize to 'catalog' for OpenCITE schema
+                "catalog": schema.catalog_name,  # Normalize to 'catalog' for Open-CITE schema
                 "owner": schema.owner,
                 "comment": schema.comment
             })
@@ -634,8 +634,8 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         for table in self.workspace_client.tables.list(catalog_name=catalog_name, schema_name=schema_name):
             tables.append({
                 "name": table.name,
-                "catalog": table.catalog_name,  # Normalize to 'catalog' for OpenCITE schema
-                "schema": table.schema_name,    # Normalize to 'schema' for OpenCITE schema
+                "catalog": table.catalog_name,  # Normalize to 'catalog' for Open-CITE schema
+                "schema": table.schema_name,    # Normalize to 'schema' for Open-CITE schema
                 "table_type": table.table_type.value if table.table_type else None,
                 "owner": table.owner,
                 "comment": table.comment
@@ -649,8 +649,8 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         for volume in self.workspace_client.volumes.list(catalog_name=catalog_name, schema_name=schema_name):
             volumes.append({
                 "name": volume.name,
-                "catalog": volume.catalog_name,  # Normalize to 'catalog' for OpenCITE schema
-                "schema": volume.schema_name,    # Normalize to 'schema' for OpenCITE schema
+                "catalog": volume.catalog_name,  # Normalize to 'catalog' for Open-CITE schema
+                "schema": volume.schema_name,    # Normalize to 'schema' for Open-CITE schema
                 "volume_type": volume.volume_type.value if volume.volume_type else None,
                 "owner": volume.owner,
                 "comment": volume.comment
@@ -664,8 +664,8 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         for model in self.workspace_client.registered_models.list(catalog_name=catalog_name, schema_name=schema_name):
             models.append({
                 "name": model.name,
-                "catalog": model.catalog_name,  # Normalize to 'catalog' for OpenCITE schema
-                "schema": model.schema_name,    # Normalize to 'schema' for OpenCITE schema
+                "catalog": model.catalog_name,  # Normalize to 'catalog' for Open-CITE schema
+                "schema": model.schema_name,    # Normalize to 'schema' for Open-CITE schema
                 "owner": model.owner,
                 "comment": model.comment
             })
@@ -678,8 +678,8 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         for func in self.workspace_client.functions.list(catalog_name=catalog_name, schema_name=schema_name):
             functions.append({
                 "name": func.name,
-                "catalog": func.catalog_name,  # Normalize to 'catalog' for OpenCITE schema
-                "schema": func.schema_name,    # Normalize to 'schema' for OpenCITE schema
+                "catalog": func.catalog_name,  # Normalize to 'catalog' for Open-CITE schema
+                "schema": func.schema_name,    # Normalize to 'schema' for Open-CITE schema
                 "owner": func.owner,
                 "comment": func.comment,
                 "routine_definition": func.routine_definition

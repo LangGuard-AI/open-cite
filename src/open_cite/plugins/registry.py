@@ -1,5 +1,5 @@
 """
-OpenCITE Plugin Registry - Dynamic plugin discovery and factory.
+Open-CITE Plugin Registry - Dynamic plugin discovery and factory.
 
 Discovers all concrete BaseDiscoveryPlugin subclasses from the plugins package
 and provides factory functions for creating instances.

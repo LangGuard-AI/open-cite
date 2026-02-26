@@ -1,5 +1,5 @@
 """
-AWS SageMaker discovery plugin for OpenCITE.
+AWS SageMaker discovery plugin for Open-CITE.
 
 This plugin discovers ML assets in AWS SageMaker:
 - Endpoints (deployed models)

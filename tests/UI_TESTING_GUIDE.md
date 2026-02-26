@@ -1,6 +1,6 @@
-# OpenCITE UI Testing Guide
+# Open-CITE UI Testing Guide
 
-This guide will walk you through testing the OpenCITE web interface and seeing models, tools, and assets appear in real-time.
+This guide will walk you through testing the Open-CITE web interface and seeing models, tools, and assets appear in real-time.
 
 ## Step 1: Access the Web Interface
 
@@ -87,7 +87,7 @@ If you're using OpenRouter, you can enable automatic trace broadcasting:
 1. Go to https://openrouter.ai/settings/broadcast
 2. Add "OTel Collector" as a destination
 3. Set the endpoint to: `http://localhost:4318/v1/traces` (or your network IP)
-4. All your OpenRouter API calls will automatically appear in OpenCITE!
+4. All your OpenRouter API calls will automatically appear in Open-CITE!
 
 ## Step 4: View Discovered Assets
 
@@ -123,7 +123,7 @@ After sending traces, the UI will automatically refresh every 3 seconds. You sho
 2. **Click "Export to JSON"** button
 3. **Download** the JSON file with all discovered assets
 
-The export follows the OpenCITE schema and includes:
+The export follows the Open-CITE schema and includes:
 - All tools and models
 - Usage statistics
 - Timestamps

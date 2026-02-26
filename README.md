@@ -1,23 +1,28 @@
-# OpenCITE
+# Open-CITE
 
-OpenCITE (**C**ataloging **I**ntelligent **T**ools in the **E**nterprise), pronounced like "Open-Sight", is a Python library, service, and application designed to facilitate the discovery and management of AI/ML Assets (including tools, models, and infrastructure) across multiple cloud platforms and protocols.
+Open-CITE (**C**ataloging **I**ntelligent **T**ools in the **E**nterprise), pronounced like "Open-Sight", is a Python library, service, and application designed to facilitate the discovery and management of AI/ML Assets (including tools, models, and infrastructure) across multiple cloud platforms and protocols.
 
 ## Overview
 
-OpenCITE provides a unified interface for discovering and cataloging AI/ML resources across different platforms. Whether you're managing models in Databricks, tracking AI agent usage via OpenTelemetry, discovering MCP servers, or working with Google Cloud's Vertex AI, OpenCITE brings everything together under one roof.
+Open-CITE provides a unified interface for discovering and cataloging AI/ML resources across different platforms. Whether you're managing models in Databricks, tracking AI agent usage via OpenTelemetry, discovering MCP servers, or working with Google Cloud's Vertex AI, Open-CITE brings everything together under one roof.
 
 ## Key Capabilities
 
-- **Multi-Platform Discovery**: Automatic discovery of AI/ML resources across Databricks, Google Cloud, and custom infrastructure
+- **Multi-Platform Discovery**: Automatic discovery of AI/ML resources across Databricks, AWS, Google Cloud, and more
 - **Protocol Support**: Native support for OpenTelemetry, MCP (Model Context Protocol), and major cloud APIs
 - **Trace Analysis**: Collect and analyze traces from AI agents, tools, and model invocations
 - **Model Cataloging**: Track models, endpoints, deployments, and usage patterns
-- **Infrastructure Discovery**: Find MCP servers, compute instances, and AI services via labels and port scanning
+- **Infrastructure Discovery**: Find MCP servers, compute instances, and AI services
 - **Unified Schema**: Export discoveries in a standardized JSON format for downstream processing
+- **Runs as a library or service**: Open-CITE can be run with or without the GUI, in either a docker container or kubernetes to provide a headless AI asset discovery service. Open-CITE can also be leveraged as a library in your own python application.
+
+## Powered by LangGuard
+
+Open-CITE is provided to the community by the team at [LangGuard.AI](https://langguard.ai?utm=Open-CITE), home of the AI Control Plane for enterprise AI governance and monitoring. LangGuard leverages Open-CITE for internal AI Asset discovery. 
 
 ## Features by Plugin
 
-### Databricks Plugin (Default)
+### Databricks Plugin
 - Unity Catalog integration for catalogs, schemas, tables, and volumes
 - MLflow trace search and retrieval for observability
 - Data lineage and metadata management
@@ -37,7 +42,7 @@ OpenCITE provides a unified interface for discovering and cataloging AI/ML resou
 - Works with any LLM provider (OpenRouter, OpenAI, Anthropic, etc.)
 - **OpenRouter Broadcast support**: Zero-code integration via OpenRouter's built-in trace broadcasting
 - Real-time analytics on tool and model usage
-- Requires: OTLP endpoint configuration
+- Requires: OTLP endpo/int configuration
 
 ### MCP Plugin (Model Context Protocol)
 - Trace-based MCP server discovery
@@ -48,7 +53,7 @@ OpenCITE provides a unified interface for discovering and cataloging AI/ML resou
 
 ## Architecture
 
-OpenCITE uses a plugin-based architecture that allows you to:
+Open-CITE uses a plugin-based architecture that allows you to:
 - Enable only the discovery sources you need
 - Add custom plugins for proprietary systems
 - Combine multiple discovery methods for comprehensive coverage
@@ -69,7 +74,7 @@ pip install -e .
 
 ### Web GUI
 
-OpenCITE includes a web-based GUI for easy discovery and visualization:
+Open-CITE includes a web-based GUI for easy discovery and visualization:
 
 ```bash
 # Start the GUI server
@@ -89,7 +94,7 @@ The GUI automatically stops any running discovery when you refresh the page, ens
 
 ### Python API
 
-#### Databricks Plugin (Default)
+#### Databricks Plugin
 
 ```python
 from open_cite import OpenCiteClient
@@ -211,7 +216,7 @@ client = OpenCiteClient(enable_otel=True)
 
 # ... collect some traces ...
 
-# Export to JSON format (OpenCITE schema)
+# Export to JSON format (Open-CITE schema)
 data = client.export_to_json()
 
 # Or save directly to file

@@ -1,5 +1,5 @@
 """
-Base AWS plugin functionality for OpenCITE.
+Base AWS plugin functionality for Open-CITE.
 
 Provides shared authentication and client management for AWS plugins.
 """

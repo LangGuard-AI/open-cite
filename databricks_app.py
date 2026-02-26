@@ -1,4 +1,4 @@
-"""Databricks App entry point for OpenCITE."""
+"""Databricks App entry point for Open-CITE."""
 import os
 from open_cite.gui.app import run_gui
 

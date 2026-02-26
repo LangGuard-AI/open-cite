@@ -1,6 +1,6 @@
 """
-OpenCITE Test Suite
+Open-CITE Test Suite
 
-This package contains tests for the OpenCITE application.
+This package contains tests for the Open-CITE application.
 """
 

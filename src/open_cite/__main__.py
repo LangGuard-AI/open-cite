@@ -1,5 +1,5 @@
 """
-OpenCITE CLI - Command-line interface for OpenCITE.
+Open-CITE CLI - Command-line interface for Open-CITE.
 """
 
 import sys
@@ -8,7 +8,7 @@ import argparse
 
 def main():
     parser = argparse.ArgumentParser(
-        description="OpenCITE - Multi-platform AI Discovery & Cataloging Tool"
+        description="Open-CITE - Multi-platform AI Discovery & Cataloging Tool"
     )
 
     subparsers = parser.add_subparsers(dest='command', help='Available commands')

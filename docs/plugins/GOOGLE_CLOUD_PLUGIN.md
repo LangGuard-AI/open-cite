@@ -1,4 +1,4 @@
-# Google Cloud Plugin for OpenCITE
+# Google Cloud Plugin for Open-CITE
 
 ## Overview
 

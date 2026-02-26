@@ -1,5 +1,5 @@
 """
-OTLP Logs-to-Traces adapter for OpenCITE.
+OTLP Logs-to-Traces adapter for Open-CITE.
 
 Converts OTLP log records (resourceLogs) into synthetic OTLP trace spans
 (resourceSpans) so that the existing entity discovery engine can process

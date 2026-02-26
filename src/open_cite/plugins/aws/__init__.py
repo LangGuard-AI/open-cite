@@ -1,5 +1,5 @@
 """
-AWS discovery plugins for OpenCITE.
+AWS discovery plugins for Open-CITE.
 
 This package provides discovery plugins for AWS AI/ML services:
 - AWS Bedrock: Foundation models, custom models, invocations

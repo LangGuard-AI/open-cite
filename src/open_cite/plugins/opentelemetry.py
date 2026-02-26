@@ -373,7 +373,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             logger.warning(f"Periodic state save failed: {e}")
 
     def export_assets(self) -> Dict[str, Any]:
-        """Export OTel-discovered assets in OpenCITE schema format."""
+        """Export OTel-discovered assets in Open-CITE schema format."""
         from open_cite.schema import (
             ToolFormatter, ModelFormatter, parse_model_id,
             MCPServerFormatter, MCPToolFormatter, MCPResourceFormatter,
@@ -1354,7 +1354,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             tools.append({
                 "id": tool_name,  # Use name as ID
                 "name": tool_name,
-                "type": "llm_client",  # OpenCITE schema compliance
+                "type": "llm_client",  # Open-CITE schema compliance
                 "discovery_source": metadata.get("discovery_source", "opentelemetry"),
                 "models": list(tool_data["models"]),
                 "trace_count": len(tool_data["traces"]),

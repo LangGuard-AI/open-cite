@@ -1,7 +1,7 @@
 """
-OpenCITE Web GUI - Flask Application
+Open-CITE Web GUI - Flask Application
 
-A web-based interface for OpenCITE discovery and visualization.
+A web-based interface for Open-CITE discovery and visualization.
 
 All REST API routes are shared with the headless API service via
 ``register_api_routes()`` from ``open_cite.api.app``.  This module only
@@ -211,7 +211,7 @@ def index():
 # Initialisation: shared state + shared API routes
 # =========================================================================
 
-print("  [gui init] Initializing OpenCITE state...")
+print("  [gui init] Initializing Open-CITE state...")
 init_opencite_state(app)
 # Wire up WebSocket push for the embedded OTel plugin (created during init,
 # bypasses _gui_start_plugin which only handles user-started plugins)
@@ -235,7 +235,7 @@ logger.info("GUI initialization complete.")
 
 def run_gui(host=None, port=None, debug=False):
     """
-    Run the OpenCITE GUI.
+    Run the Open-CITE GUI.
 
     Args:
         host: Host to bind to (default from OPENCITE_HOST env or 127.0.0.1)
@@ -261,7 +261,7 @@ def run_gui(host=None, port=None, debug=False):
     )
 
     print(f"\n{'='*60}")
-    print(f"  OpenCITE Web GUI (HTTP/2 via Hypercorn)")
+    print(f"  Open-CITE Web GUI (HTTP/2 via Hypercorn)")
     print(f"{'='*60}")
     print(f"  Access the GUI at: http://{host}:{port}")
     if api_app._default_otel_plugin:

@@ -1,8 +1,8 @@
-# OpenCITE JSON Schema Documentation
+# Open-CITE JSON Schema Documentation
 
 ## Overview
 
-The OpenCITE JSON schema provides a standardized format for storing and exchanging discovery data about AI tools, models, data assets, and traces. This schema enables:
+The Open-CITE JSON schema provides a standardized format for storing and exchanging discovery data about AI tools, models, data assets, and traces. This schema enables:
 
 - **Interoperability**: Share discovery data between systems
 - **Persistence**: Store discoveries for historical analysis

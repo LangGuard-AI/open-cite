@@ -1,3 +1,3 @@
 """
-OpenCITE discovery plugins package.
+Open-CITE discovery plugins package.
 """

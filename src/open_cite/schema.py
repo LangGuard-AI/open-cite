@@ -1,8 +1,8 @@
 """
-Schema validation and export utilities for OpenCITE.
+Schema validation and export utilities for Open-CITE.
 
-This module provides utilities for validating and exporting OpenCITE data
-according to the OpenCITE JSON schema.
+This module provides utilities for validating and exporting Open-CITE data
+according to the Open-CITE JSON schema.
 """
 
 import json
@@ -19,7 +19,7 @@ SCHEMA_VERSION = "1.0.0"
 
 class OpenCiteExporter:
     """
-    Exports OpenCITE discovery data to JSON format according to the schema.
+    Exports Open-CITE discovery data to JSON format according to the schema.
     """
 
     def __init__(self, schema_path: Optional[str] = None):
@@ -92,7 +92,7 @@ class OpenCiteExporter:
             metadata: Additional metadata (optional)
 
         Returns:
-            JSON-serializable dictionary conforming to OpenCITE schema
+            JSON-serializable dictionary conforming to Open-CITE schema
         """
         # Get timestamp
         export_timestamp = datetime.utcnow().isoformat() + "Z"
@@ -100,7 +100,7 @@ class OpenCiteExporter:
         # Extract plugins list from metadata
         plugins = metadata.get("plugins", []) if metadata else []
 
-        # Build the export according to OpenCITE schema
+        # Build the export according to Open-CITE schema
         export_data = {
             "opencite_version": SCHEMA_VERSION,
             "export_timestamp": export_timestamp,
@@ -555,7 +555,7 @@ class GoogleCloudModelFormatter:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Format a Vertex AI model according to OpenCITE schema.
+        Format a Vertex AI model according to Open-CITE schema.
 
         Args:
             model_id: Unique model identifier
@@ -621,7 +621,7 @@ class GoogleCloudEndpointFormatter:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Format a Vertex AI endpoint according to OpenCITE schema.
+        Format a Vertex AI endpoint according to Open-CITE schema.
 
         Args:
             endpoint_id: Unique endpoint identifier
@@ -686,7 +686,7 @@ class GoogleCloudDeploymentFormatter:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Format a model deployment according to OpenCITE schema.
+        Format a model deployment according to Open-CITE schema.
 
         Args:
             deployment_id: Unique deployment identifier
@@ -756,7 +756,7 @@ class GoogleCloudGenerativeModelFormatter:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Format a generative AI model according to OpenCITE schema.
+        Format a generative AI model according to Open-CITE schema.
 
         Args:
             model_id: Model identifier (e.g., "gemini-pro")

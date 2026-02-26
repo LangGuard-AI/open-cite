@@ -24,7 +24,7 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
-Publish the OpenCITE Docker image to GitHub Container Registry.
+Publish the Open-CITE Docker image to GitHub Container Registry.
 
 Options:
   --version VERSION   Override version tag (default: ${VERSION} from pyproject.toml)
@@ -117,7 +117,7 @@ if $MULTI_ARCH; then
         --tag "${FULL_IMAGE}:latest" \
         --label "org.opencontainers.image.source=https://github.com/LangGuard-AI/opencite" \
         --label "org.opencontainers.image.version=${VERSION}" \
-        --label "org.opencontainers.image.description=OpenCITE - Open-source AI asset discovery" \
+        --label "org.opencontainers.image.description=Open-CITE - Open-source AI asset discovery" \
         --push \
         .
 
@@ -128,7 +128,7 @@ else
         --tag "${FULL_IMAGE}:latest" \
         --label "org.opencontainers.image.source=https://github.com/LangGuard-AI/opencite" \
         --label "org.opencontainers.image.version=${VERSION}" \
-        --label "org.opencontainers.image.description=OpenCITE - Open-source AI asset discovery" \
+        --label "org.opencontainers.image.description=Open-CITE - Open-source AI asset discovery" \
         .
 
     info "Pushing ${FULL_IMAGE}:${VERSION}..."

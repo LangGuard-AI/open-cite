@@ -1,4 +1,4 @@
-# OpenCITE Development Guide
+# Open-CITE Development Guide
 
 ## Quick Start
 
@@ -40,7 +40,7 @@ src/open_cite/
 ├── client.py               # OpenCiteClient (plugin-agnostic orchestrator)
 ├── otlp_converter.py       # MLflow/Genie → OTLP JSON converters
 ├── identifier.py           # Tool identification / mapping
-├── schema.py               # OpenCITE JSON export schema
+├── schema.py               # Open-CITE JSON export schema
 │
 ├── gui/
 │   ├── app.py              # Flask + SocketIO backend (WebSocket push)
@@ -268,10 +268,10 @@ opencite gui --debug  # ← Must have --debug flag
 4. Change line 13:
    ```html
    <!-- Before -->
-   <h1>🔍 OpenCITE</h1>
+   <h1>🔍 Open-CITE</h1>
 
    <!-- After -->
-   <h1>🔍 OpenCITE [DEV MODE]</h1>
+   <h1>🔍 Open-CITE [DEV MODE]</h1>
    ```
 5. Save file
 6. Refresh browser (F5)
@@ -350,14 +350,14 @@ export AWS_REGION="us-east-1"
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "OpenCITE GUI",
+            "name": "Open-CITE GUI",
             "type": "python",
             "request": "launch",
             "module": "open_cite.gui.app",
             "env": { "FLASK_DEBUG": "1" }
         },
         {
-            "name": "OpenCITE API",
+            "name": "Open-CITE API",
             "type": "python",
             "request": "launch",
             "module": "open_cite.api.app",

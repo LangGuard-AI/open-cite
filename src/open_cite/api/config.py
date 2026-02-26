@@ -1,5 +1,5 @@
 """
-OpenCITE API Configuration.
+Open-CITE API Configuration.
 
 Environment-based configuration for the headless API service.
 """
@@ -12,7 +12,7 @@ from typing import Optional
 @dataclass
 class OpenCiteConfig:
     """
-    Configuration for OpenCITE API service.
+    Configuration for Open-CITE API service.
 
     All settings can be configured via environment variables.
     """

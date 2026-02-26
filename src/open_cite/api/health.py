@@ -1,5 +1,5 @@
 """
-OpenCITE API Health Check Endpoints.
+Open-CITE API Health Check Endpoints.
 
 Provides Kubernetes-compatible health probes:
 - /healthz: Liveness probe (is the process alive?)

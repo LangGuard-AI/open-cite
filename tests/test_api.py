@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for OpenCITE Flask application API endpoints.
+Test script for Open-CITE Flask application API endpoints.
 Run this to verify your localhost instance is working correctly.
 """
 
@@ -71,7 +71,7 @@ def check_endpoint(method: str, endpoint: str, data: dict = None, description: s
 def main():
     """Run all tests."""
     print("="*60)
-    print("OpenCITE Flask Application Test Suite")
+    print("Open-CITE Flask Application Test Suite")
     print("="*60)
     print(f"Testing against: {BASE_URL}")
     print("\nMake sure your Flask app is running!\n")
@@ -146,7 +146,7 @@ def main():
     
     if passed == total:
         print("✅ All tests passed!")
-        print("\nYour OpenCITE application is working correctly!")
+        print("\nYour Open-CITE application is working correctly!")
         print(f"\nNext steps:")
         print(f"1. Open {BASE_URL} in your browser")
         print(f"2. Configure plugins through the web interface")

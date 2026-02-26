@@ -1,8 +1,8 @@
-# AWS Plugins for OpenCITE
+# AWS Plugins for Open-CITE
 
 ## Overview
 
-OpenCITE includes two AWS plugins for discovering AI/ML assets:
+Open-CITE includes two AWS plugins for discovering AI/ML assets:
 
 - **AWS Bedrock** (`aws_bedrock`) — Foundation models, custom models, provisioned throughput, and model invocations
 - **AWS SageMaker** (`aws_sagemaker`) — Endpoints, models, model packages, and training jobs

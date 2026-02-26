@@ -1,5 +1,5 @@
 """
-OpenCITE database package.
+Open-CITE database package.
 
 Exports the engine/session lifecycle and all ORM model classes.
 """

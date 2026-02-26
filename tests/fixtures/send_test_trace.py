@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Send a test OTLP trace to OpenCITE for testing the UI.
+Send a test OTLP trace to Open-CITE for testing the UI.
 This simulates an AI tool making API calls that will appear in the UI.
 """
 
@@ -13,7 +13,7 @@ OTLP_ENDPOINT = "http://localhost:4318/v1/traces"
 
 def send_test_trace(tool_name: str = "test-tool", model_name: str = "openai/gpt-4", num_calls: int = 1):
     """
-    Send a test OTLP trace to the OpenCITE receiver.
+    Send a test OTLP trace to the Open-CITE receiver.
     
     Args:
         tool_name: Name of the tool making the API call
@@ -88,7 +88,7 @@ def send_test_trace(tool_name: str = "test-tool", model_name: str = "openai/gpt-
     
     print(f"\n✅ All {num_calls} trace(s) sent!")
     print(f"\nNext steps:")
-    print(f"1. Go to the OpenCITE UI: http://127.0.0.1:5000")
+    print(f"1. Go to the Open-CITE UI: http://127.0.0.1:5000")
     print(f"2. Click 'Discover Assets' or wait a few seconds for auto-refresh")
     print(f"3. You should see '{tool_name}' in the Tools tab")
     print(f"4. You should see '{model_name}' in the Models tab")
@@ -100,7 +100,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description="Send test OTLP traces to OpenCITE for UI testing"
+        description="Send test OTLP traces to Open-CITE for UI testing"
     )
     parser.add_argument(
         "--tool",

@@ -1,5 +1,5 @@
 """
-SQLAlchemy ORM model definitions for all OpenCITE tables.
+SQLAlchemy ORM model definitions for all Open-CITE tables.
 
 Uses SQLAlchemy 2.0 DeclarativeBase. ``sqlalchemy.JSON`` maps to TEXT on
 SQLite, JSONB on PostgreSQL, and STRING on Databricks.

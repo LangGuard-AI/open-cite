@@ -1,7 +1,7 @@
 """
-OpenCITE Headless API Module.
+Open-CITE Headless API Module.
 
-Provides a REST API for OpenCITE discovery and inventory capabilities,
+Provides a REST API for Open-CITE discovery and inventory capabilities,
 designed for deployment in Kubernetes without a GUI.
 """
 

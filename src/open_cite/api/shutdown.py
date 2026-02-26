@@ -1,5 +1,5 @@
 """
-OpenCITE API Graceful Shutdown Handler.
+Open-CITE API Graceful Shutdown Handler.
 
 Handles SIGTERM and SIGINT signals for graceful shutdown in Kubernetes.
 """

@@ -1,7 +1,7 @@
 """
-OpenCITE Headless API Service.
+Open-CITE Headless API Service.
 
-A REST API for OpenCITE discovery and inventory capabilities,
+A REST API for Open-CITE discovery and inventory capabilities,
 designed for deployment in Kubernetes without a GUI.
 
 Shared route registration:
@@ -292,7 +292,7 @@ def create_app(config: Optional[OpenCiteConfig] = None) -> Flask:
 
 
 def export_to_json(include_plugins: List[str]) -> Dict[str, Any]:
-    """Export all discovered data to JSON format according to OpenCITE schema.
+    """Export all discovered data to JSON format according to Open-CITE schema.
 
     Reads from the DB (via the client) for persisted asset types, and falls
     back to plugin ``export_assets()`` for plugin-specific extras (e.g.
@@ -588,10 +588,10 @@ def register_api_routes(app: Flask):
                 discovery_status["error"] = None
                 discovery_status["plugins_enabled"] = []
                 discovery_status["progress"] = []
-                discovery_status["current_status"] = "Initializing OpenCITE client..."
+                discovery_status["current_status"] = "Initializing Open-CITE client..."
                 discovery_status["progress"].append({
                     "step": "init",
-                    "message": "OpenCITE client created",
+                    "message": "Open-CITE client created",
                     "status": "success"
                 })
 
@@ -774,7 +774,7 @@ def register_api_routes(app: Flask):
 
     @app.route('/api/v1/export', methods=['POST'])
     def api_export():
-        """Export discovered data to OpenCITE JSON format."""
+        """Export discovered data to Open-CITE JSON format."""
         if not client:
             return jsonify({"error": "No client initialized"}), 400
 
@@ -2256,10 +2256,10 @@ def auto_configure_plugins(app: Flask):
         discovery_status["error"] = None
         discovery_status["plugins_enabled"] = []
         discovery_status["progress"] = []
-        discovery_status["current_status"] = "Auto-initializing OpenCITE client..."
+        discovery_status["current_status"] = "Auto-initializing Open-CITE client..."
         discovery_status["progress"].append({
             "step": "init",
-            "message": "OpenCITE client created",
+            "message": "Open-CITE client created",
             "status": "success"
         })
 
@@ -2307,7 +2307,7 @@ def auto_configure_plugins(app: Flask):
 
 def run_api(host: str = "0.0.0.0", port: int = 8080, auto_start: bool = True):
     """
-    Run the OpenCITE API server.
+    Run the Open-CITE API server.
 
     Args:
         host: Host to bind to (default: 0.0.0.0)
@@ -2325,7 +2325,7 @@ def run_api(host: str = "0.0.0.0", port: int = 8080, auto_start: bool = True):
     # when config.auto_start is True — no need to call it again here.
 
     print(f"\n{'='*60}")
-    print(f"  OpenCITE API Service (HTTP/2 via Hypercorn)")
+    print(f"  Open-CITE API Service (HTTP/2 via Hypercorn)")
     print(f"{'='*60}")
     print(f"  API: http://{host}:{port}")
     print(f"  Health: http://{host}:{port}/healthz")

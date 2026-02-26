@@ -23,7 +23,7 @@ try:
             "messages": [
                 {
                     "role": "user",
-                    "content": "Say 'Hello from OpenCITE test'"
+                    "content": "Say 'Hello from Open-CITE test'"
                 }
             ]
         })

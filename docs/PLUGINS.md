@@ -1,6 +1,6 @@
-# Creating an OpenCITE Plugin
+# Creating an Open-CITE Plugin
 
-Plugins are the primary extension point for OpenCITE. Each plugin discovers AI assets from a specific source (Databricks, AWS, GCP, OpenTelemetry, etc.) and exposes them through a unified interface.
+Plugins are the primary extension point for Open-CITE. Each plugin discovers AI assets from a specific source (Databricks, AWS, GCP, OpenTelemetry, etc.) and exposes them through a unified interface.
 
 ## Auto-Discovery
 
@@ -335,7 +335,7 @@ The Databricks plugin discovers assets from three subsystems. Each has its own p
 
 ### Genie
 
-Genie discovery queries Databricks system tables for table lineage and query history. The service principal or user running OpenCITE needs:
+Genie discovery queries Databricks system tables for table lineage and query history. The service principal or user running Open-CITE needs:
 
 - **`USE SCHEMA`** on `system.access` — required for querying `system.access.table_lineage`
 - **`USE SCHEMA`** on `system.query` — required for querying `system.query.history`

@@ -1,5 +1,5 @@
 """
-AWS Bedrock discovery plugin for OpenCITE.
+AWS Bedrock discovery plugin for Open-CITE.
 
 This plugin discovers AI usage in AWS Bedrock:
 - Available foundation models

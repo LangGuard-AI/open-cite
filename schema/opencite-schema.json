@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://opencite.org/schemas/v1/opencite.json",
-  "title": "OpenCITE Discovery Schema",
-  "description": "Schema for storing discovered AI tools, models, and data assets from OpenCITE plugins",
+  "title": "Open-CITE Discovery Schema",
+  "description": "Schema for storing discovered AI tools, models, and data assets from Open-CITE plugins",
   "type": "object",
   "properties": {
     "version": {

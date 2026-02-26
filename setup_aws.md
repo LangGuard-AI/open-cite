@@ -1,4 +1,4 @@
-# AWS CLI Setup for OpenCITE
+# AWS CLI Setup for Open-CITE
 
 ## Step 1: Install AWS CLI
 
@@ -57,9 +57,9 @@ aws bedrock list-foundation-models --region us-east-1
 aws bedrock list-foundation-models --region us-west-2
 ```
 
-## Step 5: Use with OpenCITE
+## Step 5: Use with Open-CITE
 
-Once AWS CLI is configured, OpenCITE will automatically use those credentials:
+Once AWS CLI is configured, Open-CITE will automatically use those credentials:
 
 ```python
 from open_cite import OpenCiteClient
@@ -82,7 +82,7 @@ for model in models[:5]:  # Show first 5
 
 ## Step 6: Test Bedrock Model Invocations
 
-⚠️ **Important**: OpenCITE tracks **direct Bedrock model invocations** (API calls to `bedrock-runtime:InvokeModel`), not Bedrock Agent invocations. Console-based Bedrock Agents use different APIs and won't appear in these tests.
+⚠️ **Important**: Open-CITE tracks **direct Bedrock model invocations** (API calls to `bedrock-runtime:InvokeModel`), not Bedrock Agent invocations. Console-based Bedrock Agents use different APIs and won't appear in these tests.
 
 ### Option A: Make a Test Bedrock Call
 
@@ -94,7 +94,7 @@ python test_bedrock_call.py
 
 This script:
 - Makes a direct `InvokeModel` API call to Claude
-- Generates a CloudTrail event that OpenCITE can detect
+- Generates a CloudTrail event that Open-CITE can detect
 - Shows you the response and timestamp
 
 **Note**: CloudTrail events can take 5-15 minutes to appear. After running this script, wait a few minutes before verifying.
@@ -124,19 +124,19 @@ This script will:
 
 ### Understanding the Difference
 
-- **Model Invocations** (tracked by OpenCITE):
+- **Model Invocations** (tracked by Open-CITE):
   - Direct API calls: `bedrock_runtime.invoke_model()`
   - Code-based usage (Python, Node.js, etc.)
   - Shows up in CloudTrail as `InvokeModel` events
   - What most developers use in production
 
-- **Agent Invocations** (not tracked by OpenCITE):
+- **Agent Invocations** (not tracked by Open-CITE):
   - Console-based Bedrock Agents
   - Uses `InvokeAgent` API
   - Different CloudTrail event type
   - Higher-level abstraction for non-developers
 
-If you're testing with console agents, you won't see activity in `verify_bedrock.py`. Use `test_bedrock_call.py` to generate a real model invocation that OpenCITE can track.
+If you're testing with console agents, you won't see activity in `verify_bedrock.py`. Use `test_bedrock_call.py` to generate a real model invocation that Open-CITE can track.
 
 ## Important Notes
 

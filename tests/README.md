@@ -1,6 +1,6 @@
-# OpenCITE Test Suite
+# Open-CITE Test Suite
 
-This directory contains the test suite for OpenCITE.
+This directory contains the test suite for Open-CITE.
 
 ## Structure
 

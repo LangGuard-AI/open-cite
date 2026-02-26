@@ -1,5 +1,5 @@
 """
-OpenCITE Core - Base classes and interfaces.
+Open-CITE Core - Base classes and interfaces.
 """
 
 from abc import ABC, abstractmethod
@@ -290,7 +290,7 @@ class BaseDiscoveryPlugin(ABC):
 
     def export_assets(self) -> Dict[str, Any]:
         """
-        Export discovered assets for the OpenCITE JSON export.
+        Export discovered assets for the Open-CITE JSON export.
 
         Returns a dict whose keys are export categories (e.g. ``"tools"``,
         ``"models"``, ``"data_assets"``) and values are lists of

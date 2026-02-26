@@ -1,4 +1,4 @@
-# OpenCITE API Service Dockerfile
+# Open-CITE API Service Dockerfile
 # Multi-stage build for minimal image size
 
 # Stage 1: Build

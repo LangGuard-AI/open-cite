@@ -1,4 +1,4 @@
-# OpenTelemetry Plugin for OpenCITE
+# OpenTelemetry Plugin for Open-CITE
 
 The OpenTelemetry plugin enables automatic discovery of AI tools, models, agents, downstream systems, and MCP servers by receiving and analyzing OpenTelemetry traces.
 
