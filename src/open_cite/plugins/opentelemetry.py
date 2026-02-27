@@ -48,6 +48,27 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True  # Don't wait for threads to finish on shutdown
 
 
+def _decode_protobuf_traces(body: bytes) -> Optional[dict]:
+    """Decode OTLP protobuf trace payload to a JSON-compatible dict."""
+    try:
+        from google.protobuf.json_format import MessageToDict
+        from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+            ExportTraceServiceRequest,
+        )
+        request = ExportTraceServiceRequest()
+        request.ParseFromString(body)
+        return MessageToDict(request, preserving_proto_field_name=False)
+    except ImportError:
+        logger.warning(
+            "Protobuf trace received but opentelemetry-proto is not installed. "
+            "Install with: pip install opentelemetry-proto"
+        )
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to decode protobuf trace: {e}")
+        return None
+
+
 class OTLPRequestHandler(BaseHTTPRequestHandler):
     """HTTP request handler for OTLP protocol."""
 
@@ -89,23 +110,41 @@ class OTLPRequestHandler(BaseHTTPRequestHandler):
 
             if "application/json" in content_type:
                 data = json.loads(body.decode("utf-8"))
-                plugin._ingest_traces(data)
-                plugin._deliver_to_webhooks(data, inbound_headers=inbound_headers)
-
-                num_spans = sum(len(rs.get("scopeSpans", [])) for rs in data.get("resourceSpans", []))
-                logger.warning(f"[OTLP] Received trace with {num_spans} scope spans")
-
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps({"status": "success"}).encode())
+            elif "application/x-protobuf" in content_type or "application/protobuf" in content_type:
+                data = _decode_protobuf_traces(body)
+                if data is None:
+                    self.send_response(415)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(
+                        json.dumps({"error": "Protobuf decoding failed — install opentelemetry-proto or send JSON"}).encode()
+                    )
+                    return
             else:
-                self.send_response(415)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(
-                    json.dumps({"error": "Only JSON format supported"}).encode()
-                )
+                # Unknown content type — try JSON first, then protobuf
+                try:
+                    data = json.loads(body.decode("utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    data = _decode_protobuf_traces(body)
+                    if data is None:
+                        self.send_response(415)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(
+                            json.dumps({"error": "Unsupported format — send JSON or protobuf"}).encode()
+                        )
+                        return
+
+            plugin._ingest_traces(data)
+            plugin._deliver_to_webhooks(data, inbound_headers=inbound_headers)
+
+            num_spans = sum(len(rs.get("scopeSpans", [])) for rs in data.get("resourceSpans", []))
+            logger.warning(f"[OTLP] Received trace with {num_spans} scope spans")
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "success"}).encode())
         except Exception as e:
             logger.error(f"Error processing traces: {e}")
             self.send_response(500)
