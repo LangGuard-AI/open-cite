@@ -189,6 +189,8 @@ class AzureAIFoundryPlugin(BaseDiscoveryPlugin):
         self._agents_cache: List[Dict[str, Any]] = []
         self._tools_cache: List[Dict[str, Any]] = []
         self._traces_cache: List[Dict[str, Any]] = []
+        self._last_trace_time: Optional[str] = None  # ISO high-water mark
+        self._seen_trace_ids: set = set()  # dedup within lookback window
         self._lock = threading.Lock()
 
         # Polling thread state
@@ -1049,16 +1051,21 @@ class AzureAIFoundryPlugin(BaseDiscoveryPlugin):
             monitor_token = self._get_monitor_token()
             headers = self._auth_headers(monitor_token)
 
+            # Use high-water mark if available, otherwise use lookback window
+            if self._last_trace_time:
+                time_filter = f" | where TimeGenerated > datetime('{self._last_trace_time}')"
+            else:
+                time_filter = f" | where TimeGenerated > ago({self.lookback_hours}h)"
+
             kql = (
                 "AzureDiagnostics"
-                f" | where TimeGenerated > ago({self.lookback_hours}h)"
-                " | where Category == 'RequestResponse'"
+                + time_filter
+                + " | where Category == 'RequestResponse'"
                 " | extend props = parse_json(properties_s)"
                 " | project TimeGenerated, OperationId=CorrelationId,"
                 "   Name=OperationName, DurationMs, Success=(ResultSignature == '200'),"
                 "   ResultCode=ResultSignature, Properties=props"
-                " | order by TimeGenerated desc"
-                " | limit 100"
+                " | order by TimeGenerated asc"
             )
 
             all_traces = []
@@ -1070,18 +1077,41 @@ class AzureAIFoundryPlugin(BaseDiscoveryPlugin):
                 all_traces.extend(traces_batch)
                 all_rows.extend(rows_batch)
 
-            # Forward traces as OTLP to webhooks
-            if all_traces and self._webhook_urls:
-                for row in all_rows:
+            # Deduplicate and forward only new traces to webhooks
+            new_traces = []
+            new_rows = []
+            new_high_water = self._last_trace_time
+            for trace, row in zip(all_traces, all_rows):
+                op_id = trace.get("trace_id", "")
+                if op_id in self._seen_trace_ids:
+                    continue
+                self._seen_trace_ids.add(op_id)
+                new_traces.append(trace)
+                new_rows.append(row)
+                # Track highest TimeGenerated
+                tg = row.get("TimeGenerated") or ""
+                if tg and (new_high_water is None or tg > new_high_water):
+                    new_high_water = tg
+
+            # Advance high-water mark
+            if new_high_water is not None:
+                self._last_trace_time = new_high_water
+
+            # Forward only new traces as OTLP to webhooks
+            if new_rows and self._webhook_urls:
+                for row in new_rows:
                     try:
                         otlp_payload = _appinsights_row_to_otlp(row)
                         self._deliver_to_webhooks(otlp_payload)
                     except Exception as e:
                         logger.warning("Failed to convert/forward trace to webhook: %s", e)
 
-            self._traces_cache = all_traces
-            logger.info("Discovered %d Azure AI traces", len(all_traces))
-            return all_traces
+            # Append new traces to cache (cumulative)
+            self._traces_cache.extend(new_traces)
+            if new_traces:
+                logger.info("Discovered %d new Azure AI traces (%d total)",
+                            len(new_traces), len(self._traces_cache))
+            return self._traces_cache
         except Exception as e:
             logger.error("Failed to list Azure AI traces: %s", e)
             return []

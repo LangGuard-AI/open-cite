@@ -733,20 +733,23 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                             if parent_span_id:
                                 span_parents[span_id] = parent_span_id
 
-                            # Store the trace
+                            # Store the trace (deduplicate by span_id)
                             if trace_id not in self.traces:
                                 self.traces[trace_id] = {
                                     "trace_id": trace_id,
                                     "spans": [],
                                     "first_seen": span_times.get(span_id) or datetime.utcnow().isoformat(),
+                                    "_span_ids": set(),
                                 }
 
-                            self.traces[trace_id]["spans"].append({
-                                "span_id": span_id,
-                                "span_name": span_name,
-                                "attributes": attributes,
-                                "resource": resource,
-                            })
+                            if span_id not in self.traces[trace_id].get("_span_ids", set()):
+                                self.traces[trace_id].setdefault("_span_ids", set()).add(span_id)
+                                self.traces[trace_id]["spans"].append({
+                                    "span_id": span_id,
+                                    "span_name": span_name,
+                                    "attributes": attributes,
+                                    "resource": resource,
+                                })
 
                             # Detect OpenRouter usage (tools/models)
                             tool_name = self._detect_tool_usage(
