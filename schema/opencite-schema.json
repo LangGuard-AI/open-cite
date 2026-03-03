@@ -133,7 +133,7 @@
         },
         "discovery_source": {
           "type": "string",
-          "enum": ["opentelemetry", "databricks", "databricks/mlflow", "databricks/genie", "databricks/ai-gateway", "manual"],
+          "enum": ["opentelemetry", "databricks", "databricks/mlflow", "databricks/genie", "databricks/ai-gateway", "azure_ai_foundry", "manual"],
           "description": "How this tool was discovered (plugin/subsystem)"
         },
         "models_used": {
@@ -281,7 +281,7 @@
         },
         "discovery_source": {
           "type": "string",
-          "enum": ["opentelemetry", "databricks", "databricks/mlflow", "databricks/genie", "databricks/ai-gateway", "manual"],
+          "enum": ["opentelemetry", "databricks", "databricks/mlflow", "databricks/genie", "databricks/ai-gateway", "azure_ai_foundry", "manual"],
           "description": "How this model was discovered (plugin/subsystem)"
         },
         "usage": {
@@ -399,7 +399,7 @@
         },
         "discovery_source": {
           "type": "string",
-          "enum": ["databricks", "manual"],
+          "enum": ["databricks", "azure_ai_foundry", "manual"],
           "description": "Source of discovery"
         },
         "hierarchy": {
