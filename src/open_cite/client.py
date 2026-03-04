@@ -400,12 +400,17 @@ class OpenCiteClient:
 
     def _list_models_from_db(self, **kwargs) -> List[Dict[str, Any]]:
         """Read models from the database."""
+        from .plugins.opentelemetry import _infer_provider_from_model_name
+
         rows = self.persistence.load_models()
         models = []
         for name, data in rows.items():
+            provider = data.get("provider", "unknown")
+            if provider == "unknown":
+                provider = _infer_provider_from_model_name(name) or "unknown"
             models.append({
                 "name": name,
-                "provider": data.get("provider", "unknown"),
+                "provider": provider,
                 "tools": list(data.get("tools", set())),
                 "usage_count": data.get("usage_count", 0),
             })

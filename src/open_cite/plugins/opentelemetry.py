@@ -42,6 +42,33 @@ def _get_local_ip() -> str:
 # Example: [r"^custom\..*", r"^app\.metadata\..*"]
 DEFAULT_ATTRIBUTE_PATTERNS = []
 
+# Well-known model name prefixes/patterns → provider.
+# Order matters: first match wins.
+_MODEL_PROVIDER_PATTERNS: List[tuple] = [
+    (re.compile(r"^claude[-\s]", re.I), "anthropic"),
+    (re.compile(r"^databricks[-\s]", re.I), "databricks"),
+    (re.compile(r"^gpt[-\s]?\d|^o[1-9][-\s]|^dall-e|^text-(embedding|davinci|curie|babbage|ada)", re.I), "openai"),
+    (re.compile(r"^gemini[-\s]|^gemma[-\s]", re.I), "google"),
+    (re.compile(r"^llama[-\s]|^codellama|^meta[-\s]llama", re.I), "meta"),
+    (re.compile(r"^mistral[-\s]|^mixtral[-\s]|^codestral", re.I), "mistral"),
+    (re.compile(r"^command[-\s]|^embed[-\s].*cohere|^cohere", re.I), "cohere"),
+    (re.compile(r"^amazon[-\.]|^titan[-\s]", re.I), "amazon"),
+    (re.compile(r"^deepseek", re.I), "deepseek"),
+    (re.compile(r"^qwen", re.I), "alibaba"),
+    (re.compile(r"^phi[-\s]?\d", re.I), "microsoft"),
+]
+
+
+def _infer_provider_from_model_name(model_name: str) -> Optional[str]:
+    """Infer the provider from a well-known model name pattern.
+
+    Returns the provider string or None if no pattern matches.
+    """
+    for pattern, provider in _MODEL_PROVIDER_PATTERNS:
+        if pattern.search(model_name):
+            return provider
+    return None
+
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     """HTTP Server that handles each request in a separate thread."""
@@ -733,23 +760,20 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                             if parent_span_id:
                                 span_parents[span_id] = parent_span_id
 
-                            # Store the trace (deduplicate by span_id)
+                            # Store the trace
                             if trace_id not in self.traces:
                                 self.traces[trace_id] = {
                                     "trace_id": trace_id,
                                     "spans": [],
                                     "first_seen": span_times.get(span_id) or datetime.utcnow().isoformat(),
-                                    "_span_ids": set(),
                                 }
 
-                            if span_id not in self.traces[trace_id].get("_span_ids", set()):
-                                self.traces[trace_id].setdefault("_span_ids", set()).add(span_id)
-                                self.traces[trace_id]["spans"].append({
-                                    "span_id": span_id,
-                                    "span_name": span_name,
-                                    "attributes": attributes,
-                                    "resource": resource,
-                                })
+                            self.traces[trace_id]["spans"].append({
+                                "span_id": span_id,
+                                "span_name": span_name,
+                                "attributes": attributes,
+                                "resource": resource,
+                            })
 
                             # Detect OpenRouter usage (tools/models)
                             tool_name = self._detect_tool_usage(
@@ -1448,7 +1472,9 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             # Use explicit gen_ai.system provider, fall back to model name prefix
             provider = (
                 self.model_providers.get(model_name)
-                or (model_name.split("/")[0] if "/" in model_name else "unknown")
+                or (model_name.split("/")[0] if "/" in model_name else None)
+                or _infer_provider_from_model_name(model_name)
+                or "unknown"
             )
 
             # Use model_call_count (all spans) as usage_count; fall back to

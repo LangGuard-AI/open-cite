@@ -70,16 +70,38 @@ def _generate_span_id(seed: str, length: int = 16) -> str:
     return hashlib.md5(seed.encode("utf-8")).hexdigest()[:length]
 
 
+def _parse_json_safe(raw: str) -> Optional[Dict[str, Any]]:
+    """Attempt to parse a JSON string, returning None on failure."""
+    if not raw:
+        return None
+    try:
+        import json
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else None
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
 def _appinsights_row_to_otlp(row: Dict[str, Any]) -> Dict[str, Any]:
     """
     Convert an Application Insights row to an OTLP resourceSpans payload.
 
-    Each row becomes a single-span trace with resource attributes identifying
-    the discovery source as azure_ai_foundry.
+    Each row produces TWO spans sharing the same traceId:
+      1. A root span (no parentSpanId) — becomes the trace in LangGuard.
+      2. A child span (parentSpanId = root) — becomes the observation/generation
+         with all gen_ai semantic attributes (model, tokens, input/output, tools).
+
+    The request/response bodies from Azure OpenAI are full API JSON payloads.
+    We parse them to extract messages, tools, tool_calls, model, temperature,
+    finish_reason, etc. and map them to standard gen_ai semantic convention
+    attribute keys that the LangGuard OTLP adapter recognises.
     """
+    import json
+
     operation_id = row.get("OperationId", "")
     trace_id = _generate_span_id(operation_id, 32) if operation_id else _generate_span_id(str(time.time()), 32)
-    span_id = _generate_span_id(f"{operation_id}-span", 16)
+    root_span_id = _generate_span_id(f"{operation_id}-root", 16)
+    child_span_id = _generate_span_id(f"{operation_id}-gen", 16)
 
     name = row.get("Name", "AppRequest")
     duration_ms = row.get("DurationMs", 0)
@@ -100,38 +122,218 @@ def _appinsights_row_to_otlp(row: Dict[str, Any]) -> Dict[str, Any]:
         start_ns = int(time.time() * 1_000_000_000)
 
     end_ns = start_ns + int(float(duration_ms) * 1_000_000)
-
     status_code = 1 if success else 2  # 1=OK, 2=ERROR
 
-    # Build span attributes from Properties
-    span_attrs = [
+    # Raw fields from KQL
+    deployment_name = row.get("Model", "") or ""
+    request_uri = row.get("RequestUri", "") or ""
+    prompt_tokens = row.get("PromptTokens") or 0
+    completion_tokens = row.get("CompletionTokens") or 0
+    total_tokens = row.get("TotalTokens") or 0
+    request_body = row.get("RequestBody", "") or ""
+    response_body = row.get("ResponseBody", "") or ""
+    api_version = row.get("ApiVersion", "") or ""
+    stream_type = row.get("StreamType", "") or ""
+
+    # Parse the Azure OpenAI request/response JSON for rich details
+    req = _parse_json_safe(request_body)
+    resp = _parse_json_safe(response_body)
+
+    # Extract deployment name from requestUri as fallback:
+    #   /openai/deployments/<deployment-name>/chat/completions?api-version=...
+    uri_deployment = ""
+    if request_uri and "/deployments/" in request_uri:
+        try:
+            uri_deployment = request_uri.split("/deployments/")[1].split("/")[0]
+        except (IndexError, AttributeError):
+            pass
+
+    # Resolve model: response.model > request.model > KQL prop > URI deployment > operation name
+    model = ""
+    if resp:
+        model = resp.get("model", "") or ""
+    if not model and req:
+        model = req.get("model", "") or ""
+    if not model:
+        model = deployment_name
+    if not model:
+        model = uri_deployment
+
+    # Extract tokens from response.usage (more reliable than KQL props)
+    if resp and isinstance(resp.get("usage"), dict):
+        usage = resp["usage"]
+        prompt_tokens = prompt_tokens or usage.get("prompt_tokens", 0) or 0
+        completion_tokens = completion_tokens or usage.get("completion_tokens", 0) or 0
+        total_tokens = total_tokens or usage.get("total_tokens", 0) or 0
+
+    # ── Build child span attributes (the observation/generation) ──
+
+    child_attrs = [
         _make_attr("http.status_code", result_code),
+        _make_attr("gen_ai.provider.name", "azure"),
+        _make_attr("gen_ai.system", "azure"),
+        _make_attr("gen_ai.operation.name", "chat"),
     ]
-    properties = row.get("Properties", {})
-    if isinstance(properties, dict):
-        for k, v in properties.items():
-            span_attrs.append(_make_attr(f"appinsights.{k}", str(v)))
+
+    if model:
+        child_attrs.append(_make_attr("gen_ai.request.model", model))
+
+    # Tokens — use the attribute keys the adapter actually looks for
+    if prompt_tokens:
+        child_attrs.append(_make_attr("gen_ai.usage.input_tokens", str(prompt_tokens)))
+    if completion_tokens:
+        child_attrs.append(_make_attr("gen_ai.usage.output_tokens", str(completion_tokens)))
+    if total_tokens:
+        child_attrs.append(_make_attr("gen_ai.usage.total_tokens", str(total_tokens)))
+
+    # Input: emit indexed gen_ai.prompt.N.role / gen_ai.prompt.N.content
+    if req and isinstance(req.get("messages"), list):
+        for i, msg in enumerate(req["messages"]):
+            if isinstance(msg, dict):
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                if role:
+                    child_attrs.append(_make_attr(f"gen_ai.prompt.{i}.role", str(role)))
+                if content:
+                    child_attrs.append(_make_attr(
+                        f"gen_ai.prompt.{i}.content",
+                        str(content)[:4096],
+                    ))
+    elif request_body:
+        # Fallback: dump the raw request as a flat prompt attribute
+        child_attrs.append(_make_attr("gen_ai.prompt", request_body[:4096]))
+
+    # Output: emit indexed gen_ai.completion.N.role / gen_ai.completion.N.content
+    choices = resp.get("choices", []) if resp else []
+    if isinstance(choices, list):
+        for i, choice in enumerate(choices):
+            if not isinstance(choice, dict):
+                continue
+            msg = choice.get("message") or choice.get("delta") or {}
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role", "assistant")
+            content = msg.get("content", "")
+            if role:
+                child_attrs.append(_make_attr(f"gen_ai.completion.{i}.role", str(role)))
+            if content:
+                child_attrs.append(_make_attr(
+                    f"gen_ai.completion.{i}.content",
+                    str(content)[:4096],
+                ))
+
+            # Tool calls in the response
+            tool_calls = msg.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                child_attrs.append(_make_attr(
+                    "gen_ai.tool_calls",
+                    json.dumps(tool_calls)[:4096],
+                ))
+                for tc in tool_calls:
+                    if isinstance(tc, dict):
+                        fn = tc.get("function", {})
+                        if isinstance(fn, dict) and fn.get("name"):
+                            child_attrs.append(_make_attr(
+                                "gen_ai.tool.name", fn["name"],
+                            ))
+
+        # Finish reason from first choice
+        if choices and isinstance(choices[0], dict):
+            finish = choices[0].get("finish_reason", "")
+            if finish:
+                child_attrs.append(_make_attr(
+                    "gen_ai.response.finish_reasons", str(finish),
+                ))
+    elif response_body:
+        # Fallback: dump raw response as flat completion attribute
+        child_attrs.append(_make_attr("gen_ai.completion", response_body[:4096]))
+
+    # Tool definitions from the request
+    if req and isinstance(req.get("tools"), list) and req["tools"]:
+        child_attrs.append(_make_attr(
+            "gen_ai.request.tools",
+            json.dumps(req["tools"])[:4096],
+        ))
+
+    # Request config (temperature, max_tokens, top_p, etc.)
+    if req:
+        for param, attr_key in [
+            ("temperature", "gen_ai.request.temperature"),
+            ("max_tokens", "gen_ai.request.max_tokens"),
+            ("top_p", "gen_ai.request.top_p"),
+            ("frequency_penalty", "gen_ai.request.frequency_penalty"),
+            ("presence_penalty", "gen_ai.request.presence_penalty"),
+            ("seed", "gen_ai.request.seed"),
+        ]:
+            val = req.get(param)
+            if val is not None:
+                child_attrs.append(_make_attr(attr_key, str(val)))
+
+        stop = req.get("stop")
+        if stop is not None:
+            child_attrs.append(_make_attr(
+                "gen_ai.request.stop_sequences",
+                json.dumps(stop) if isinstance(stop, list) else str(stop),
+            ))
+
+    # Response ID
+    if resp and resp.get("id"):
+        child_attrs.append(_make_attr("gen_ai.response.id", str(resp["id"])))
+
+    if api_version:
+        child_attrs.append(_make_attr("azure.api_version", api_version))
+    if stream_type:
+        child_attrs.append(_make_attr("gen_ai.request.stream", stream_type))
+
+    # ── Build root span attributes (the trace) ──
+
+    root_attrs = [
+        _make_attr("gen_ai.provider.name", "azure"),
+        _make_attr("gen_ai.system", "azure"),
+    ]
+    if model:
+        root_attrs.append(_make_attr("gen_ai.request.model", model))
+        root_attrs.append(_make_attr("gen_ai.agent.name", model))
+    else:
+        root_attrs.append(_make_attr("gen_ai.agent.name", name))
+
+    # ── Resource attributes ──
 
     resource_attrs = [
         _make_attr("service.name", "azure-ai-foundry"),
+        _make_attr("gen_ai.provider.name", "azure"),
         _make_attr("opencite.discovery_source", "azure_ai_foundry"),
     ]
+
+    root_span = {
+        "traceId": trace_id,
+        "spanId": root_span_id,
+        "name": name,
+        "kind": 2,  # SERVER
+        "startTimeUnixNano": str(start_ns),
+        "endTimeUnixNano": str(end_ns),
+        "status": {"code": status_code},
+        "attributes": root_attrs,
+    }
+
+    child_span = {
+        "traceId": trace_id,
+        "spanId": child_span_id,
+        "parentSpanId": root_span_id,
+        "name": model or name,
+        "kind": 3,  # CLIENT
+        "startTimeUnixNano": str(start_ns),
+        "endTimeUnixNano": str(end_ns),
+        "status": {"code": status_code},
+        "attributes": child_attrs,
+    }
 
     return {
         "resourceSpans": [{
             "resource": {"attributes": resource_attrs},
             "scopeSpans": [{
                 "scope": {"name": "open_cite.azure_ai_foundry"},
-                "spans": [{
-                    "traceId": trace_id,
-                    "spanId": span_id,
-                    "name": name,
-                    "kind": 2,  # SERVER
-                    "startTimeUnixNano": str(start_ns),
-                    "endTimeUnixNano": str(end_ns),
-                    "status": {"code": status_code},
-                    "attributes": span_attrs,
-                }],
+                "spans": [root_span, child_span],
             }],
         }],
     }
@@ -189,9 +391,10 @@ class AzureAIFoundryPlugin(BaseDiscoveryPlugin):
         self._agents_cache: List[Dict[str, Any]] = []
         self._tools_cache: List[Dict[str, Any]] = []
         self._traces_cache: List[Dict[str, Any]] = []
-        self._last_trace_time: Optional[str] = None  # ISO high-water mark
-        self._seen_trace_ids: set = set()  # dedup within lookback window
         self._lock = threading.Lock()
+
+        # High-water mark for incremental trace queries
+        self._last_query_time: Optional[str] = None  # ISO 8601
 
         # Polling thread state
         self._poll_stop = threading.Event()
@@ -554,7 +757,23 @@ class AzureAIFoundryPlugin(BaseDiscoveryPlugin):
         while url:
             resp = requests.get(url, headers=headers, timeout=30)
             if resp.status_code != 200:
-                logger.warning("GET %s returned %d: %s", url, resp.status_code, resp.text[:200])
+                # Log full response details for debugging persistent errors
+                resp_headers = dict(resp.headers)
+                logger.warning(
+                    "GET %s returned %d\n"
+                    "  Response body: %s\n"
+                    "  x-ms-request-id: %s\n"
+                    "  x-ms-correlation-request-id: %s\n"
+                    "  x-ms-routing-request-id: %s\n"
+                    "  Date: %s",
+                    url,
+                    resp.status_code,
+                    resp.text[:1000],
+                    resp_headers.get("x-ms-request-id", "n/a"),
+                    resp_headers.get("x-ms-correlation-request-id", "n/a"),
+                    resp_headers.get("x-ms-routing-request-id", "n/a"),
+                    resp_headers.get("Date", "n/a"),
+                )
                 break
 
             data = resp.json()
@@ -890,6 +1109,8 @@ class AzureAIFoundryPlugin(BaseDiscoveryPlugin):
                         agents.append({
                             "id": asst_id,
                             "name": asst_name,
+                            "agent_source_name": acct_name,
+                            "agent_source_id": asst_id,
                             "tools_used": tools_used,
                             "models_used": [model] if model else [],
                             "first_seen": first_seen,
@@ -900,6 +1121,8 @@ class AzureAIFoundryPlugin(BaseDiscoveryPlugin):
                                 "foundry.agent_id": asst_id,
                                 "foundry.model": model,
                                 "foundry.instructions_preview": instructions[:200],
+                                "agent_source_name": acct_name,
+                                "agent_source_id": asst_id,
                             },
                         })
                 except Exception as e:
@@ -1051,9 +1274,9 @@ class AzureAIFoundryPlugin(BaseDiscoveryPlugin):
             monitor_token = self._get_monitor_token()
             headers = self._auth_headers(monitor_token)
 
-            # Use high-water mark if available, otherwise use lookback window
-            if self._last_trace_time:
-                time_filter = f" | where TimeGenerated > datetime('{self._last_trace_time}')"
+            # Use high-water mark for incremental queries, fall back to lookback window
+            if self._last_query_time:
+                time_filter = f" | where TimeGenerated > datetime('{self._last_query_time}')"
             else:
                 time_filter = f" | where TimeGenerated > ago({self.lookback_hours}h)"
 
@@ -1062,10 +1285,33 @@ class AzureAIFoundryPlugin(BaseDiscoveryPlugin):
                 + time_filter
                 + " | where Category == 'RequestResponse'"
                 " | extend props = parse_json(properties_s)"
+                # Try multiple property names for model (varies by service version)
+                " | extend Model=coalesce("
+                "     tostring(props.modelDeploymentName),"
+                "     tostring(props.ModelDeploymentName),"
+                "     tostring(props.model_deployment_name),"
+                "     tostring(props.model),"
+                "     tostring(props.modelName)"
+                "   ),"
+                # Extract deployment name from requestUri as fallback
+                #   /openai/deployments/<name>/chat/completions
+                "   RequestUri=tostring(props.requestUri),"
+                "   StreamType=coalesce(tostring(props.stream), tostring(props.Stream)),"
+                "   ApiVersion=coalesce(tostring(props.apiVersion), tostring(props.ApiVersion)),"
+                "   ObjectType=coalesce(tostring(props.objectType), tostring(props.ObjectType)),"
+                "   PromptTokens=coalesce(toint(props.promptTokens), toint(props.PromptTokens)),"
+                "   CompletionTokens=coalesce(toint(props.completionTokens), toint(props.CompletionTokens)),"
+                "   TotalTokens=coalesce(toint(props.totalTokens), toint(props.TotalTokens)),"
+                "   RequestBody=coalesce(tostring(props.request), tostring(props.Request)),"
+                "   ResponseBody=coalesce(tostring(props.response), tostring(props.Response))"
                 " | project TimeGenerated, OperationId=CorrelationId,"
                 "   Name=OperationName, DurationMs, Success=(ResultSignature == '200'),"
-                "   ResultCode=ResultSignature, Properties=props"
-                " | order by TimeGenerated asc"
+                "   ResultCode=ResultSignature, Properties=props,"
+                "   Model, RequestUri, StreamType, ApiVersion, ObjectType,"
+                "   PromptTokens, CompletionTokens, TotalTokens,"
+                "   RequestBody, ResponseBody"
+                " | order by TimeGenerated desc"
+                " | limit 500"
             )
 
             all_traces = []
@@ -1077,41 +1323,39 @@ class AzureAIFoundryPlugin(BaseDiscoveryPlugin):
                 all_traces.extend(traces_batch)
                 all_rows.extend(rows_batch)
 
-            # Deduplicate and forward only new traces to webhooks
-            new_traces = []
-            new_rows = []
-            new_high_water = self._last_trace_time
-            for trace, row in zip(all_traces, all_rows):
-                op_id = trace.get("trace_id", "")
-                if op_id in self._seen_trace_ids:
-                    continue
-                self._seen_trace_ids.add(op_id)
-                new_traces.append(trace)
-                new_rows.append(row)
-                # Track highest TimeGenerated
-                tg = row.get("TimeGenerated") or ""
-                if tg and (new_high_water is None or tg > new_high_water):
-                    new_high_water = tg
-
-            # Advance high-water mark
-            if new_high_water is not None:
-                self._last_trace_time = new_high_water
-
-            # Forward only new traces as OTLP to webhooks
-            if new_rows and self._webhook_urls:
-                for row in new_rows:
+            # Forward traces as OTLP to webhooks in chunks to avoid
+            # overwhelming the receiver (large batches cause timeouts and
+            # the webhook handler attaches rawPayload to every trace).
+            WEBHOOK_CHUNK_SIZE = 50
+            if all_traces and self._webhook_urls:
+                all_resource_spans = []
+                for row in all_rows:
                     try:
                         otlp_payload = _appinsights_row_to_otlp(row)
-                        self._deliver_to_webhooks(otlp_payload)
+                        all_resource_spans.extend(otlp_payload.get("resourceSpans", []))
                     except Exception as e:
-                        logger.warning("Failed to convert/forward trace to webhook: %s", e)
+                        logger.warning("Failed to convert trace to OTLP: %s", e)
+                # Deliver in chunks
+                for i in range(0, len(all_resource_spans), WEBHOOK_CHUNK_SIZE):
+                    chunk = all_resource_spans[i:i + WEBHOOK_CHUNK_SIZE]
+                    self._deliver_to_webhooks({"resourceSpans": chunk})
+                logger.info(
+                    "Delivered %d resourceSpans in %d chunk(s) to webhooks",
+                    len(all_resource_spans),
+                    (len(all_resource_spans) + WEBHOOK_CHUNK_SIZE - 1) // WEBHOOK_CHUNK_SIZE,
+                )
 
-            # Append new traces to cache (cumulative)
-            self._traces_cache.extend(new_traces)
-            if new_traces:
-                logger.info("Discovered %d new Azure AI traces (%d total)",
-                            len(new_traces), len(self._traces_cache))
-            return self._traces_cache
+            # Advance high-water mark to the newest trace timestamp
+            if all_rows:
+                newest = max(
+                    row.get("TimeGenerated", "") for row in all_rows
+                )
+                if newest:
+                    self._last_query_time = newest
+
+            self._traces_cache = all_traces
+            logger.info("Discovered %d Azure AI traces", len(all_traces))
+            return all_traces
         except Exception as e:
             logger.error("Failed to list Azure AI traces: %s", e)
             return []
@@ -1153,8 +1397,24 @@ class AzureAIFoundryPlugin(BaseDiscoveryPlugin):
 
         traces = []
         raw_rows = []
-        for row_values in rows:
+        for idx, row_values in enumerate(rows):
             row = dict(zip(columns, row_values))
+            # Log the first row so we can see what KQL actually returns
+            if idx == 0:
+                props = row.get("Properties")
+                prop_keys = sorted(props.keys()) if isinstance(props, dict) else type(props).__name__
+                logger.info(
+                    "Sample KQL row — columns: %s | Model=%r | RequestBody=%r (len=%d) | "
+                    "ResponseBody=%r (len=%d) | PromptTokens=%r | Properties keys=%s",
+                    columns,
+                    row.get("Model"),
+                    (row.get("RequestBody") or "")[:100],
+                    len(row.get("RequestBody") or ""),
+                    (row.get("ResponseBody") or "")[:100],
+                    len(row.get("ResponseBody") or ""),
+                    row.get("PromptTokens"),
+                    prop_keys,
+                )
             raw_rows.append(row)
             traces.append({
                 "trace_id": row.get("OperationId", ""),
@@ -1164,6 +1424,10 @@ class AzureAIFoundryPlugin(BaseDiscoveryPlugin):
                 "duration_ms": row.get("DurationMs", 0),
                 "success": row.get("Success", True),
                 "result_code": str(row.get("ResultCode", "")),
+                "model": row.get("Model", ""),
+                "prompt_tokens": row.get("PromptTokens", 0),
+                "completion_tokens": row.get("CompletionTokens", 0),
+                "total_tokens": row.get("TotalTokens", 0),
                 "metadata": {
                     "foundry.subscription_id": self.subscription_id,
                     "foundry.properties": row.get("Properties", {}),

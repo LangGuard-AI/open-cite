@@ -350,7 +350,7 @@ class BaseDiscoveryPlugin(ABC):
             return False
         self._webhook_urls.add(url)
         if self._webhook_executor is None:
-            self._webhook_executor = ThreadPoolExecutor(max_workers=2)
+            self._webhook_executor = ThreadPoolExecutor(max_workers=6)
         logger.info(f"Webhook subscribed: {url} (plugin={self.instance_id})")
         return True
 
@@ -402,7 +402,7 @@ class BaseDiscoveryPlugin(ABC):
             self.instance_id,
         )
         if self._webhook_executor is None:
-            self._webhook_executor = ThreadPoolExecutor(max_workers=2)
+            self._webhook_executor = ThreadPoolExecutor(max_workers=6)
         for url in list(self._webhook_urls):
             self._webhook_executor.submit(self._send_webhook, url, otlp_payload, inbound_headers)
 
@@ -422,7 +422,7 @@ class BaseDiscoveryPlugin(ABC):
                     url,
                     json=otlp_payload,
                     headers=headers,
-                    timeout=10,
+                    timeout=30,
                 )
                 if resp.status_code < 400:
                     logger.debug(
