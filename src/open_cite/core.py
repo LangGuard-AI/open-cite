@@ -374,9 +374,17 @@ class BaseDiscoveryPlugin(ABC):
         """Return list of subscribed webhook URLs."""
         return list(self._webhook_urls)
 
+    # Maximum resourceSpans per webhook POST to avoid 413 (Payload Too Large).
+    # Each resourceSpan contains one trace's worth of spans. 10 keeps payloads
+    # well under typical 10 MB body limits.
+    WEBHOOK_CHUNK_SIZE = 50
+
     def _deliver_to_webhooks(self, otlp_payload: dict, inbound_headers: Optional[Dict[str, str]] = None):
         """
         Deliver an OTLP payload to all subscribed webhooks (fire-and-forget).
+
+        Large payloads are automatically chunked into smaller batches to avoid
+        413 (Payload Too Large) rejections.
 
         Each delivery is submitted to a thread pool so it doesn't block
         the discovery loop.
@@ -389,22 +397,38 @@ class BaseDiscoveryPlugin(ABC):
         """
         if not self._webhook_urls:
             return
+
+        resource_spans = otlp_payload.get("resourceSpans", [])
         span_count = sum(
             len(ss.get("spans", []))
-            for rs in otlp_payload.get("resourceSpans", [])
+            for rs in resource_spans
             for ss in rs.get("scopeSpans", [])
         )
         logger.debug(
             "Delivering OTLP payload to %d webhook(s): %d resourceSpans, %d spans (plugin=%s)",
             len(self._webhook_urls),
-            len(otlp_payload.get("resourceSpans", [])),
+            len(resource_spans),
             span_count,
             self.instance_id,
         )
         if self._webhook_executor is None:
             self._webhook_executor = ThreadPoolExecutor(max_workers=6)
+
+        # Chunk large payloads to avoid 413 errors
+        chunks = []
+        if len(resource_spans) <= self.WEBHOOK_CHUNK_SIZE:
+            chunks = [otlp_payload]
+        else:
+            for i in range(0, len(resource_spans), self.WEBHOOK_CHUNK_SIZE):
+                chunks.append({"resourceSpans": resource_spans[i:i + self.WEBHOOK_CHUNK_SIZE]})
+            logger.debug(
+                "Split payload into %d chunks of <= %d resourceSpans (plugin=%s)",
+                len(chunks), self.WEBHOOK_CHUNK_SIZE, self.instance_id,
+            )
+
         for url in list(self._webhook_urls):
-            self._webhook_executor.submit(self._send_webhook, url, otlp_payload, inbound_headers)
+            for chunk in chunks:
+                self._webhook_executor.submit(self._send_webhook, url, chunk, inbound_headers)
 
     def _send_webhook(self, url: str, otlp_payload: dict, inbound_headers: Optional[Dict[str, str]] = None):
         """POST an OTLP JSON payload to a webhook URL with retries."""

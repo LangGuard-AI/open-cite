@@ -208,6 +208,7 @@ def init_opencite_state(app: Flask, config: Optional[OpenCiteConfig] = None):
         client = OpenCiteClient()
     if persistence:
         client.persistence = persistence
+        client.load_cache()
 
     # Create the default embedded OTel plugin if enabled
     if config.otlp_embedded:
@@ -1321,6 +1322,21 @@ def register_api_routes(app: Flask):
             logger.error(f"Failed to refresh instance '{instance_id}': {e}")
             return jsonify({"error": str(e)}), 500
 
+    @app.route('/api/v1/instances/<instance_id>/verify', methods=['POST'])
+    def api_verify_instance(instance_id: str):
+        """Verify connection to a plugin instance's data source."""
+        try:
+            plugin = _ensure_instance(instance_id)
+            if not plugin:
+                return jsonify({"error": f"Instance '{instance_id}' not found"}), 404
+
+            result = plugin.verify_connection()
+            return jsonify({"success": True, "verification": result})
+
+        except Exception as e:
+            logger.error(f"Failed to verify instance '{instance_id}': {e}")
+            return jsonify({"error": str(e)}), 500
+
     # =========================================================================
     # Webhook Management API endpoints
     # =========================================================================
@@ -1980,6 +1996,8 @@ def _save_current_state():
         return
 
     saved_counts: Dict[str, int] = {}
+    changed_types: set = set()
+    lineage_changed = False
 
     for plugin_name, plugin in client.plugins.items():
         count = 0
@@ -2000,6 +2018,7 @@ def _save_current_state():
                 persistence.save_tool(tool_name, models, trace_count, metadata)
                 _persisted_fingerprints[f"tool:{tool_name}"] = fp
                 count += 1
+                changed_types.add("tool")
             except Exception as e:
                 logger.warning(f"Failed to save tool {tool_name}: {e}")
 
@@ -2022,6 +2041,7 @@ def _save_current_state():
                 )
                 _persisted_fingerprints[f"agent:{agent_name}"] = fp
                 count += 1
+                changed_types.add("agent")
             except Exception as e:
                 logger.warning(f"Failed to save agent {agent_name}: {e}")
 
@@ -2044,6 +2064,7 @@ def _save_current_state():
                 )
                 _persisted_fingerprints[f"ds:{sys_id}"] = fp
                 count += 1
+                changed_types.add("downstream_system")
             except Exception as e:
                 logger.warning(f"Failed to save downstream {sys_id}: {e}")
 
@@ -2067,6 +2088,7 @@ def _save_current_state():
                 )
                 _persisted_fingerprints[fk] = fp
                 count += 1
+                lineage_changed = True
             except Exception as e:
                 logger.warning(f"Failed to save lineage {fk}: {e}")
 
@@ -2102,6 +2124,7 @@ def _save_current_state():
                 persistence.save_model(model_name, provider, tools_using, usage_count)
                 _persisted_fingerprints[f"model:{model_name}"] = fp
                 count += 1
+                changed_types.add("model")
             except Exception as e:
                 logger.warning(f"Failed to save model {model_name}: {e}")
 
@@ -2122,6 +2145,7 @@ def _save_current_state():
                 )
                 _persisted_fingerprints[f"mcp_srv:{server_id}"] = fp
                 count += 1
+                changed_types.add("mcp_server")
             except Exception as e:
                 logger.warning(f"Failed to save MCP server {server_id}: {e}")
 
@@ -2139,6 +2163,7 @@ def _save_current_state():
                 )
                 _persisted_fingerprints[f"mcp_tool:{tool_id}"] = fp
                 count += 1
+                changed_types.add("mcp_tool")
             except Exception as e:
                 logger.warning(f"Failed to save MCP tool {tool_id}: {e}")
 
@@ -2157,6 +2182,7 @@ def _save_current_state():
                 )
                 _persisted_fingerprints[f"mcp_res:{res_id}"] = fp
                 count += 1
+                changed_types.add("mcp_resource")
             except Exception as e:
                 logger.warning(f"Failed to save MCP resource {res_id}: {e}")
 
@@ -2166,6 +2192,10 @@ def _save_current_state():
     if saved_counts:
         parts = [f"{c} from {p}" for p, c in saved_counts.items()]
         logger.info("Persisted %s", ", ".join(parts))
+
+    # Refresh the in-memory cache for any asset types that changed
+    if changed_types or lineage_changed:
+        client.refresh_cache(changed_types, include_lineage=lineage_changed)
 
 
 def _collect_assets(asset_type: str) -> Dict[str, List]:

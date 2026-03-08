@@ -1,4 +1,5 @@
 import logging
+import threading
 import warnings
 from collections import defaultdict
 from datetime import datetime
@@ -41,6 +42,12 @@ class OpenCiteClient:
         # Optional persistence layer — when set, list methods merge
         # persisted data with live plugin data so assets survive restarts.
         self.persistence = None
+
+        # Asset cache — populated from DB on startup, refreshed after saves.
+        # Keyed by asset type (e.g. "tool", "agent").
+        self._asset_cache: Dict[str, List[Dict[str, Any]]] = {}
+        self._lineage_cache: List[Dict[str, Any]] = []
+        self._cache_lock = threading.Lock()
 
         # Initialize central HTTP client
         self.http_client = get_http_client()
@@ -168,6 +175,59 @@ class OpenCiteClient:
         return all_types
 
     # =========================================================================
+    # Asset Cache
+    # =========================================================================
+
+    def load_cache(self):
+        """Populate the asset cache from the database.
+
+        Called once at startup.  No-op if persistence is not configured.
+        """
+        if not self.persistence:
+            return
+
+        with self._cache_lock:
+            for asset_type in _PERSISTED_ASSET_TYPES:
+                try:
+                    self._asset_cache[asset_type] = self._list_from_db(asset_type)
+                except Exception as e:
+                    logger.warning("Cache load failed for %s: %s", asset_type, e)
+                    self._asset_cache[asset_type] = []
+
+            try:
+                self._lineage_cache = self.persistence.load_lineage()
+            except Exception as e:
+                logger.warning("Cache load failed for lineage: %s", e)
+                self._lineage_cache = []
+
+        totals = {k: len(v) for k, v in self._asset_cache.items() if v}
+        if totals:
+            logger.info("Asset cache loaded: %s", totals)
+
+    def refresh_cache(self, asset_types: Set[str], include_lineage: bool = False):
+        """Re-read specific asset types from the DB into the cache.
+
+        Called after ``_save_current_state()`` writes new data.
+        """
+        if not self.persistence:
+            return
+
+        with self._cache_lock:
+            for asset_type in asset_types:
+                if asset_type not in _PERSISTED_ASSET_TYPES:
+                    continue
+                try:
+                    self._asset_cache[asset_type] = self._list_from_db(asset_type)
+                except Exception as e:
+                    logger.warning("Cache refresh failed for %s: %s", asset_type, e)
+
+            if include_lineage:
+                try:
+                    self._lineage_cache = self.persistence.load_lineage()
+                except Exception as e:
+                    logger.warning("Cache refresh failed for lineage: %s", e)
+
+    # =========================================================================
     # Generic Asset Listing Methods
     # These aggregate results from all registered plugins that support each type
     # =========================================================================
@@ -198,37 +258,21 @@ class OpenCiteClient:
             # List with filters (passed to plugins)
             tools = client.list_assets("mcp_tool", server_id="my-server")
         """
-        # For persisted types, merge DB rows with live plugin data so that
-        # newly-discovered items appear immediately (from plugin memory)
-        # while previously-saved items survive restarts (from DB).
-        if self.persistence and asset_type in _PERSISTED_ASSET_TYPES:
-            merged: Dict[str, Dict[str, Any]] = {}
+        # For persisted types, serve from the in-memory cache (populated
+        # from DB on startup, refreshed after each save cycle).
+        if asset_type in _PERSISTED_ASSET_TYPES:
+            with self._cache_lock:
+                cached = self._asset_cache.get(asset_type)
+            if cached is not None:
+                # Apply any kwargs filters (e.g. server_id) in memory
+                if kwargs:
+                    return [
+                        item for item in cached
+                        if all(item.get(k) == v for k, v in kwargs.items() if v is not None)
+                    ]
+                return list(cached)
 
-            # 1. DB data (primary — survives restarts)
-            try:
-                for item in self._list_from_db(asset_type, **kwargs):
-                    key = item.get("name") or item.get("id") or item.get("uri", "")
-                    merged[key] = item
-            except Exception as e:
-                logger.warning(
-                    f"DB read failed for {asset_type}: {e}"
-                )
-
-            # 2. Live plugin data (fills gaps for items not yet saved)
-            for plugin in self.get_plugins_for_asset_type(asset_type):
-                try:
-                    for item in plugin.list_assets(asset_type, **kwargs):
-                        if "discovery_source" not in item:
-                            item["discovery_source"] = plugin.display_name
-                        key = item.get("name") or item.get("id") or item.get("uri", "")
-                        if key not in merged:
-                            merged[key] = item
-                except Exception as e:
-                    logger.warning(f"Failed to list {asset_type} from plugin {plugin.instance_id}: {e}")
-
-            return list(merged.values())
-
-        # Non-persisted types: aggregate from plugins only
+        # Non-persisted types (or cache empty): aggregate from plugins
         results = []
         plugins = self.get_plugins_for_asset_type(asset_type)
 
@@ -335,12 +379,15 @@ class OpenCiteClient:
         Returns:
             List of lineage relationships
         """
-        if self.persistence:
-            try:
-                return self.persistence.load_lineage(source_id=source_id)
-            except Exception as e:
-                logger.warning(f"DB read failed for lineage, falling back to plugins: {e}")
+        # Serve from cache if populated
+        with self._cache_lock:
+            cached = self._lineage_cache
+        if cached:
+            if source_id:
+                return [r for r in cached if r.get("source_id") == source_id]
+            return list(cached)
 
+        # Cache empty — aggregate from plugins
         results = []
         for plugin in self.plugins.values():
             if hasattr(plugin, 'list_lineage'):

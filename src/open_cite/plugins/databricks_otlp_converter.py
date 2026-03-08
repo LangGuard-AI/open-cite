@@ -129,11 +129,16 @@ def mlflow_trace_to_otlp(
                 otlp_attrs.append(_make_attr(genai_key, val))
                 break  # Only emit one gen_ai.request.model
 
-        # Map provider
+        # Map provider — fall back to "databricks" since these traces
+        # originate from a Databricks workspace
+        provider_found = False
         for mlflow_key, genai_key in _PROVIDER_ATTR_MAP.items():
             val = attrs.get(mlflow_key)
             if val:
                 otlp_attrs.append(_make_attr(genai_key, val))
+                provider_found = True
+        if not provider_found:
+            otlp_attrs.append(_make_attr("gen_ai.system", "databricks"))
 
         # Map tool name
         for mlflow_key, genai_key in _TOOL_ATTR_MAP.items():
@@ -214,7 +219,8 @@ def genie_trace_to_otlp(trace_dict: Dict[str, Any]) -> Dict[str, Any]:
     Convert a Genie trace dict (from DatabricksPlugin._process_genie_message)
     to a synthetic OTLP JSON payload.
 
-    Creates a 2-span trace: root AGENT span + child LLM span.
+    Creates a single-span trace with all agent context, LLM provider/model info,
+    prompt/completion data, and token estimates combined.
 
     Args:
         trace_dict: Dict with keys like id, name, timestamp, agent_name,
@@ -225,8 +231,7 @@ def genie_trace_to_otlp(trace_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
     trace_id_seed = trace_dict.get("id", "unknown")
     trace_id = _deterministic_id(f"trace:{trace_id_seed}", 32)
-    root_span_id = _deterministic_id(f"agent:{trace_id_seed}", 16)
-    llm_span_id = _deterministic_id(f"llm:{trace_id_seed}", 16)
+    span_id = _deterministic_id(f"agent:{trace_id_seed}", 16)
 
     # Timestamps
     ts = trace_dict.get("timestamp")
@@ -262,69 +267,54 @@ def genie_trace_to_otlp(trace_dict: Dict[str, Any]) -> Dict[str, Any]:
 
     user_prompt = (trace_dict.get("input") or {}).get("prompt", "")
     output_data = trace_dict.get("output") or {}
-
-    # Root AGENT span
-    agent_attrs = [
-        _make_attr("gen_ai.agent.name", trace_dict.get("agent_name", "Genie")),
-    ]
-    if space_id:
-        agent_attrs.append(_make_attr("genie.space_id", space_id))
-    if conv_id:
-        agent_attrs.append(_make_attr("genie.conversation_id", conv_id))
-
-    # User ID (mapped to enduser.id for OTLP convention)
-    user_id = trace_dict.get("user_id")
-    if user_id:
-        agent_attrs.append(_make_attr("enduser.id", user_id))
-
-    # Session ID (conversation maps to session for trace grouping)
-    session_id = trace_dict.get("session_id")
-    if session_id:
-        agent_attrs.append(_make_attr("session.id", session_id))
-
-    # Input/output
-    if user_prompt:
-        agent_attrs.append(_make_attr("gen_ai.prompt", user_prompt))
-    if output_data:
-        agent_attrs.append(_make_attr("gen_ai.completion", json.dumps(output_data, default=str)))
-
-    # Include the original Databricks API response as a JSON string attribute
-    raw_response = trace_dict.get("raw_response")
-    if raw_response:
-        agent_attrs.append(_make_attr("databricks.raw_response", json.dumps(raw_response, default=str)))
-
-    root_span = {
-        "traceId": trace_id,
-        "spanId": root_span_id,
-        "name": trace_dict.get("agent_name", "Genie"),
-        "kind": 1,
-        "startTimeUnixNano": str(start_ns),
-        "endTimeUnixNano": str(end_ns),
-        "attributes": agent_attrs,
-        "status": {},
-    }
-
-    # Child LLM span — include agent name so OTel plugin can correlate
     agent_name = trace_dict.get("agent_name", "Genie")
-    llm_attrs = [
+
+    # Single span with all attributes (agent context + LLM/provider info)
+    span_attrs = [
         _make_attr("gen_ai.agent.name", agent_name),
         _make_attr("gen_ai.request.model", trace_dict.get("model", "databricks-genie")),
         _make_attr("gen_ai.system", trace_dict.get("provider", "databricks")),
     ]
-    if input_tokens:
-        llm_attrs.append(_make_attr_int("gen_ai.usage.input_tokens", input_tokens))
-    if output_tokens:
-        llm_attrs.append(_make_attr_int("gen_ai.usage.output_tokens", output_tokens))
+    if space_id:
+        span_attrs.append(_make_attr("genie.space_id", space_id))
+    if conv_id:
+        span_attrs.append(_make_attr("genie.conversation_id", conv_id))
 
-    llm_span = {
+    # User ID (mapped to enduser.id for OTLP convention)
+    user_id = trace_dict.get("user_id")
+    if user_id:
+        span_attrs.append(_make_attr("enduser.id", user_id))
+
+    # Session ID (conversation maps to session for trace grouping)
+    session_id = trace_dict.get("session_id")
+    if session_id:
+        span_attrs.append(_make_attr("session.id", session_id))
+
+    # Input/output
+    if user_prompt:
+        span_attrs.append(_make_attr("gen_ai.prompt", user_prompt))
+    if output_data:
+        span_attrs.append(_make_attr("gen_ai.completion", json.dumps(output_data, default=str)))
+
+    # Token estimates
+    if input_tokens:
+        span_attrs.append(_make_attr_int("gen_ai.usage.input_tokens", input_tokens))
+    if output_tokens:
+        span_attrs.append(_make_attr_int("gen_ai.usage.output_tokens", output_tokens))
+
+    # Include the original Databricks API response as a JSON string attribute
+    raw_response = trace_dict.get("raw_response")
+    if raw_response:
+        span_attrs.append(_make_attr("databricks.raw_response", json.dumps(raw_response, default=str)))
+
+    span = {
         "traceId": trace_id,
-        "spanId": llm_span_id,
-        "parentSpanId": root_span_id,
-        "name": "LLM",
+        "spanId": span_id,
+        "name": agent_name,
         "kind": 1,
         "startTimeUnixNano": str(start_ns),
         "endTimeUnixNano": str(end_ns),
-        "attributes": llm_attrs,
+        "attributes": span_attrs,
         "status": {},
     }
 
@@ -333,7 +323,7 @@ def genie_trace_to_otlp(trace_dict: Dict[str, Any]) -> Dict[str, Any]:
             "resource": {"attributes": resource_attrs},
             "scopeSpans": [{
                 "scope": {"name": "open_cite.otlp_converter"},
-                "spans": [root_span, llm_span],
+                "spans": [span],
             }],
         }],
     }

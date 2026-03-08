@@ -1280,33 +1280,88 @@ class AzureAIFoundryPlugin(BaseDiscoveryPlugin):
             else:
                 time_filter = f" | where TimeGenerated > ago({self.lookback_hours}h)"
 
+            # Query both legacy AzureDiagnostics and resource-specific tables.
+            # Azure AI Foundry / OpenAI may log to either depending on the
+            # diagnostic settings mode.  `union isfuzzy=true` silently skips
+            # tables that don't exist.
+            #
+            # Properties can live in:
+            #   1. properties_s  — JSON blob in AzureDiagnostics (legacy mode)
+            #   2. Top-level columns with _s/_d suffixes (AzureDiagnostics flattened)
+            #   3. Dedicated columns in resource-specific tables
+            # We try all three via coalesce + column_ifexists.
+            #
+            # IMPORTANT: tostring() must wrap coalesce(), not the individual
+            # args, because KQL's tostring(null) returns "" and coalesce only
+            # skips null, not "".
             kql = (
-                "AzureDiagnostics"
+                "union isfuzzy=true "
+                "(AzureDiagnostics | where Category == 'RequestResponse'), "
+                "(AzureOpenAIRequestResponse)"
                 + time_filter
-                + " | where Category == 'RequestResponse'"
-                " | extend props = parse_json(properties_s)"
-                # Try multiple property names for model (varies by service version)
-                " | extend Model=coalesce("
-                "     tostring(props.modelDeploymentName),"
-                "     tostring(props.ModelDeploymentName),"
-                "     tostring(props.model_deployment_name),"
-                "     tostring(props.model),"
-                "     tostring(props.modelName)"
+                + " | extend props = parse_json(column_ifexists('properties_s', '{}'))"
+                " | extend Model=tostring(coalesce("
+                "     props.modelDeploymentName,"
+                "     props.ModelDeploymentName,"
+                "     props.model_deployment_name,"
+                "     props.model,"
+                "     props.modelName,"
+                "     column_ifexists('ModelDeploymentName', dynamic(null)),"
+                "     column_ifexists('modelDeploymentName_s', dynamic(null)),"
+                "     column_ifexists('ModelName', dynamic(null)),"
+                "     column_ifexists('modelName_s', dynamic(null)),"
+                "     column_ifexists('model_s', dynamic(null))"
+                "   )),"
+                "   RequestUri=tostring(coalesce("
+                "     props.requestUri,"
+                "     column_ifexists('RequestUri', dynamic(null)),"
+                "     column_ifexists('requestUri_s', dynamic(null))"
+                "   )),"
+                "   StreamType=tostring(coalesce("
+                "     props.stream, props.Stream,"
+                "     column_ifexists('StreamType', dynamic(null)),"
+                "     column_ifexists('streamType_s', dynamic(null))"
+                "   )),"
+                "   ApiVersion=tostring(coalesce("
+                "     props.apiVersion, props.ApiVersion,"
+                "     column_ifexists('ApiVersion', dynamic(null)),"
+                "     column_ifexists('apiVersion_s', dynamic(null))"
+                "   )),"
+                "   ObjectType=tostring(coalesce("
+                "     props.objectType, props.ObjectType,"
+                "     column_ifexists('ObjectType', dynamic(null)),"
+                "     column_ifexists('objectType_s', dynamic(null))"
+                "   )),"
+                "   PromptTokens=coalesce("
+                "     toint(props.promptTokens), toint(props.PromptTokens),"
+                "     toint(column_ifexists('PromptTokens', dynamic(null))),"
+                "     toint(column_ifexists('promptTokens_d', dynamic(null)))"
                 "   ),"
-                # Extract deployment name from requestUri as fallback
-                #   /openai/deployments/<name>/chat/completions
-                "   RequestUri=tostring(props.requestUri),"
-                "   StreamType=coalesce(tostring(props.stream), tostring(props.Stream)),"
-                "   ApiVersion=coalesce(tostring(props.apiVersion), tostring(props.ApiVersion)),"
-                "   ObjectType=coalesce(tostring(props.objectType), tostring(props.ObjectType)),"
-                "   PromptTokens=coalesce(toint(props.promptTokens), toint(props.PromptTokens)),"
-                "   CompletionTokens=coalesce(toint(props.completionTokens), toint(props.CompletionTokens)),"
-                "   TotalTokens=coalesce(toint(props.totalTokens), toint(props.TotalTokens)),"
-                "   RequestBody=coalesce(tostring(props.request), tostring(props.Request)),"
-                "   ResponseBody=coalesce(tostring(props.response), tostring(props.Response))"
+                "   CompletionTokens=coalesce("
+                "     toint(props.completionTokens), toint(props.CompletionTokens),"
+                "     toint(column_ifexists('CompletionTokens', dynamic(null))),"
+                "     toint(column_ifexists('completionTokens_d', dynamic(null)))"
+                "   ),"
+                "   TotalTokens=coalesce("
+                "     toint(props.totalTokens), toint(props.TotalTokens),"
+                "     toint(column_ifexists('TotalTokens', dynamic(null))),"
+                "     toint(column_ifexists('totalTokens_d', dynamic(null)))"
+                "   ),"
+                "   RequestBody=tostring(coalesce("
+                "     props.request, props.Request,"
+                "     column_ifexists('RequestBody', dynamic(null)),"
+                "     column_ifexists('request_s', dynamic(null))"
+                "   )),"
+                "   ResponseBody=tostring(coalesce("
+                "     props.response, props.Response,"
+                "     column_ifexists('ResponseBody', dynamic(null)),"
+                "     column_ifexists('response_s', dynamic(null))"
+                "   ))"
                 " | project TimeGenerated, OperationId=CorrelationId,"
-                "   Name=OperationName, DurationMs, Success=(ResultSignature == '200'),"
-                "   ResultCode=ResultSignature, Properties=props,"
+                "   Name=OperationName, DurationMs,"
+                "   Success=(tostring(column_ifexists('ResultSignature', '')) == '200'),"
+                "   ResultCode=tostring(column_ifexists('ResultSignature', '')),"
+                "   Properties=props,"
                 "   Model, RequestUri, StreamType, ApiVersion, ObjectType,"
                 "   PromptTokens, CompletionTokens, TotalTokens,"
                 "   RequestBody, ResponseBody"
@@ -1395,26 +1450,107 @@ class AzureAIFoundryPlugin(BaseDiscoveryPlugin):
         columns = [c["name"] for c in tables[0].get("columns", [])]
         rows = tables[0].get("rows", [])
 
+        import json as _json
+
         traces = []
         raw_rows = []
         for idx, row_values in enumerate(rows):
             row = dict(zip(columns, row_values))
+
+            # ── Python-side fallback ──────────────────────────────────
+            # KQL's parse_json + property access is unreliable across
+            # different Azure table schemas.  The Properties column
+            # comes back as a raw JSON string from the REST API, so
+            # parse it here and fill in any fields that KQL missed.
+            raw_props = row.get("Properties")
+            if isinstance(raw_props, str) and raw_props.startswith("{"):
+                try:
+                    parsed = _json.loads(raw_props)
+                    if isinstance(parsed, dict):
+                        row["Properties"] = parsed  # store parsed dict
+                        if not row.get("Model"):
+                            row["Model"] = (
+                                parsed.get("modelDeploymentName", "")
+                                or parsed.get("ModelDeploymentName", "")
+                                or parsed.get("model", "")
+                                or parsed.get("modelName", "")
+                                or ""
+                            )
+                        if not row.get("RequestUri"):
+                            row["RequestUri"] = (
+                                parsed.get("requestUri", "")
+                                or parsed.get("RequestUri", "")
+                                or ""
+                            )
+                        if not row.get("StreamType"):
+                            row["StreamType"] = (
+                                parsed.get("stream", "")
+                                or parsed.get("Stream", "")
+                                or ""
+                            )
+                        if not row.get("ApiVersion"):
+                            row["ApiVersion"] = (
+                                parsed.get("apiVersion", "")
+                                or parsed.get("ApiVersion", "")
+                                or ""
+                            )
+                        if not row.get("ObjectType"):
+                            row["ObjectType"] = (
+                                parsed.get("objectType", "")
+                                or parsed.get("ObjectType", "")
+                                or ""
+                            )
+                        if row.get("PromptTokens") is None:
+                            row["PromptTokens"] = (
+                                parsed.get("promptTokens")
+                                or parsed.get("PromptTokens")
+                            )
+                        if row.get("CompletionTokens") is None:
+                            row["CompletionTokens"] = (
+                                parsed.get("completionTokens")
+                                or parsed.get("CompletionTokens")
+                            )
+                        if row.get("TotalTokens") is None:
+                            row["TotalTokens"] = (
+                                parsed.get("totalTokens")
+                                or parsed.get("TotalTokens")
+                            )
+                        if not row.get("RequestBody"):
+                            row["RequestBody"] = (
+                                parsed.get("request", "")
+                                or parsed.get("Request", "")
+                                or ""
+                            )
+                        if not row.get("ResponseBody"):
+                            row["ResponseBody"] = (
+                                parsed.get("response", "")
+                                or parsed.get("Response", "")
+                                or ""
+                            )
+                except (_json.JSONDecodeError, ValueError):
+                    pass
+
             # Log the first row so we can see what KQL actually returns
             if idx == 0:
                 props = row.get("Properties")
                 prop_keys = sorted(props.keys()) if isinstance(props, dict) else type(props).__name__
                 logger.info(
-                    "Sample KQL row — columns: %s | Model=%r | RequestBody=%r (len=%d) | "
-                    "ResponseBody=%r (len=%d) | PromptTokens=%r | Properties keys=%s",
+                    "Sample KQL row (after Python parse) — columns: %s | "
+                    "Model=%r | RequestUri=%r | "
+                    "RequestBody=%r (len=%d) | ResponseBody=%r (len=%d) | "
+                    "PromptTokens=%r | Properties type=%s keys=%s",
                     columns,
                     row.get("Model"),
-                    (row.get("RequestBody") or "")[:100],
+                    (row.get("RequestUri") or "")[:120],
+                    (row.get("RequestBody") or "")[:120],
                     len(row.get("RequestBody") or ""),
-                    (row.get("ResponseBody") or "")[:100],
+                    (row.get("ResponseBody") or "")[:120],
                     len(row.get("ResponseBody") or ""),
                     row.get("PromptTokens"),
+                    type(props).__name__,
                     prop_keys,
                 )
+
             raw_rows.append(row)
             traces.append({
                 "trace_id": row.get("OperationId", ""),
