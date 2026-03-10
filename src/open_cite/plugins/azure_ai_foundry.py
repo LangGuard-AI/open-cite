@@ -363,6 +363,7 @@ class AzureAIFoundryPlugin(BaseDiscoveryPlugin):
         poll_interval: int = 60,
         instance_id: Optional[str] = None,
         display_name: Optional[str] = None,
+        auto_poll: bool = True,
     ):
         super().__init__(instance_id=instance_id, display_name=display_name)
 
@@ -377,6 +378,7 @@ class AzureAIFoundryPlugin(BaseDiscoveryPlugin):
         self.log_analytics_workspace_id = log_analytics_workspace_id
         self.lookback_hours = max(1, int(lookback_hours))
         self.poll_interval = max(10, int(poll_interval))
+        self._auto_poll = auto_poll
 
         # Service / monitor token caches (separate from ARM token)
         self._service_token: Optional[str] = None
@@ -481,6 +483,9 @@ class AzureAIFoundryPlugin(BaseDiscoveryPlugin):
 
         lookback_hours = int(config.get("lookback_hours") or 24)
         poll_interval = int(config.get("poll_interval") or 60)
+        auto_poll = config.get("auto_poll", True)
+        if isinstance(auto_poll, str):
+            auto_poll = auto_poll.lower() not in ("false", "0", "no")
 
         return cls(
             tenant_id=config.get("tenant_id"),
@@ -495,6 +500,7 @@ class AzureAIFoundryPlugin(BaseDiscoveryPlugin):
             poll_interval=poll_interval,
             instance_id=instance_id,
             display_name=display_name,
+            auto_poll=bool(auto_poll),
         )
 
     # ------------------------------------------------------------------
@@ -617,16 +623,26 @@ class AzureAIFoundryPlugin(BaseDiscoveryPlugin):
     def start(self):
         """Start background polling for trace discovery."""
         super().start()
-        self._poll_stop.clear()
-        self._poll_thread = threading.Thread(
-            target=self._poll_loop, daemon=True,
-            name=f"azure-foundry-poll-{self.instance_id[:8]}",
-        )
-        self._poll_thread.start()
-        logger.info(
-            "Azure AI Foundry polling started (interval=%ds, lookback=%dh)",
-            self.poll_interval, self.lookback_hours,
-        )
+        # One-time initial discovery
+        threading.Thread(
+            target=self.list_assets, args=("trace",), daemon=True,
+            name=f"azure-foundry-init-{self.instance_id[:8]}",
+        ).start()
+        if self._auto_poll:
+            self._poll_stop.clear()
+            self._poll_thread = threading.Thread(
+                target=self._poll_loop, daemon=True,
+                name=f"azure-foundry-poll-{self.instance_id[:8]}",
+            )
+            self._poll_thread.start()
+            logger.info(
+                "Azure AI Foundry polling started (interval=%ds, lookback=%dh)",
+                self.poll_interval, self.lookback_hours,
+            )
+        else:
+            logger.info(
+                "Azure AI Foundry started with auto_poll=False, polling thread skipped"
+            )
 
     def stop(self):
         """Stop background polling."""
@@ -635,6 +651,16 @@ class AzureAIFoundryPlugin(BaseDiscoveryPlugin):
             self._poll_thread.join(timeout=5.0)
             self._poll_thread = None
         super().stop()
+
+    def refresh_traces(self, days=None):
+        """Incremental refresh called externally (e.g. by LangGuard scheduler)."""
+        lookback = days * 24 if days else self.lookback_hours
+        saved_lookback = self.lookback_hours
+        try:
+            self.lookback_hours = lookback
+            self.list_assets("trace")
+        finally:
+            self.lookback_hours = saved_lookback
 
     def _poll_loop(self):
         """Background loop that refreshes all caches periodically."""

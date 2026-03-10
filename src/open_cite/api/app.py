@@ -62,6 +62,7 @@ asset_cache = None
 asset_cache_time = None
 _last_save_time: float = 0.0
 _SAVE_INTERVAL: float = 5.0  # minimum seconds between persistence saves
+_last_data_modified: Optional[str] = None  # ISO-8601 timestamp of most recent data change (in-memory)
 
 # Tracks fingerprints of persisted items so we only write new/changed data.
 # Keys are like "tool:Bash", "agent:claude", "lineage:src->tgt:rel", etc.
@@ -912,6 +913,13 @@ def register_api_routes(app: Flask):
         except Exception as e:
             return jsonify({"enabled": True, "error": str(e)}), 500
 
+    @app.route('/api/v1/stats', methods=['GET'])
+    def api_stats():
+        """Lightweight stats endpoint returning last_modified timestamp (in-memory, no DB query)."""
+        return jsonify({
+            "last_modified": _last_data_modified,
+        })
+
     @app.route('/api/v1/persistence/save', methods=['POST'])
     def api_persistence_save():
         """Manually save current state to persistence."""
@@ -1299,8 +1307,12 @@ def register_api_routes(app: Flask):
             data = request.json or {}
             days = data.get('days')
 
-            if hasattr(plugin, 'refresh_traces') and callable(plugin.refresh_traces):
-                # Incremental refresh — uses _last_query_time internally
+            if hasattr(plugin, 'refresh_discovery') and callable(plugin.refresh_discovery):
+                # Full discovery refresh — models, deployments, agents, tools, traces
+                plugin.refresh_discovery()
+                method = 'refresh_discovery'
+            elif hasattr(plugin, 'refresh_traces') and callable(plugin.refresh_traces):
+                # Incremental trace-only refresh
                 if days is not None:
                     plugin.refresh_traces(days=int(days))
                 else:
@@ -1363,7 +1375,11 @@ def register_api_routes(app: Flask):
         if not url or not url.startswith(("http://", "https://")):
             return jsonify({"error": "A valid http:// or https:// URL is required"}), 400
 
-        added = plugin.subscribe_webhook(url)
+        wh_headers = data.get("headers")
+        if wh_headers is not None and not isinstance(wh_headers, dict):
+            return jsonify({"error": "'headers' must be a dict of string key-value pairs"}), 400
+
+        added = plugin.subscribe_webhook(url, headers=wh_headers)
         return jsonify({"success": True, "added": added, "webhooks": plugin.list_webhooks()})
 
     @app.route('/api/v1/instances/<instance_id>/webhooks', methods=['DELETE'])
@@ -2190,6 +2206,8 @@ def _save_current_state():
             saved_counts[plugin_name] = count
 
     if saved_counts:
+        global _last_data_modified
+        _last_data_modified = datetime.utcnow().isoformat() + "Z"
         parts = [f"{c} from {p}" for p, c in saved_counts.items()]
         logger.info("Persisted %s", ", ".join(parts))
 

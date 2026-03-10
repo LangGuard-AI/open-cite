@@ -76,7 +76,7 @@ class BaseDiscoveryPlugin(ABC):
         self._display_name = display_name or self.plugin_type.replace('_', ' ').title()
         self._status = "stopped"  # running, stopped, error
         self._on_data_changed = None
-        self._webhook_urls: Set[str] = set()
+        self._webhook_urls: Dict[str, Dict[str, str]] = {}
         self._webhook_executor: Optional[ThreadPoolExecutor] = None
 
     @classmethod
@@ -336,19 +336,22 @@ class BaseDiscoveryPlugin(ABC):
     # Webhook Trace Forwarding
     # =========================================================================
 
-    def subscribe_webhook(self, url: str) -> bool:
+    def subscribe_webhook(self, url: str, headers: Optional[Dict[str, str]] = None) -> bool:
         """
         Subscribe a webhook URL to receive OTLP trace payloads.
 
         Args:
             url: HTTP(S) URL to POST OTLP JSON to
+            headers: Optional mandatory headers to include in every POST to this URL
 
         Returns:
             True if newly added, False if already subscribed
         """
         if url in self._webhook_urls:
+            if headers:
+                self._webhook_urls[url] = headers
             return False
-        self._webhook_urls.add(url)
+        self._webhook_urls[url] = headers or {}
         if self._webhook_executor is None:
             self._webhook_executor = ThreadPoolExecutor(max_workers=6)
         logger.info(f"Webhook subscribed: {url} (plugin={self.instance_id})")
@@ -366,13 +369,13 @@ class BaseDiscoveryPlugin(ABC):
         """
         if url not in self._webhook_urls:
             return False
-        self._webhook_urls.discard(url)
+        del self._webhook_urls[url]
         logger.info(f"Webhook unsubscribed: {url} (plugin={self.instance_id})")
         return True
 
     def list_webhooks(self) -> List[str]:
         """Return list of subscribed webhook URLs."""
-        return list(self._webhook_urls)
+        return list(self._webhook_urls.keys())
 
     # Maximum resourceSpans per webhook POST to avoid 413 (Payload Too Large).
     # Each resourceSpan contains one trace's worth of spans. 10 keeps payloads
@@ -432,9 +435,13 @@ class BaseDiscoveryPlugin(ABC):
 
     def _send_webhook(self, url: str, otlp_payload: dict, inbound_headers: Optional[Dict[str, str]] = None):
         """POST an OTLP JSON payload to a webhook URL with retries."""
-        # Build outbound headers: start with forwarded inbound headers,
+        # Build outbound headers: start with per-webhook mandatory headers,
+        # overlay inbound headers (preserves Authorization from original request),
         # then ensure Content-Type is set for JSON
-        headers = dict(inbound_headers) if inbound_headers else {}
+        mandatory = self._webhook_urls.get(url, {})
+        headers = dict(mandatory)
+        if inbound_headers:
+            headers.update(inbound_headers)
         headers["Content-Type"] = "application/json"
 
         # Mask token in debug output

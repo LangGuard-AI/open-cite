@@ -163,6 +163,9 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             poll_interval = int(poll_interval) if poll_interval else 10
         except (ValueError, TypeError):
             poll_interval = 10
+        auto_poll = config.get('auto_poll', True)
+        if isinstance(auto_poll, str):
+            auto_poll = auto_poll.lower() not in ('false', '0', 'no')
         return cls(
             host=config.get('host') or None,
             token=config.get('token') or None,
@@ -173,6 +176,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             display_name=display_name,
             ai_gateway_usage_table=config.get('ai_gateway_usage_table') or None,
             gateway_poll_interval=poll_interval,
+            auto_poll=bool(auto_poll),
         )
 
     def __init__(
@@ -186,12 +190,14 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         display_name: Optional[str] = None,
         ai_gateway_usage_table: Optional[str] = None,
         gateway_poll_interval: int = 10,
+        auto_poll: bool = True,
     ):
         super().__init__(instance_id=instance_id, display_name=display_name)
         self.host = host
         self.token = token
         self.warehouse_id = warehouse_id
         self.lookback_days = lookback_days
+        self._auto_poll = auto_poll
         self._last_query_time: Optional[datetime] = None
 
         # Build WorkspaceClient
@@ -1173,8 +1179,8 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         )
         thread.start()
 
-        # Start AI Gateway usage table polling if configured
-        if self._ai_gateway_table:
+        # Start AI Gateway usage table polling if configured and auto_poll enabled
+        if self._ai_gateway_table and self._auto_poll:
             self._gateway_poll_stop.clear()
             self._gateway_poll_thread = threading.Thread(
                 target=self._poll_ai_gateway_usage,
@@ -1184,6 +1190,10 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             self._gateway_poll_thread.start()
             logger.info(
                 f"Started AI Gateway usage polling: table={self._ai_gateway_table}"
+            )
+        elif self._ai_gateway_table and not self._auto_poll:
+            logger.info(
+                f"AI Gateway usage table configured but auto_poll=False, skipping polling thread"
             )
 
         logger.info(f"Started Databricks plugin {self.instance_id} (discovery running in background)")
@@ -1376,6 +1386,22 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             f"Run discovery: {succeeded} experiments succeeded, "
             f"{failed} failed, {total_runs} runs processed"
         )
+
+    def refresh_discovery(self):
+        """Refresh all discovery data: Unity Catalog assets, traces, Genie, MCP."""
+        logger.info("Refreshing full Databricks discovery for %s", self.instance_id)
+
+        # Unity Catalog assets
+        for asset_type in ("catalog", "schema", "table", "volume", "model", "function"):
+            try:
+                self.list_assets(asset_type)
+            except Exception as e:
+                logger.warning("Failed to discover %s: %s", asset_type, e)
+
+        # Traces, Genie conversations, MCP servers
+        self._run_discovery(self.lookback_days, "refresh_discovery")
+
+        logger.info("Full Databricks discovery refresh complete for %s", self.instance_id)
 
     def refresh_traces(self, days: Optional[int] = None):
         """
