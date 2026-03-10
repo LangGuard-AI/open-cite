@@ -322,11 +322,14 @@ src/open_cite/
     databricks.py            # Databricks + MLflow + Genie
     databricks_otlp_converter.py  # OTLP builders for Databricks data
     google_cloud.py          # Vertex AI + Compute Engine
+    azure_ai_foundry.py     # Azure AI Foundry discovery
+    splunk.py                # Splunk discovery
+    zscaler.py               # Zscaler ZIA + NSS
+    logs_adapter.py          # Logs adapter
     aws/
       base.py                # Shared AWS auth mixin
       bedrock.py             # AWS Bedrock
       sagemaker.py           # AWS SageMaker
-    zscaler.py               # Zscaler ZIA + NSS
 ```
 
 ## Databricks Plugin Requirements

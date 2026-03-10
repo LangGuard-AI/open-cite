@@ -99,28 +99,11 @@ tracer_provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
 tracer = trace.get_tracer(__name__)
 ```
 
-### Using OpenRouter's Broadcast Feature
+### Using OpenRouter or Cloudflare AI Gateway
 
-**OpenRouter has built-in OpenTelemetry trace broadcasting** - you don't need to instrument your code!
+Both **OpenRouter** and **Cloudflare AI Gateway** can send OTLP traces to Open-CITE natively -- no custom instrumentation required.
 
-If you're using OpenRouter, you can enable their Broadcast feature to automatically send traces to OpenCite:
-
-1. **Enable Broadcast in OpenRouter Settings**
-   - Go to https://openrouter.ai/settings/broadcast
-   - Add "OTel Collector" as a destination
-   - Configure the endpoint URL to point to your OpenCite instance:
-     - **Same machine**: `http://localhost:4318/v1/traces`
-     - **Remote machine**: `http://YOUR_IP:4318/v1/traces` (see GUI for your IP)
-
-2. **That's it!** OpenRouter will automatically send traces for all your API calls to OpenCite.
-
-**Benefits of using OpenRouter Broadcast:**
-- ✅ Zero code changes required
-- ✅ Automatic trace generation for all OpenRouter calls
-- ✅ Works with any OpenRouter client (OpenAI SDK, curl, etc.)
-- ✅ Centralized configuration in OpenRouter dashboard
-
-For more details, see [OpenRouter's Broadcast documentation](https://openrouter.ai/docs/guides/features/broadcast/overview).
+For step-by-step setup instructions, see [Sending Traces to Open-CITE](../SENDING_TRACES.md).
 
 ### Instrument OpenRouter Calls (Manual Alternative)
 

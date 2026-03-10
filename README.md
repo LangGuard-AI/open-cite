@@ -4,62 +4,23 @@ Open-CITE (**C**ataloging **I**ntelligent **T**ools in the **E**nterprise), pron
 
 ## Overview
 
-Open-CITE provides a unified interface for discovering and cataloging AI/ML resources across different platforms. Whether you're managing models in Databricks, tracking AI agent usage via OpenTelemetry, discovering MCP servers, or working with Google Cloud's Vertex AI, Open-CITE brings everything together under one roof.
+Open-CITE provides a unified interface for discovering and cataloging AI/ML resources across different platforms. Whether you're managing models in Databricks, tracking AI agent usage via OpenTelemetry, discovering resources in Azure AI Foundry, or working with Google Cloud's Vertex AI, Open-CITE brings everything together under one roof.
 
 ## Key Capabilities
 
-- **Multi-Platform Discovery**: Automatic discovery of AI/ML resources across Databricks, AWS, Google Cloud, and more
+- **Multi-Platform Discovery**: Automatic discovery of AI/ML resources across Databricks, AWS, Azure, Google Cloud, and more
 - **Protocol Support**: Native support for OpenTelemetry, MCP (Model Context Protocol), and major cloud APIs
 - **Trace Analysis**: Collect and analyze traces from AI agents, tools, and model invocations
 - **Model Cataloging**: Track models, endpoints, deployments, and usage patterns
 - **Infrastructure Discovery**: Find MCP servers, compute instances, and AI services
 - **Unified Schema**: Export discoveries in a standardized JSON format for downstream processing
-- **Runs as a library or service**: Open-CITE can be run with or without the GUI, in either a docker container or kubernetes to provide a headless AI asset discovery service. Open-CITE can also be leveraged as a library in your own python application.
+- **Runs as a library or service**: Open-CITE can be run with or without the GUI, in a docker container or Kubernetes to provide a headless AI asset discovery service, or leveraged as a library in your own Python application
 
 ## Powered by LangGuard
 
-Open-CITE is provided to the community by the team at [LangGuard.AI](https://langguard.ai?utm=Open-CITE), home of the AI Control Plane for enterprise AI governance and monitoring. LangGuard leverages Open-CITE for internal AI Asset discovery. 
+Open-CITE is provided to the community by the team at [LangGuard.AI](https://langguard.ai?utm=Open-CITE), home of the AI Control Plane for enterprise AI governance and monitoring. LangGuard leverages Open-CITE for internal AI Asset discovery.
 
-## Features by Plugin
-
-### Databricks Plugin
-- Unity Catalog integration for catalogs, schemas, tables, and volumes
-- MLflow trace search and retrieval for observability
-- Data lineage and metadata management
-
-### Google Cloud Plugin
-- Vertex AI model and endpoint discovery
-- Generative AI model listing (Gemini, PaLM, etc.)
-- Model deployment tracking
-- MCP server discovery via:
-  - Label-based discovery (tags on compute instances)
-  - Port scanning for active MCP servers
-- Requires: Google Cloud credentials and project configuration
-
-### OpenTelemetry Plugin
-- OTLP/HTTP receiver for collecting traces
-- Automatic tool and model discovery from trace data
-- Works with any LLM provider (OpenRouter, OpenAI, Anthropic, etc.)
-- **OpenRouter Broadcast support**: Zero-code integration via OpenRouter's built-in trace broadcasting
-- Real-time analytics on tool and model usage
-- Requires: OTLP endpo/int configuration
-
-### MCP Plugin (Model Context Protocol)
-- Trace-based MCP server discovery
-- MCP tool and resource cataloging
-- Usage pattern analysis
-- Integration with OpenTelemetry traces
-- Enabled by default when OpenTelemetry is active
-
-## Architecture
-
-Open-CITE uses a plugin-based architecture that allows you to:
-- Enable only the discovery sources you need
-- Add custom plugins for proprietary systems
-- Combine multiple discovery methods for comprehensive coverage
-- Export unified results regardless of source
-
-## Installation
+## Quick Start
 
 ```bash
 # Create and activate a virtual environment
@@ -68,192 +29,36 @@ source venv/bin/activate
 
 # Install in editable mode
 pip install -e .
-```
 
-## Usage
-
-### Web GUI
-
-Open-CITE includes a web-based GUI for easy discovery and visualization:
-
-```bash
-# Start the GUI server
-python -m open_cite.gui.app
-
+# Start the GUI
+opencite gui
 # Access at http://localhost:5000
+
+# Or start the headless API
+opencite api
+# Access at http://0.0.0.0:8080
 ```
-
-**Features:**
-- **Visual plugin configuration**: Select and configure plugins with a simple UI
-- **Real-time discovery**: See assets appear automatically as traces arrive (3-second polling)
-- **OpenTelemetry integration**: Built-in OTLP receiver with ngrok support for remote traces
-- **Export functionality**: Download discovered assets as JSON directly from the browser
-- **Multi-plugin support**: Enable Databricks, Google Cloud, OpenTelemetry, and MCP plugins simultaneously
-
-The GUI automatically stops any running discovery when you refresh the page, ensuring a clean state on each load.
-
-### Python API
-
-#### Databricks Plugin
-
-```python
-from open_cite import OpenCiteClient
-
-# Initialize client (uses DATABRICKS_HOST and DATABRICKS_TOKEN env vars)
-client = OpenCiteClient()
-
-# Verify connection
-print(client.verify_connection())
-
-# List catalogs
-catalogs = client.list_catalogs()
-for cat in catalogs:
-    print(cat['name'])
-
-    # List schemas in the first catalog
-    schemas = client.list_schemas(cat['name'])
-    for schema in schemas:
-        print(f"  - {schema['name']}")
-
-# Search for traces
-traces = client.search_traces(max_results=5)
-for trace in traces:
-    print(f"Trace {trace['request_id']}: {trace['status']}")
-```
-
-### OpenTelemetry Plugin
-
-```python
-from open_cite import OpenCiteClient
-
-# Initialize client with OpenTelemetry plugin enabled
-client = OpenCiteClient(enable_otel=True, otel_host="0.0.0.0", otel_port=4318)
-
-# Verify OTLP receiver is running
-status = client.verify_otel_connection()
-print(f"OTLP Endpoint: {status['endpoint']}")
-print(f"Traces received: {status['traces_received']}")
-
-# List discovered tools from traces
-tools = client.list_otel_tools()
-for tool in tools:
-    print(f"Tool: {tool['name']}")
-    print(f"  Models: {tool['models']}")
-    print(f"  Traces: {tool['trace_count']}")
-
-# List all models discovered
-models = client.list_otel_models()
-for model in models:
-    print(f"Model: {model['name']} - Used by {len(model['tools'])} tools")
-```
-
-For detailed OpenTelemetry plugin documentation, see [docs/plugins/OPENTELEMETRY_PLUGIN.md](docs/plugins/OPENTELEMETRY_PLUGIN.md).
-
-### MCP Plugin
-
-```python
-from open_cite import OpenCiteClient
-
-# Initialize client (MCP discovery enabled by default)
-client = OpenCiteClient(enable_mcp=True)
-
-# List discovered MCP servers
-servers = client.list_mcp_servers()
-for server in servers:
-    print(f"Server: {server['name']} ({server['transport']})")
-
-# List MCP tools
-tools = client.list_mcp_tools()
-
-# Verify discovery
-status = client.verify_mcp_discovery()
-print(f"Discovered {status['servers_discovered']} MCP servers")
-```
-
-For detailed MCP plugin documentation, see [docs/plugins/MCP_PLUGIN.md](docs/plugins/MCP_PLUGIN.md).
-
-### Google Cloud Plugin
-
-```python
-from open_cite import OpenCiteClient
-
-# Initialize client with Google Cloud plugin
-client = OpenCiteClient(
-    enable_google_cloud=True,
-    gcp_project_id="my-project-id",
-    gcp_location="us-central1"
-)
-
-# List Vertex AI models
-models = client.list_gcp_models()
-for model in models:
-    print(f"Model: {model['name']} ({model['type']})")
-
-# List endpoints
-endpoints = client.list_gcp_endpoints()
-for endpoint in endpoints:
-    print(f"Endpoint: {endpoint['name']}")
-    print(f"  Deployed models: {len(endpoint['deployed_models'])}")
-
-# List generative AI models
-gen_models = client.list_gcp_generative_models()
-for model in gen_models:
-    print(f"{model['name']}: {model['capabilities']}")
-
-# Verify connection
-status = client.verify_gcp_connection()
-print(f"Connected to project: {status['project_id']}")
-```
-
-For detailed Google Cloud plugin documentation, see [docs/plugins/GOOGLE_CLOUD_PLUGIN.md](docs/plugins/GOOGLE_CLOUD_PLUGIN.md).
-
-### Exporting to JSON
-
-```python
-from open_cite import OpenCiteClient
-
-client = OpenCiteClient(enable_otel=True)
-
-# ... collect some traces ...
-
-# Export to JSON format (Open-CITE schema)
-data = client.export_to_json()
-
-# Or save directly to file
-client.export_to_json(filepath="discoveries.json")
-```
-
-For schema documentation, see [docs/SCHEMA_DOCUMENTATION.md](docs/SCHEMA_DOCUMENTATION.md).
 
 ## Documentation
 
-- **[docs/](docs/)** - Plugin documentation and implementation guides
+Full documentation is available in the [docs/](docs/) folder:
 
-## Project Structure
+- **[docs/README.md](docs/README.md)** -- Full usage guide, Python API examples, and project structure
+- **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** -- Docker and Kubernetes deployment
+- **[docs/REST_API.md](docs/REST_API.md)** -- REST API reference
+- **[docs/SENDING_TRACES.md](docs/SENDING_TRACES.md)** -- Configure Cloudflare AI Gateway, OpenRouter, and other sources to send traces
+- **[docs/PLUGINS.md](docs/PLUGINS.md)** -- Plugin authoring guide
+- **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** -- Development setup and debugging
+- **[docs/SCHEMA_DOCUMENTATION.md](docs/SCHEMA_DOCUMENTATION.md)** -- JSON export schema
 
-```
-open-cite/
-├── src/open_cite/          # Main library code
-│   ├── client.py           # Unified client interface
-│   ├── plugins/            # Discovery plugins
-│   │   ├── databricks.py   # Databricks/Unity Catalog plugin
-│   │   ├── google_cloud.py # Google Cloud/Vertex AI plugin
-│   │   ├── opentelemetry.py # OpenTelemetry plugin
-│   │   └── mcp.py          # MCP plugin
-│   ├── gui/                # Web GUI application
-│   │   ├── app.py          # Flask server
-│   │   ├── templates/      # HTML templates
-│   │   └── static/         # Static assets
-│   └── schema.py           # Export schema definitions
-├── docs/                   # Documentation
-└── README.md               # This file
-```
+### Plugin Documentation
+
+- [OpenTelemetry Plugin](docs/plugins/OPENTELEMETRY_PLUGIN.md)
+- [Azure AI Foundry Plugin](docs/plugins/AZURE_AI_FOUNDRY_PLUGIN.md)
+- [AWS Plugins (Bedrock & SageMaker)](docs/plugins/AWS_PLUGINS.md)
+- [Google Cloud Plugin](docs/plugins/GOOGLE_CLOUD_PLUGIN.md)
+- [Microsoft Fabric Plugin](docs/plugins/MICROSOFT_FABRIC_PLUGIN.md)
 
 ## Contributing
 
-Contributions are welcome! The plugin architecture makes it easy to add support for new platforms:
-
-1. Create a new plugin in `src/open_cite/plugins/`
-2. Implement the discovery interface
-3. Update the client to expose your plugin's methods
-
+Contributions are welcome! The plugin architecture makes it easy to add support for new platforms. See [docs/PLUGINS.md](docs/PLUGINS.md) for the full plugin authoring guide.

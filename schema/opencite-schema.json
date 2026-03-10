@@ -7,12 +7,35 @@
   "properties": {
     "version": {
       "type": "string",
-      "description": "Schema version",
+      "description": "Schema version (used in full export format)",
       "pattern": "^\\d+\\.\\d+\\.\\d+$",
       "examples": ["1.0.0"]
     },
+    "opencite_version": {
+      "type": "string",
+      "description": "Schema version (used in programmatic export)",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "examples": ["1.0.0"]
+    },
+    "export_timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When this export was generated"
+    },
     "metadata": {
       "$ref": "#/definitions/Metadata"
+    },
+    "plugins": {
+      "type": "array",
+      "description": "Plugins that contributed to this export",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "version": { "type": "string" }
+        },
+        "required": ["name"]
+      }
     },
     "tools": {
       "type": "array",
@@ -64,7 +87,7 @@
       }
     }
   },
-  "required": ["version", "metadata"],
+  "required": [],
   "definitions": {
     "Metadata": {
       "type": "object",
@@ -133,8 +156,8 @@
         },
         "discovery_source": {
           "type": "string",
-          "enum": ["opentelemetry", "databricks", "databricks/mlflow", "databricks/genie", "databricks/ai-gateway", "azure_ai_foundry", "manual"],
-          "description": "How this tool was discovered (plugin/subsystem)"
+          "description": "How this tool was discovered (plugin/subsystem)",
+          "examples": ["opentelemetry", "databricks", "databricks/mlflow", "databricks/genie", "databricks/ai-gateway", "azure_ai_foundry", "google_cloud_api", "aws_bedrock_api", "aws_sagemaker_api", "cloudtrail", "cloudwatch_logs", "trace_analysis", "manual"]
         },
         "models_used": {
           "type": "array",
@@ -281,8 +304,8 @@
         },
         "discovery_source": {
           "type": "string",
-          "enum": ["opentelemetry", "databricks", "databricks/mlflow", "databricks/genie", "databricks/ai-gateway", "azure_ai_foundry", "manual"],
-          "description": "How this model was discovered (plugin/subsystem)"
+          "description": "How this model was discovered (plugin/subsystem)",
+          "examples": ["opentelemetry", "databricks", "databricks/mlflow", "databricks/genie", "databricks/ai-gateway", "azure_ai_foundry", "google_cloud_api", "aws_bedrock_api", "aws_sagemaker_api", "manual"]
         },
         "usage": {
           "type": "object",
@@ -389,8 +412,8 @@
         },
         "type": {
           "type": "string",
-          "enum": ["catalog", "schema", "table", "view", "volume", "function", "model"],
-          "description": "Type of data asset"
+          "description": "Type of data asset",
+          "examples": ["catalog", "schema", "table", "view", "volume", "function", "model", "endpoint", "deployment", "foundry_resource", "openai_resource", "project", "agent", "tool", "trace", "model_package", "training_job", "custom_model", "provisioned_throughput", "invocation", "generative_model"]
         },
         "full_name": {
           "type": "string",
@@ -399,8 +422,8 @@
         },
         "discovery_source": {
           "type": "string",
-          "enum": ["databricks", "azure_ai_foundry", "manual"],
-          "description": "Source of discovery"
+          "description": "Source of discovery",
+          "examples": ["databricks", "azure_ai_foundry", "google_cloud_api", "aws_bedrock_api", "aws_sagemaker_api", "manual"]
         },
         "hierarchy": {
           "type": "object",

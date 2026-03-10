@@ -38,7 +38,6 @@ See detailed logs in terminal:
 src/open_cite/
 ├── core.py                 # BaseDiscoveryPlugin base class
 ├── client.py               # OpenCiteClient (plugin-agnostic orchestrator)
-├── otlp_converter.py       # MLflow/Genie → OTLP JSON converters
 ├── identifier.py           # Tool identification / mapping
 ├── schema.py               # Open-CITE JSON export schema
 │
@@ -58,8 +57,12 @@ src/open_cite/
     ├── registry.py          # Auto-discovery and factory
     ├── opentelemetry.py     # OTLP trace receiver
     ├── databricks.py        # Databricks MLflow + Genie + Unity Catalog
+    ├── databricks_otlp_converter.py  # OTLP builders for Databricks data
     ├── google_cloud.py      # Vertex AI + Compute Engine MCP
+    ├── azure_ai_foundry.py  # Azure AI Foundry discovery
+    ├── splunk.py            # Splunk discovery
     ├── zscaler.py           # ZIA DLP + NSS shadow MCP detection
+    ├── logs_adapter.py      # Logs adapter
     └── aws/
         ├── base.py          # Shared AWS auth mixin
         ├── bedrock.py       # AWS Bedrock
@@ -400,8 +403,10 @@ git push origin feature/gui-improvement
 
 - [Plugin Authoring Guide](PLUGINS.md) -- creating a new plugin, webhook forwarding, OTLP conventions
 - [OpenTelemetry Plugin](plugins/OPENTELEMETRY_PLUGIN.md) -- OTLP receiver setup and trace format
+- [Azure AI Foundry Plugin](plugins/AZURE_AI_FOUNDRY_PLUGIN.md) -- Azure discovery
 - [AWS Plugins](plugins/AWS_PLUGINS.md) -- Bedrock and SageMaker discovery
 - [Google Cloud Plugin](plugins/GOOGLE_CLOUD_PLUGIN.md) -- Vertex AI and Compute Engine discovery
+- [Microsoft Fabric Plugin](plugins/MICROSOFT_FABRIC_PLUGIN.md) -- Microsoft Fabric discovery
 - [Schema Documentation](SCHEMA_DOCUMENTATION.md) -- JSON export format
 
 ## External Resources

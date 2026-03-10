@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Open-CITE - Open Catalog of Intelligent Tools in the Enterprise</title>
+    <meta name="description" content="Discover and catalog every AI tool, model, and agent across your enterprise. Open-source, plugin-based, multi-cloud AI asset discovery.">
+    <meta name="keywords" content="AI discovery, ML cataloging, OpenTelemetry, MCP, Databricks, enterprise AI governance">
+    <meta property="og:title" content="Open-CITE - AI Discovery & Cataloging">
+    <meta property="og:description" content="Discover and catalog every AI tool, model, and agent across your enterprise.">
+    <meta property="og:image" content="images/open-cite-bear.png">
+    <meta property="og:url" content="https://open-cite.org">
+    <link rel="icon" type="image/png" href="images/favicon.png">
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+    <!-- Section 1: Sticky Navigation -->
+    <nav class="nav" id="nav">
+        <div class="nav-container">
+            <a href="#hero" class="nav-brand">
+                <img src="images/open-cite-bear.png" alt="Open-CITE" class="nav-logo">
+                <span class="nav-title">Open-CITE</span>
+            </a>
+            <button class="nav-hamburger" id="nav-hamburger" aria-label="Toggle navigation">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+            <div class="nav-links" id="nav-links">
+                <a href="#features" class="nav-link">Features</a>
+                <a href="#screenshots" class="nav-link">Screenshots</a>
+                <a href="#platforms" class="nav-link">Platforms</a>
+                <a href="#getting-started" class="nav-link">Get Started</a>
+                <a href="#plugins" class="nav-link">Plugins</a>
+                <a href="https://github.com/LangGuard-AI/opencite/tree/main/docs" target="_blank" rel="noopener" class="nav-link">Docs</a>
+            </div>
+            <a href="https://github.com/LangGuard-AI/opencite" target="_blank" rel="noopener" class="nav-github" aria-label="View on GitHub">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+                </svg>
+            </a>
+        </div>
+    </nav>
+
+    <!-- Section 2: Hero -->
+    <section class="hero" id="hero">
+        <div class="hero-container">
+            <img src="images/open-cite-bear.png" alt="Open-CITE Bear Mascot" class="hero-mascot">
+            <h1 class="hero-title">Open-CITE</h1>
+            <p class="hero-subtitle"><strong>O</strong>pen <strong>C</strong>atalog of <strong>I</strong>ntelligent <strong>T</strong>ools in the <strong>E</strong>nterprise</p>
+            <p class="hero-pitch">Discover and catalog every AI tool, model, and agent across your enterprise &mdash; from a single pane of glass.</p>
+            <div class="hero-ctas">
+                <a href="#getting-started" class="btn btn-primary">Get Started</a>
+                <a href="https://github.com/LangGuard-AI/opencite" target="_blank" rel="noopener" class="btn btn-outline">View on GitHub</a>
+            </div>
+            <div class="hero-powered">
+                <span>powered by</span>
+                <a href="https://langguard.ai?utm=open-cite-website" target="_blank" rel="noopener">
+                    <img src="images/langguard-logo.png" alt="LangGuard.AI" class="hero-langguard-logo">
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Section 3: What is Open-CITE? -->
+    <section class="about" id="about">
+        <div class="container">
+            <h2 class="section-title">What is Open-CITE?</h2>
+            <p class="about-text">
+                Open-CITE (pronounced "Open-Sight") is an open-source Python library, service, and application for discovering and cataloging AI/ML assets across your entire organization. It connects to your cloud platforms, collects traces from your AI agents, and builds a unified inventory of every tool, model, endpoint, and agent in your enterprise.
+            </p>
+            <p class="about-text">
+                Run it as a GUI for interactive exploration, a headless API for automation, a Python library in your own code, or a containerized service in Docker and Kubernetes. Its plugin architecture means you only enable the discovery sources you need.
+            </p>
+        </div>
+    </section>
+
+    <!-- Section 4: Key Features -->
+    <section class="features" id="features">
+        <div class="container">
+            <h2 class="section-title">Key Features</h2>
+            <div class="features-grid">
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">
+                        <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+                            <circle cx="20" cy="20" r="14" stroke="var(--primary-blue)" stroke-width="2.5" fill="none"/>
+                            <line x1="30" y1="30" x2="42" y2="42" stroke="var(--primary-blue)" stroke-width="2.5" stroke-linecap="round"/>
+                            <circle cx="15" cy="16" r="3" fill="var(--primary-blue)" opacity="0.3"/>
+                            <circle cx="24" cy="18" r="2" fill="var(--primary-blue)" opacity="0.3"/>
+                        </svg>
+                    </div>
+                    <h3>Multi-Platform Discovery</h3>
+                    <p>Automatic discovery of AI/ML resources across Databricks, AWS, Google Cloud, Azure, and more &mdash; all from a single tool.</p>
+                </div>
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">
+                        <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+                            <path d="M8 36V28" stroke="var(--primary-blue)" stroke-width="2.5" stroke-linecap="round"/>
+                            <path d="M16 36V22" stroke="var(--primary-blue)" stroke-width="2.5" stroke-linecap="round"/>
+                            <path d="M24 36V16" stroke="var(--primary-blue)" stroke-width="2.5" stroke-linecap="round"/>
+                            <path d="M32 36V12" stroke="var(--primary-blue)" stroke-width="2.5" stroke-linecap="round"/>
+                            <path d="M40 36V8" stroke="var(--primary-blue)" stroke-width="2.5" stroke-linecap="round"/>
+                            <path d="M6 12C12 18 20 10 26 14C32 18 38 8 42 10" stroke="var(--primary-blue)" stroke-width="2" stroke-linecap="round" fill="none" opacity="0.4"/>
+                        </svg>
+                    </div>
+                    <h3>OpenTelemetry Native</h3>
+                    <p>Built-in OTLP receiver for real-time trace collection. Discover tools and models automatically from your AI agent telemetry.</p>
+                </div>
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">
+                        <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+                            <rect x="4" y="4" width="16" height="16" rx="3" stroke="var(--primary-blue)" stroke-width="2.5" fill="none"/>
+                            <rect x="28" y="4" width="16" height="16" rx="3" stroke="var(--primary-blue)" stroke-width="2.5" fill="none"/>
+                            <rect x="16" y="28" width="16" height="16" rx="3" stroke="var(--primary-blue)" stroke-width="2.5" fill="none"/>
+                            <path d="M20 12H28M12 20V28M36 20V28" stroke="var(--primary-blue)" stroke-width="1.5" stroke-dasharray="3 3" opacity="0.5"/>
+                        </svg>
+                    </div>
+                    <h3>Plugin Architecture</h3>
+                    <p>Extensible plugin system lets you add support for any platform. Enable only the discovery sources you need.</p>
+                </div>
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">
+                        <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+                            <circle cx="24" cy="12" r="4" fill="var(--primary-blue)"/>
+                            <circle cx="12" cy="36" r="4" fill="var(--primary-blue)"/>
+                            <circle cx="36" cy="36" r="4" fill="var(--primary-blue)"/>
+                            <circle cx="8" cy="24" r="3" fill="var(--primary-blue)" opacity="0.5"/>
+                            <circle cx="40" cy="24" r="3" fill="var(--primary-blue)" opacity="0.5"/>
+                            <line x1="24" y1="16" x2="14" y2="32" stroke="var(--primary-blue)" stroke-width="1.5"/>
+                            <line x1="24" y1="16" x2="34" y2="32" stroke="var(--primary-blue)" stroke-width="1.5"/>
+                            <line x1="14" y1="34" x2="34" y2="34" stroke="var(--primary-blue)" stroke-width="1.5" opacity="0.4"/>
+                            <line x1="10" y1="24" x2="20" y2="14" stroke="var(--primary-blue)" stroke-width="1" opacity="0.3"/>
+                            <line x1="38" y1="24" x2="28" y2="14" stroke="var(--primary-blue)" stroke-width="1" opacity="0.3"/>
+                        </svg>
+                    </div>
+                    <h3>Lineage Graphs</h3>
+                    <p>Visualize relationships between tools, models, and agents with interactive network graphs showing how your AI assets connect.</p>
+                </div>
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">
+                        <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+                            <rect x="8" y="6" width="32" height="36" rx="3" stroke="var(--primary-blue)" stroke-width="2.5" fill="none"/>
+                            <path d="M16 16H32" stroke="var(--primary-blue)" stroke-width="2" stroke-linecap="round"/>
+                            <path d="M16 22H28" stroke="var(--primary-blue)" stroke-width="2" stroke-linecap="round" opacity="0.6"/>
+                            <path d="M16 28H30" stroke="var(--primary-blue)" stroke-width="2" stroke-linecap="round" opacity="0.4"/>
+                            <path d="M16 34H26" stroke="var(--primary-blue)" stroke-width="2" stroke-linecap="round" opacity="0.3"/>
+                            <path d="M34 30L40 36" stroke="var(--primary-blue)" stroke-width="2" stroke-linecap="round"/>
+                            <path d="M40 30L34 36" stroke="var(--primary-blue)" stroke-width="2" stroke-linecap="round" opacity="0.5"/>
+                        </svg>
+                    </div>
+                    <h3>Unified Schema Export</h3>
+                    <p>Export all discoveries in a standardized JSON format for downstream processing, governance tools, and compliance workflows.</p>
+                </div>
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">
+                        <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+                            <rect x="8" y="6" width="32" height="10" rx="2" stroke="var(--primary-blue)" stroke-width="2.5" fill="none"/>
+                            <rect x="8" y="20" width="32" height="10" rx="2" stroke="var(--primary-blue)" stroke-width="2.5" fill="none"/>
+                            <rect x="8" y="34" width="32" height="10" rx="2" stroke="var(--primary-blue)" stroke-width="2.5" fill="none"/>
+                            <circle cx="14" cy="11" r="2" fill="var(--primary-blue)"/>
+                            <circle cx="14" cy="25" r="2" fill="var(--primary-blue)"/>
+                            <circle cx="14" cy="39" r="2" fill="var(--primary-blue)"/>
+                        </svg>
+                    </div>
+                    <h3>Flexible Deployment</h3>
+                    <p>Run as a Python library, interactive GUI, headless REST API, or containerized service in Docker and Kubernetes.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Section 5: Screenshots -->
+    <section class="screenshots" id="screenshots">
+        <div class="container">
+            <h2 class="section-title">See It in Action</h2>
+            <div class="screenshot-tabs">
+                <button class="screenshot-tab active" data-tab="dashboard">Dashboard</button>
+                <button class="screenshot-tab" data-tab="assets">Assets</button>
+                <button class="screenshot-tab" data-tab="lineage">Lineage</button>
+            </div>
+            <div class="screenshot-panels">
+                <div class="screenshot-panel active" data-panel="dashboard">
+                    <div class="browser-frame">
+                        <div class="browser-bar">
+                            <span class="browser-dot red"></span>
+                            <span class="browser-dot yellow"></span>
+                            <span class="browser-dot green"></span>
+                        </div>
+                        <img src="images/screenshots/dashboard.png" alt="Open-CITE Dashboard showing asset statistics, configured plugins, and lineage graph" loading="lazy">
+                    </div>
+                    <p class="screenshot-caption">The main dashboard shows discovery statistics, configured plugins with live status, and an interactive lineage graph.</p>
+                </div>
+                <div class="screenshot-panel" data-panel="assets">
+                    <div class="browser-frame">
+                        <div class="browser-bar">
+                            <span class="browser-dot red"></span>
+                            <span class="browser-dot yellow"></span>
+                            <span class="browser-dot green"></span>
+                        </div>
+                        <img src="images/screenshots/assets.png" alt="Asset discovery grid showing discovered tools" loading="lazy">
+                    </div>
+                    <p class="screenshot-caption">The asset grid displays all discovered tools with type badges, discovery source, and mapping controls.</p>
+                </div>
+                <div class="screenshot-panel" data-panel="lineage">
+                    <div class="browser-frame">
+                        <div class="browser-bar">
+                            <span class="browser-dot red"></span>
+                            <span class="browser-dot yellow"></span>
+                            <span class="browser-dot green"></span>
+                        </div>
+                        <img src="images/screenshots/lineage.png" alt="Lineage graph showing relationships between AI assets" loading="lazy">
+                    </div>
+                    <p class="screenshot-caption">Interactive lineage graphs reveal how tools, models, and agents connect across your organization.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Section 6: Supported Platforms -->
+    <section class="platforms" id="platforms">
+        <div class="container">
+            <h2 class="section-title">Supported Platforms</h2>
+            <p class="section-subtitle">Connect to the AI platforms you already use</p>
+            <div class="platforms-grid">
+                <a href="#plugins" class="platform-item">
+                    <div class="platform-icon" style="--platform-color: #FF3621">
+                        <svg width="36" height="36" viewBox="0 0 24 24" fill="#FF3621">
+                            <path d="M.95 14.184L12 20.403l9.919-5.55v2.21L12 22.662l-10.484-5.96-.565.308v.77L12 24l11.05-6.218v-4.317l-.515-.309L12 19.118l-9.867-5.653v-2.21L12 16.805l11.05-6.218V6.32l-.515-.308L12 11.974 2.647 6.681 12 1.388l7.76 4.368.668-.411v-.566L12 0 .95 6.27v.72L12 13.207l9.919-5.55v2.26L12 15.52 1.516 9.56l-.565.308Z"/>
+                        </svg>
+                    </div>
+                    <span>Databricks</span>
+                </a>
+                <a href="#plugins" class="platform-item">
+                    <div class="platform-icon" style="--platform-color: #FF9900">
+                        <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
+                            <defs><linearGradient id="bedrock-g" x1="80%" y1="20%" x2="20%" y2="80%"><stop offset="0%" stop-color="#6350FB"/><stop offset="50%" stop-color="#3D8FFF"/><stop offset="100%" stop-color="#9AD8F8"/></linearGradient></defs>
+                            <path fill="url(#bedrock-g)" d="M13.05 15.513h3.08c.214 0 .389.177.389.394v1.82a1.704 1.704 0 011.296 1.661c0 .943-.755 1.708-1.685 1.708-.931 0-1.686-.765-1.686-1.708 0-.807.554-1.484 1.297-1.662v-1.425h-2.69v4.663a.395.395 0 01-.188.338l-2.69 1.641a.385.385 0 01-.405-.002l-4.926-3.086a.395.395 0 01-.185-.336V16.3L2.196 14.87A.395.395 0 012 14.555V9.406c0-.14.073-.27.192-.34l2.465-1.462V4.448c0-.129.062-.249.165-.322l.021-.014L9.77 1.058a.385.385 0 01.407 0l2.69 1.675a.395.395 0 01.185.336V7.6h3.856V5.683a1.704 1.704 0 01-1.296-1.662c0-.943.755-1.708 1.685-1.708.931 0 1.685.765 1.685 1.708 0 .807-.553 1.484-1.296 1.662v2.311a.391.391 0 01-.389.394h-4.245v1.806h6.624a1.69 1.69 0 011.64-1.313c.93 0 1.685.764 1.685 1.707 0 .943-.754 1.708-1.685 1.708a1.69 1.69 0 01-1.64-1.314H13.05v1.937h4.953l.915 1.18a1.66 1.66 0 01.84-.227c.931 0 1.685.764 1.685 1.707 0 .943-.754 1.708-1.685 1.708-.93 0-1.685-.765-1.685-1.708 0-.346.102-.668.276-.937l-.724-.935H13.05v1.806z"/>
+                        </svg>
+                    </div>
+                    <span>AWS Bedrock</span>
+                </a>
+                <a href="#plugins" class="platform-item">
+                    <div class="platform-icon" style="--platform-color: #FF9900">
+                        <svg width="36" height="36" viewBox="0 0 64 64" fill="none">
+                            <defs><linearGradient id="sage-g" x1="0%" y1="100%" x2="100%" y2="0%"><stop offset="0%" stop-color="#055F4E"/><stop offset="100%" stop-color="#56C0A7"/></linearGradient></defs>
+                            <rect width="64" height="64" rx="8" fill="url(#sage-g)"/>
+                            <path fill="#fff" d="M43 20a1 1 0 11-2 0 1 1 0 012 0zm-4 9a1 1 0 100-2 1 1 0 000 2zm0 13a1 1 0 112 0 1 1 0 01-2 0zm7-9a1 1 0 10-2 0 1 1 0 002 0zM52 35.4l-4-2-1.9 1.1c.4-.3.8-.7 1-1.1L52 37.1v-2.7l-2-1.2.4.7-2.4 1.4v2.1l-5 3.1v-4.6l-3-1.5v-5.2l3.2 2.3.4-.6-1.4-1-1.5 1-.4.7v-2l-2.1-1.4V14.6L33 23.5V36.5l-4.8 2.9V43l-3 1.8.4.7L33 41v5.4l-2 1.2 2 1.2 2.3-1.4.4-.7-2 1.2v-4.7l5-3v6l-1.4.9 2.3 1.4 1.9-1.1-2-1.3V34l3-1.8v-2.7l1.9 1.1-.4-.7 2.4-1.4v-2.1L52 35.4zm-12.4-9.3L38 27.5V32l1.4 1-.4.6-1.4-1-1.5 1 .4.7 1.6-1.1v-2l-2.1-1.4-.4.7L38 31v2l-3-1.8v-5.4l2.3 1.4 2.3-1.1zM42.5 19a1.5 1.5 0 10-3 0 1.5 1.5 0 003 0z"/>
+                        </svg>
+                    </div>
+                    <span>AWS SageMaker</span>
+                </a>
+                <a href="#plugins" class="platform-item">
+                    <div class="platform-icon" style="--platform-color: #4285F4">
+                        <svg width="36" height="36" viewBox="0 0 24 24" fill="#4285F4">
+                            <path d="M12.19 2.38a9.344 9.344 0 0 0-9.234 6.893c.053-.02-.055.013 0 0-3.875 2.551-3.922 8.11-.247 10.941l.006-.007-.007.03a6.717 6.717 0 0 0 4.077 1.356h5.173l.03.03h5.192c6.687.053 9.376-8.605 3.835-12.35a9.365 9.365 0 0 0-2.821-4.552l-.043.043.006-.05A9.344 9.344 0 0 0 12.19 2.38zm-.358 4.146c1.244-.04 2.518.368 3.486 1.15a5.186 5.186 0 0 1 1.862 4.078v.518c3.53-.07 3.53 5.262 0 5.193h-5.193l-.008.009v-.04H6.785a2.59 2.59 0 0 1-1.067-.23h.001a2.597 2.597 0 1 1 3.437-3.437l3.013-3.012A6.747 6.747 0 0 0 8.11 8.24c.018-.01.04-.026.054-.023a5.186 5.186 0 0 1 3.67-1.69z"/>
+                        </svg>
+                    </div>
+                    <span>Google Cloud</span>
+                </a>
+                <a href="#plugins" class="platform-item">
+                    <div class="platform-icon" style="--platform-color: #0078D4">
+                        <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+                            <path d="M18 4L32 18L18 32L4 18Z" fill="#0078D4" opacity="0.2"/>
+                            <path d="M18 4L32 18L18 32L4 18Z" stroke="#0078D4" stroke-width="2.5" fill="none"/>
+                        </svg>
+                    </div>
+                    <span>Azure AI Foundry</span>
+                </a>
+                <a href="#plugins" class="platform-item">
+                    <div class="platform-icon" style="--platform-color: #F5A800">
+                        <svg width="36" height="36" viewBox="0 0 24 24" fill="#F5A800">
+                            <path d="M12.6974 13.1173c-1.0224 1.0224-1.0224 2.68 0 3.7024 1.0224 1.0224 2.68 1.0224 3.7024 0 1.0224-1.0223 1.0224-2.68 0-3.7024-1.0223-1.0223-2.68-1.0223-3.7024 0zm2.7677 2.7701c-.5063.5063-1.3267.5063-1.833 0s-.5063-1.3266 0-1.833c.5063-.5062 1.3267-.5062 1.833 0 .5063.504.5063 1.3267 0 1.833zM16.356.2355l-1.6041 1.6042c-.314.314-.314.83 0 1.144L21.015 9.247c.314.314.83.314 1.144 0l1.6042-1.6041c.314-.314.314-.83 0-1.144L17.4976.2354c-.314-.314-.8276-.314-1.1416 0zM5.1173 20.734c.2848-.2848.2848-.7497 0-1.0345l-.8155-.8155c-.2848-.2848-.7497-.2848-1.0345 0l-1.6845 1.6845-.0024.0024-.4625-.4625c-.2556-.2556-.6718-.2556-.925 0-.2556.2556-.2556.6718 0 .925l2.775 2.775c.2556.2556.6718.2556.925 0 .2532-.2556.2556-.6718 0-.925l-.4625-.4625.0024-.0024zm8.4856-15.893-3.5637 3.5637c-.3164.3164-.3164.8374 0 1.1538l2.2006 2.2005c1.5554-1.1197 3.7365-.981 5.1361.4187l1.7819-1.7818c.3164-.3165.3164-.8374 0-1.1538l-4.401-4.401c-.3165-.319-.8374-.319-1.1539 0zm-2.2881 7.8455-1.2999-1.2999c-.3043-.3043-.8033-.3043-1.1076 0l-4.5836 4.586c-.3042.3043-.3042.8033 0 1.1076l2.5973 2.5973c.3043.3043.8033.3043 1.1076 0l2.9478-2.9527c-.6231-1.2877-.5112-2.8431.3384-4.0383z"/>
+                        </svg>
+                    </div>
+                    <span>OpenTelemetry</span>
+                </a>
+                <a href="#plugins" class="platform-item">
+                    <div class="platform-icon" style="--platform-color: #000000">
+                        <svg width="36" height="36" viewBox="0 0 24 24" fill="#000000">
+                            <path d="M15.688 2.343a2.588 2.588 0 00-3.61 0l-9.626 9.44a.863.863 0 01-1.203 0 .823.823 0 010-1.18l9.626-9.44a4.313 4.313 0 016.016 0 4.116 4.116 0 011.204 3.54 4.3 4.3 0 013.609 1.18l.05.05a4.115 4.115 0 010 5.9l-8.706 8.537a.274.274 0 000 .393l1.788 1.754a.823.823 0 010 1.18.863.863 0 01-1.203 0l-1.788-1.753a1.92 1.92 0 010-2.754l8.706-8.538a2.47 2.47 0 000-3.54l-.05-.049a2.588 2.588 0 00-3.607-.003l-7.172 7.034-.002.002-.098.097a.863.863 0 01-1.204 0 .823.823 0 010-1.18l7.273-7.133a2.47 2.47 0 00-.003-3.537z"/>
+                            <path d="M14.485 4.703a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a4.115 4.115 0 000 5.9 4.314 4.314 0 006.016 0l7.12-6.982a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a2.588 2.588 0 01-3.61 0 2.47 2.47 0 010-3.54l7.12-6.982z"/>
+                        </svg>
+                    </div>
+                    <span>MCP</span>
+                </a>
+                <a href="#plugins" class="platform-item">
+                    <div class="platform-icon" style="--platform-color: #65A637">
+                        <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+                            <path d="M8 10L18 18L8 26" stroke="#65A637" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                            <path d="M18 26H28" stroke="#65A637" stroke-width="3" stroke-linecap="round"/>
+                        </svg>
+                    </div>
+                    <span>Splunk</span>
+                </a>
+                <a href="#plugins" class="platform-item">
+                    <div class="platform-icon" style="--platform-color: #236BF5">
+                        <svg width="36" height="36" viewBox="-50 -50 1670 1074" fill="#236BF5">
+                            <path fill-rule="evenodd" d="m1566.1 496.2c25.3 155.6-109.7 243.2-246.6 253.3-87.1 179.3-394.3 300.2-660 169.8-113.2 17.2-176.3-11.3-224.4-65.6 96.9-125.3 391.6-350.7 751.6-234.1 192.4 62 242.3-84 193.9-138.7-181.4-206-591-20.6-605.5-5.1 160.8-246.4 736.2-315.4 791 20.4zm-551.3-283c0.9 0-130.9-47-315 32.6q-2.8-1-5.5-2.1-2.8-1.1-5.5-2.2-2.8-1.2-5.5-2.5-2.7-1.3-5.3-2.6c177.2-117.7 332.4-167.7 465.4-148.3-80.6-92.4-466.9-160.5-688.3 61.5-273.6-53.9-465.2 178.1-454.3 390 10.9 211.8 242.1 344.1 373.8 308q1.1-0.1 2.3-0.2 1.2 0 2.4 0 1.2 0 2.3 0 1.2 0.1 2.4 0.2c29.4-139.9 148.2-465.7 630.8-634.4z"/>
+                        </svg>
+                    </div>
+                    <span>Zscaler</span>
+                </a>
+                <a href="#plugins" class="platform-item">
+                    <div class="platform-icon" style="--platform-color: #D97757">
+                        <svg width="36" height="36" viewBox="0 0 24 24" fill="#D97757">
+                            <path d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"/>
+                        </svg>
+                    </div>
+                    <span>Claude Code</span>
+                </a>
+                <a href="#plugins" class="platform-item">
+                    <div class="platform-icon" style="--platform-color: #000000">
+                        <svg width="36" height="36" viewBox="0 0 24 24" fill="#000000">
+                            <path d="M11.503.131 1.891 5.678a.84.84 0 0 0-.42.726v11.188c0 .3.162.575.42.724l9.609 5.55a1 1 0 0 0 .998 0l9.61-5.55a.84.84 0 0 0 .42-.724V6.404a.84.84 0 0 0-.42-.726L12.497.131a1.01 1.01 0 0 0-.996 0M2.657 6.338h18.55c.263 0 .43.287.297.515L12.23 22.918c-.062.107-.229.064-.229-.06V12.335a.59.59 0 0 0-.295-.51l-9.11-5.257c-.109-.063-.064-.23.061-.23"/>
+                        </svg>
+                    </div>
+                    <span>Cursor</span>
+                </a>
+                <a href="#plugins" class="platform-item">
+                    <div class="platform-icon" style="--platform-color: #1C3C3C">
+                        <svg width="36" height="36" viewBox="0 0 24 24" fill="#1C3C3C">
+                            <path d="M6.0988 5.9175C2.7359 5.9175 0 8.6462 0 12s2.736 6.0825 6.0988 6.0825h11.8024C21.2641 18.0825 24 15.3538 24 12s-2.736-6.0825-6.0988-6.0825ZM5.9774 7.851c.493.0124 1.02.2496 1.273.6228.3673.4592.4778 1.0668.8944 1.4932.5604.6118 1.199 1.1505 1.7161 1.802.4892.5954.8386 1.2937 1.1436 1.9975.1244.2335.1257.5202.31.7197.0908.1204.5346.4483.4383.5645.0555.1204.4702.286.3263.4027-.1944.04-.4129.0476-.5616-.1074-.0549.126-.183.0596-.2819.0432a4 4 0 0 0-.025.0736c-.3288.0219-.5754-.3126-.732-.565-.3111-.168-.6642-.2702-.982-.446-.0182.2895.0452.6485-.231.8353-.014.5565.8436.0656.9222.4804-.061.0067-.1286-.0095-.1774.0373-.2239.2172-.4805-.1645-.7385-.007-.3464.174-.3808.3161-.8096.352-.0237-.0359-.0143-.0592.0059-.0811.1207-.1399.1295-.3046.3356-.3643-.2122-.0334-.3899.0833-.5686.1757-.2323.095-.2304-.2141-.5878.0164-.0396-.0322-.0208-.0615.0018-.0864.0908-.1107.2102-.127.345-.1208-.663-.3686-.9751.4507-1.2813.0432-.092.0243-.1265.1068-.1845.1652-.05-.0548-.0123-.1212-.0099-.1857-.0598-.028-.1356-.041-.1179-.1366-.1171-.0395-.1988.0295-.286.0952-.0787-.0608.0532-.1492.0776-.2125.0702-.1216.23-.025.3111-.1126.2306-.1308.552.0814.8155.0455.203.0255.4544-.1825.3526-.39-.2171-.2767-.179-.6386-.1839-.9695-.0268-.1929-.491-.4382-.6252-.6462-.1659-.1873-.295-.4047-.4243-.6182-.4666-.9008-.3198-2.0584-.9077-2.8947-.266.1466-.6125.0774-.8418-.119-.1238.1125-.1292.2598-.139.4161-.297-.2962-.2593-.8559-.022-1.1855.0969-.1302.2127-.2373.342-.3316.0292-.0213.0391-.0419.0385-.0747.1174-.5267.5764-.7391 1.0694-.7267m12.4071.46c.5575 0 1.0806.2159 1.474.6082s.61.9145.61 1.4704c0 .556-.2167 1.078-.61 1.4698v.0006l-.902.8995a2.08 2.08 0 0 1-.8597.5166l-.0164.0047-.0058.0164a2.05 2.05 0 0 1-.474.7308l-.9018.8995c-.3934.3924-.917.6083-1.4745.6083s-1.0806-.216-1.474-.6083c-.813-.8107-.813-2.1294 0-2.9402l.9019-.8995a2.056 2.056 0 0 1 .858-.5143l.017-.0053.0058-.0158a2.07 2.07 0 0 1 .4752-.7337l.9018-.8995c.3934-.3924.9171-.6083 1.4745-.6083zm0 .8965a1.18 1.18 0 0 0-.8388.3462l-.9018.8995a1.181 1.181 0 0 0-.3427.9252l.0053.0572c.0323.2652.149.5044.3374.6917.13.1296.2733.2114.4471.2686a.9.9 0 0 1 .014.1582.884.884 0 0 1-.2609.6304l-.0554.0554c-.3013-.1028-.5525-.253-.7794-.4792a2.06 2.06 0 0 1-.5761-1.0968l-.0099-.0578-.0461.0368a1.1 1.1 0 0 0-.0876.0794l-.9024.8995c-.4623.461-.4623 1.212 0 1.673.2311.2305.535.346.8394.3461.3043 0 .6077-.1156.8388-.3462l.9019-.8995c.4623-.461.4623-1.2113 0-1.673a1.17 1.17 0 0 0-.4367-.2749 1 1 0 0 1-.014-.1611c0-.2591.1023-.505.2901-.6923.3019.1028.57.2694.7962.495.3007.2999.4994.679.5756 1.0968l.0105.0578.0455-.0373a1.1 1.1 0 0 0 .0887-.0794l.902-.8996c.4622-.461.4628-1.2124 0-1.6735a1.18 1.18 0 0 0-.8395-.3462Zm-9.973 5.1567-.0006.0006c-.0793.3078-.1048.8318-.506.847-.033.1776.1228.2445.2655.1874.141-.0645.2081.0508.2557.1657.2177.0317.5394-.0725.5516-.3298-.325-.1867-.4253-.5418-.5662-.8709"/>
+                        </svg>
+                    </div>
+                    <span>LangChain</span>
+                </a>
+                <a href="#plugins" class="platform-item">
+                    <div class="platform-icon" style="--platform-color: #0194E2">
+                        <svg width="36" height="36" viewBox="0 0 24 24" fill="#0194E2">
+                            <path d="M11.883.002a12.044 12.044 0 0 0-9.326 19.463l3.668-2.694A7.573 7.573 0 0 1 12.043 4.45v2.867l6.908-5.14A12.012 12.012 0 0 0 11.883.002zm9.562 4.533L17.777 7.23a7.573 7.573 0 0 1-5.818 12.322v-2.867l-6.908 5.14a12.046 12.046 0 0 0 16.394-17.29z"/>
+                        </svg>
+                    </div>
+                    <span>MLflow</span>
+                </a>
+                <a href="#plugins" class="platform-item">
+                    <div class="platform-icon" style="--platform-color: #FF5A50">
+                        <svg width="36" height="36" viewBox="0 0 24 24" fill="#FF5A50">
+                            <path d="M12.482.18C7.161 1.319 1.478 9.069 1.426 15.372c-.051 5.527 3.1 8.68 8.68 8.627 6.716-.05 14.259-6.87 12.09-10.9-.672-1.292-1.396-1.344-2.687-.207-1.602 1.395-1.654.31-.207-2.893 1.757-3.98 1.705-5.322-.31-7.544C17.03.388 14.962-.388 12.482.181Zm5.322 2.068c2.273 2.015 2.376 4.236.465 8.42-1.395 3.1-2.17 3.515-3.824 1.86-1.24-1.24-1.343-3.46-.258-6.044 1.137-2.635.982-3.1-.568-1.653-3.72 3.358-6.458 9.765-5.424 12.503.464 1.189.825 1.395 2.737 1.395 2.79 0 6.303-1.705 7.957-3.926 1.756-2.274 2.79-2.274 2.79-.052 0 3.875-6.459 8.627-11.625 8.627-6.251 0-9.351-4.752-7.491-11.47.878-2.995 4.443-7.904 7.077-9.66 3.255-2.17 5.684-2.17 8.164 0z"/>
+                        </svg>
+                    </div>
+                    <span>CrewAI</span>
+                </a>
+                <a href="#plugins" class="platform-item">
+                    <div class="platform-icon" style="--platform-color: #F38020">
+                        <svg width="36" height="36" viewBox="0 0 24 24" fill="#F38020">
+                            <path d="M16.5088 16.8447c.1475-.5068.0908-.9707-.1553-1.3154-.2246-.3164-.6045-.499-1.0615-.5205l-8.6592-.1123a.1559.1559 0 0 1-.1333-.0713c-.0283-.042-.0351-.0986-.021-.1553.0278-.084.1123-.1484.2036-.1562l8.7359-.1123c1.0351-.0489 2.1601-.8868 2.5537-1.9136l.499-1.3013c.0215-.0561.0293-.1128.0147-.168-.5625-2.5463-2.835-4.4453-5.5499-4.4453-2.5039 0-4.6284 1.6177-5.3876 3.8614-.4927-.3658-1.1187-.5625-1.794-.499-1.2026.119-2.1665 1.083-2.2861 2.2856-.0283.31-.0069.6128.0635.894C1.5683 13.171 0 14.7754 0 16.752c0 .1748.0142.3515.0352.5273.0141.083.0844.1475.1689.1475h15.9814c.0909 0 .1758-.0645.2032-.1553l.12-.4268zm2.7568-5.5634c-.0771 0-.1611 0-.2383.0112-.0566 0-.1054.0415-.127.0976l-.3378 1.1744c-.1475.5068-.0918.9707.1543 1.3164.2256.3164.6055.498 1.0625.5195l1.8437.1133c.0557 0 .1055.0263.1329.0703.0283.043.0351.1074.0214.1562-.0283.084-.1132.1485-.204.1553l-1.921.1123c-1.041.0488-2.1582.8867-2.5527 1.914l-.1406.3585c-.0283.0713.0215.1416.0986.1416h6.5977c.0771 0 .1474-.0489.169-.126.1122-.4082.1757-.837.1757-1.2803 0-2.6025-2.125-4.727-4.7344-4.727"/>
+                        </svg>
+                    </div>
+                    <span>Cloudflare</span>
+                </a>
+                <a href="#plugins" class="platform-item">
+                    <div class="platform-icon" style="--platform-color: #6366F1">
+                        <svg width="36" height="36" viewBox="0 0 24 24" fill="#6366F1">
+                            <path d="M16.778 1.844v1.919q-.569-.026-1.138-.032-.708-.008-1.415.037c-1.93.126-4.023.728-6.149 2.237-2.911 2.066-2.731 1.95-4.14 2.75-.396.223-1.342.574-2.185.798-.841.225-1.753.333-1.751.333v4.229s.768.108 1.61.333c.842.224 1.789.575 2.185.799 1.41.798 1.228.683 4.14 2.75 2.126 1.509 4.22 2.11 6.148 2.236.88.058 1.716.041 2.555.005v1.918l7.222-4.168-7.222-4.17v2.176c-.86.038-1.611.065-2.278.021-1.364-.09-2.417-.357-3.979-1.465-2.244-1.593-2.866-2.027-3.68-2.508.889-.518 1.449-.906 3.822-2.59 1.56-1.109 2.614-1.377 3.978-1.466.667-.044 1.418-.017 2.278.02v2.176L24 6.014Z"/>
+                        </svg>
+                    </div>
+                    <span>OpenRouter</span>
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Section 7: Getting Started -->
+    <section class="getting-started" id="getting-started">
+        <div class="container">
+            <h2 class="section-title">Getting Started</h2>
+            <p class="section-subtitle">Up and running in under a minute</p>
+            <div class="steps">
+                <div class="step fade-in">
+                    <div class="step-number">1</div>
+                    <div class="step-content">
+                        <h3>Install</h3>
+                        <pre><code><span class="code-comment"># Create a virtual environment and install</span>
+python3 -m venv venv
+source venv/bin/activate
+pip install -e .</code></pre>
+                    </div>
+                </div>
+                <div class="step fade-in">
+                    <div class="step-number">2</div>
+                    <div class="step-content">
+                        <h3>Launch the GUI</h3>
+                        <pre><code>python -m open_cite.gui.app
+
+<span class="code-comment"># Open http://localhost:5000 in your browser</span></code></pre>
+                    </div>
+                </div>
+                <div class="step fade-in">
+                    <div class="step-number">3</div>
+                    <div class="step-content">
+                        <h3>Add a Plugin</h3>
+                        <p class="step-text">Click <strong>"+ Add Plugin"</strong> in the sidebar, select your platform (Databricks, AWS, Azure, Google Cloud, or OpenTelemetry), and enter your credentials.</p>
+                    </div>
+                </div>
+                <div class="step fade-in">
+                    <div class="step-number">4</div>
+                    <div class="step-content">
+                        <h3>Discover</h3>
+                        <p class="step-text">Assets appear automatically as Open-CITE scans your environment. View tools, models, agents, and lineage in real time.</p>
+                    </div>
+                </div>
+            </div>
+            <div class="steps-footer">
+                <p>Or use Open-CITE as a Python library:</p>
+                <pre><code><span class="code-keyword">from</span> open_cite <span class="code-keyword">import</span> OpenCiteClient
+
+client = OpenCiteClient(enable_otel=<span class="code-literal">True</span>)
+tools = client.list_otel_tools()
+client.export_to_json(filepath=<span class="code-string">"discoveries.json"</span>)</code></pre>
+                <a href="https://github.com/LangGuard-AI/opencite/tree/main/docs" target="_blank" rel="noopener" class="btn btn-secondary">Read the Full Documentation</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Section 8: Plugin Ecosystem -->
+    <section class="plugins" id="plugins">
+        <div class="container">
+            <h2 class="section-title">Plugin Ecosystem</h2>
+            <p class="section-subtitle">Enable only the discovery sources you need</p>
+            <div class="plugin-list">
+                <div class="plugin-card">
+                    <button class="plugin-header">
+                        <div class="plugin-header-left">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="#FF3621" class="plugin-icon">
+                                <path d="M.95 14.184L12 20.403l9.919-5.55v2.21L12 22.662l-10.484-5.96-.565.308v.77L12 24l11.05-6.218v-4.317l-.515-.309L12 19.118l-9.867-5.653v-2.21L12 16.805l11.05-6.218V6.32l-.515-.308L12 11.974 2.647 6.681 12 1.388l7.76 4.368.668-.411v-.566L12 0 .95 6.27v.72L12 13.207l9.919-5.55v2.26L12 15.52 1.516 9.56l-.565.308Z"/>
+                            </svg>
+                            <span class="plugin-name">Databricks</span>
+                        </div>
+                        <span class="plugin-chevron">&#9662;</span>
+                    </button>
+                    <div class="plugin-body">
+                        <ul>
+                            <li>Unity Catalog integration &mdash; catalogs, schemas, tables, and volumes</li>
+                            <li>MLflow trace search and retrieval for observability</li>
+                            <li>AI Gateway usage tracking and Genie conversation analysis</li>
+                            <li>Data lineage and metadata management</li>
+                        </ul>
+                        <a href="https://github.com/LangGuard-AI/opencite/blob/main/docs/plugins/DATABRICKS_PLUGIN.md" target="_blank" rel="noopener" class="plugin-docs-link">View Documentation &rarr;</a>
+                    </div>
+                </div>
+                <div class="plugin-card">
+                    <button class="plugin-header">
+                        <div class="plugin-header-left">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" class="plugin-icon">
+                                <defs><linearGradient id="bedrock-gp" x1="80%" y1="20%" x2="20%" y2="80%"><stop offset="0%" stop-color="#6350FB"/><stop offset="50%" stop-color="#3D8FFF"/><stop offset="100%" stop-color="#9AD8F8"/></linearGradient></defs>
+                                <path fill="url(#bedrock-gp)" d="M13.05 15.513h3.08c.214 0 .389.177.389.394v1.82a1.704 1.704 0 011.296 1.661c0 .943-.755 1.708-1.685 1.708-.931 0-1.686-.765-1.686-1.708 0-.807.554-1.484 1.297-1.662v-1.425h-2.69v4.663a.395.395 0 01-.188.338l-2.69 1.641a.385.385 0 01-.405-.002l-4.926-3.086a.395.395 0 01-.185-.336V16.3L2.196 14.87A.395.395 0 012 14.555V9.406c0-.14.073-.27.192-.34l2.465-1.462V4.448c0-.129.062-.249.165-.322l.021-.014L9.77 1.058a.385.385 0 01.407 0l2.69 1.675a.395.395 0 01.185.336V7.6h3.856V5.683a1.704 1.704 0 01-1.296-1.662c0-.943.755-1.708 1.685-1.708.931 0 1.685.765 1.685 1.708 0 .807-.553 1.484-1.296 1.662v2.311a.391.391 0 01-.389.394h-4.245v1.806h6.624a1.69 1.69 0 011.64-1.313c.93 0 1.685.764 1.685 1.707 0 .943-.754 1.708-1.685 1.708a1.69 1.69 0 01-1.64-1.314H13.05v1.937h4.953l.915 1.18a1.66 1.66 0 01.84-.227c.931 0 1.685.764 1.685 1.707 0 .943-.754 1.708-1.685 1.708-.93 0-1.685-.765-1.685-1.708 0-.346.102-.668.276-.937l-.724-.935H13.05v1.806z"/>
+                            </svg>
+                            <span class="plugin-name">AWS Bedrock</span>
+                        </div>
+                        <span class="plugin-chevron">&#9662;</span>
+                    </button>
+                    <div class="plugin-body">
+                        <ul>
+                            <li>Discovers foundation models, custom models, and invocations</li>
+                            <li>Model inference logging and usage tracking</li>
+                            <li>Automatic credential discovery via AWS profiles</li>
+                        </ul>
+                        <a href="https://github.com/LangGuard-AI/opencite/blob/main/docs/plugins/AWS_PLUGINS.md" target="_blank" rel="noopener" class="plugin-docs-link">View Documentation &rarr;</a>
+                    </div>
+                </div>
+                <div class="plugin-card">
+                    <button class="plugin-header">
+                        <div class="plugin-header-left">
+                            <svg width="24" height="24" viewBox="0 0 64 64" fill="none" class="plugin-icon">
+                                <defs><linearGradient id="sage-gp" x1="0%" y1="100%" x2="100%" y2="0%"><stop offset="0%" stop-color="#055F4E"/><stop offset="100%" stop-color="#56C0A7"/></linearGradient></defs>
+                                <rect width="64" height="64" rx="8" fill="url(#sage-gp)"/>
+                                <path fill="#fff" d="M43 20a1 1 0 11-2 0 1 1 0 012 0zm-4 9a1 1 0 100-2 1 1 0 000 2zm0 13a1 1 0 112 0 1 1 0 01-2 0zm7-9a1 1 0 10-2 0 1 1 0 002 0z"/>
+                            </svg>
+                            <span class="plugin-name">AWS SageMaker</span>
+                        </div>
+                        <span class="plugin-chevron">&#9662;</span>
+                    </button>
+                    <div class="plugin-body">
+                        <ul>
+                            <li>Discovers endpoints, models, model packages, and training jobs</li>
+                            <li>Model deployment tracking across regions</li>
+                            <li>Integration with SageMaker Studio notebooks</li>
+                        </ul>
+                        <a href="https://github.com/LangGuard-AI/opencite/blob/main/docs/plugins/AWS_PLUGINS.md" target="_blank" rel="noopener" class="plugin-docs-link">View Documentation &rarr;</a>
+                    </div>
+                </div>
+                <div class="plugin-card">
+                    <button class="plugin-header">
+                        <div class="plugin-header-left">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="#4285F4" class="plugin-icon">
+                                <path d="M12.19 2.38a9.344 9.344 0 0 0-9.234 6.893c.053-.02-.055.013 0 0-3.875 2.551-3.922 8.11-.247 10.941l.006-.007-.007.03a6.717 6.717 0 0 0 4.077 1.356h5.173l.03.03h5.192c6.687.053 9.376-8.605 3.835-12.35a9.365 9.365 0 0 0-2.821-4.552l-.043.043.006-.05A9.344 9.344 0 0 0 12.19 2.38zm-.358 4.146c1.244-.04 2.518.368 3.486 1.15a5.186 5.186 0 0 1 1.862 4.078v.518c3.53-.07 3.53 5.262 0 5.193h-5.193l-.008.009v-.04H6.785a2.59 2.59 0 0 1-1.067-.23h.001a2.597 2.597 0 1 1 3.437-3.437l3.013-3.012A6.747 6.747 0 0 0 8.11 8.24c.018-.01.04-.026.054-.023a5.186 5.186 0 0 1 3.67-1.69z"/>
+                            </svg>
+                            <span class="plugin-name">Google Cloud</span>
+                        </div>
+                        <span class="plugin-chevron">&#9662;</span>
+                    </button>
+                    <div class="plugin-body">
+                        <ul>
+                            <li>Vertex AI model and endpoint discovery</li>
+                            <li>Generative AI model listing (Gemini, PaLM, and more)</li>
+                            <li>MCP server discovery via labels and port scanning</li>
+                        </ul>
+                        <a href="https://github.com/LangGuard-AI/opencite/blob/main/docs/plugins/GOOGLE_CLOUD_PLUGIN.md" target="_blank" rel="noopener" class="plugin-docs-link">View Documentation &rarr;</a>
+                    </div>
+                </div>
+                <div class="plugin-card">
+                    <button class="plugin-header">
+                        <div class="plugin-header-left">
+                            <svg width="24" height="24" viewBox="0 0 36 36" fill="none" class="plugin-icon">
+                                <path d="M18 4L32 18L18 32L4 18Z" stroke="#0078D4" stroke-width="2.5" fill="none"/>
+                            </svg>
+                            <span class="plugin-name">Azure AI Foundry</span>
+                        </div>
+                        <span class="plugin-chevron">&#9662;</span>
+                    </button>
+                    <div class="plugin-body">
+                        <ul>
+                            <li>Discovers AI resources, model deployments, and projects</li>
+                            <li>Agent and tool discovery via Assistants API</li>
+                            <li>Trace discovery via Log Analytics integration</li>
+                        </ul>
+                        <a href="https://github.com/LangGuard-AI/opencite/blob/main/docs/plugins/AZURE_AI_FOUNDRY_PLUGIN.md" target="_blank" rel="noopener" class="plugin-docs-link">View Documentation &rarr;</a>
+                    </div>
+                </div>
+                <div class="plugin-card">
+                    <button class="plugin-header">
+                        <div class="plugin-header-left">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="#F5A800" class="plugin-icon">
+                                <path d="M12.6974 13.1173c-1.0224 1.0224-1.0224 2.68 0 3.7024 1.0224 1.0224 2.68 1.0224 3.7024 0 1.0224-1.0223 1.0224-2.68 0-3.7024-1.0223-1.0223-2.68-1.0223-3.7024 0zm2.7677 2.7701c-.5063.5063-1.3267.5063-1.833 0s-.5063-1.3266 0-1.833c.5063-.5062 1.3267-.5062 1.833 0 .5063.504.5063 1.3267 0 1.833zM16.356.2355l-1.6041 1.6042c-.314.314-.314.83 0 1.144L21.015 9.247c.314.314.83.314 1.144 0l1.6042-1.6041c.314-.314.314-.83 0-1.144L17.4976.2354c-.314-.314-.8276-.314-1.1416 0zM5.1173 20.734c.2848-.2848.2848-.7497 0-1.0345l-.8155-.8155c-.2848-.2848-.7497-.2848-1.0345 0l-1.6845 1.6845-.0024.0024-.4625-.4625c-.2556-.2556-.6718-.2556-.925 0-.2556.2556-.2556.6718 0 .925l2.775 2.775c.2556.2556.6718.2556.925 0 .2532-.2556.2556-.6718 0-.925l-.4625-.4625.0024-.0024zm8.4856-15.893-3.5637 3.5637c-.3164.3164-.3164.8374 0 1.1538l2.2006 2.2005c1.5554-1.1197 3.7365-.981 5.1361.4187l1.7819-1.7818c.3164-.3165.3164-.8374 0-1.1538l-4.401-4.401c-.3165-.319-.8374-.319-1.1539 0zm-2.2881 7.8455-1.2999-1.2999c-.3043-.3043-.8033-.3043-1.1076 0l-4.5836 4.586c-.3042.3043-.3042.8033 0 1.1076l2.5973 2.5973c.3043.3043.8033.3043 1.1076 0l2.9478-2.9527c-.6231-1.2877-.5112-2.8431.3384-4.0383z"/>
+                            </svg>
+                            <span class="plugin-name">OpenTelemetry</span>
+                        </div>
+                        <span class="plugin-chevron">&#9662;</span>
+                    </button>
+                    <div class="plugin-body">
+                        <ul>
+                            <li>Built-in OTLP/HTTP and gRPC receiver for trace collection</li>
+                            <li>Automatic tool and model discovery from trace data</li>
+                            <li>Works with any LLM provider (OpenAI, Anthropic, etc.)</li>
+                            <li>OpenRouter broadcast support for zero-code integration</li>
+                        </ul>
+                        <a href="https://github.com/LangGuard-AI/opencite/blob/main/docs/plugins/OPENTELEMETRY_PLUGIN.md" target="_blank" rel="noopener" class="plugin-docs-link">View Documentation &rarr;</a>
+                    </div>
+                </div>
+                <div class="plugin-card">
+                    <button class="plugin-header">
+                        <div class="plugin-header-left">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="#000000" class="plugin-icon">
+                                <path d="M15.688 2.343a2.588 2.588 0 00-3.61 0l-9.626 9.44a.863.863 0 01-1.203 0 .823.823 0 010-1.18l9.626-9.44a4.313 4.313 0 016.016 0 4.116 4.116 0 011.204 3.54 4.3 4.3 0 013.609 1.18l.05.05a4.115 4.115 0 010 5.9l-8.706 8.537a.274.274 0 000 .393l1.788 1.754a.823.823 0 010 1.18.863.863 0 01-1.203 0l-1.788-1.753a1.92 1.92 0 010-2.754l8.706-8.538a2.47 2.47 0 000-3.54l-.05-.049a2.588 2.588 0 00-3.607-.003l-7.172 7.034-.002.002-.098.097a.863.863 0 01-1.204 0 .823.823 0 010-1.18l7.273-7.133a2.47 2.47 0 00-.003-3.537z"/>
+                                <path d="M14.485 4.703a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a4.115 4.115 0 000 5.9 4.314 4.314 0 006.016 0l7.12-6.982a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a2.588 2.588 0 01-3.61 0 2.47 2.47 0 010-3.54l7.12-6.982z"/>
+                            </svg>
+                            <span class="plugin-name">MCP (Model Context Protocol)</span>
+                        </div>
+                        <span class="plugin-chevron">&#9662;</span>
+                    </button>
+                    <div class="plugin-body">
+                        <ul>
+                            <li>Trace-based MCP server discovery</li>
+                            <li>MCP tool and resource cataloging</li>
+                            <li>Usage pattern analysis across MCP servers</li>
+                        </ul>
+                        <a href="https://github.com/LangGuard-AI/opencite/blob/main/docs/plugins/MCP_PLUGIN.md" target="_blank" rel="noopener" class="plugin-docs-link">View Documentation &rarr;</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Section 9: Links & Resources -->
+    <section class="resources" id="resources">
+        <div class="container">
+            <div class="resources-grid">
+                <div class="resource-card fade-in">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="var(--dark-text)" class="resource-icon">
+                        <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+                    </svg>
+                    <h3>Open Source on GitHub</h3>
+                    <p>Browse the code, file issues, and contribute to the project.</p>
+                    <a href="https://github.com/LangGuard-AI/opencite" target="_blank" rel="noopener" class="btn btn-primary">View Repository</a>
+                </div>
+                <div class="resource-card fade-in">
+                    <img src="images/langguard-logo.png" alt="LangGuard.AI" class="resource-langguard-logo">
+                    <h3>Enterprise AI Governance</h3>
+                    <p>Want to govern and monitor your AI assets? Try LangGuard's AI Control Plane.</p>
+                    <a href="https://langguard.ai?utm=open-cite-website" target="_blank" rel="noopener" class="btn btn-langguard">Visit LangGuard.AI</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Section 10: Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <img src="images/open-cite-bear.png" alt="Open-CITE" class="footer-logo">
+                    <div>
+                        <strong class="footer-title">Open-CITE</strong>
+                        <p class="footer-tagline">Open Catalog of Intelligent Tools in the Enterprise</p>
+                        <p class="footer-powered">Powered by <a href="https://langguard.ai?utm=open-cite-website" target="_blank" rel="noopener">LangGuard.AI</a></p>
+                    </div>
+                </div>
+                <div class="footer-links">
+                    <a href="https://github.com/LangGuard-AI/opencite" target="_blank" rel="noopener">GitHub</a>
+                    <a href="https://github.com/LangGuard-AI/opencite/tree/main/docs" target="_blank" rel="noopener">Documentation</a>
+                    <a href="https://langguard.ai?utm=open-cite-website" target="_blank" rel="noopener">LangGuard.AI</a>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2024&ndash;2026 LangGuard AI. Open-CITE is released under the Elastic License 2.0.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="js/main.js"></script>
+</body>
+</html>
