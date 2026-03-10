@@ -1164,6 +1164,8 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             from datetime import timedelta
             new_high_water = new_high_water + timedelta(seconds=1)
         self._last_gateway_event_time = new_high_water
+        if new_high_water is not None:
+            self.save_hwm("last_gateway_event_time", new_high_water.isoformat())
         logger.info(
             f"[AI Gateway] Forwarded {forwarded}/{len(rows)} rows as OTLP traces"
         )
@@ -1172,6 +1174,25 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         """Start the plugin — runs initial discovery in a background thread
         so the API remains responsive (gunicorn single-worker safe)."""
         self._status = "running"
+
+        # Restore high-water marks from DB so we resume where we left off
+        saved_gw = self.load_hwm("last_gateway_event_time")
+        if saved_gw:
+            from datetime import datetime, timezone
+            try:
+                self._last_gateway_event_time = datetime.fromisoformat(saved_gw)
+                logger.info("Restored gateway HWM for %s: %s", self.instance_id, saved_gw)
+            except ValueError:
+                logger.warning("Invalid gateway HWM value for %s: %s", self.instance_id, saved_gw)
+
+        saved_qt = self.load_hwm("last_query_time")
+        if saved_qt:
+            try:
+                self._last_query_time = datetime.fromisoformat(saved_qt)
+                logger.info("Restored MLflow HWM for %s: %s", self.instance_id, saved_qt)
+            except ValueError:
+                logger.warning("Invalid MLflow HWM value for %s: %s", self.instance_id, saved_qt)
+
         thread = threading.Thread(
             target=self._run_discovery,
             args=(self.lookback_days, "start"),
@@ -1268,6 +1289,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         )
 
         self._last_query_time = datetime.utcnow()
+        self.save_hwm("last_query_time", self._last_query_time.isoformat())
         self.notify_data_changed()
 
     def _discover_from_traces(
@@ -1597,6 +1619,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         )
 
         self._last_query_time = datetime.utcnow()
+        self.save_hwm("last_query_time", self._last_query_time.isoformat())
         self.notify_data_changed()
 
     def _resolve_user_email(self, user_id: str) -> str:

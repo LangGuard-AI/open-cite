@@ -623,6 +623,11 @@ class AzureAIFoundryPlugin(BaseDiscoveryPlugin):
     def start(self):
         """Start background polling for trace discovery."""
         super().start()
+        # Restore high-water mark from DB so we resume where we left off
+        saved = self.load_hwm("last_query_time")
+        if saved:
+            self._last_query_time = saved
+            logger.info("Restored trace HWM for %s: %s", self.instance_id, saved)
         # One-time initial discovery
         threading.Thread(
             target=self.list_assets, args=("trace",), daemon=True,
@@ -1433,6 +1438,7 @@ class AzureAIFoundryPlugin(BaseDiscoveryPlugin):
                 )
                 if newest:
                     self._last_query_time = newest
+                    self.save_hwm("last_query_time", newest)
 
             self._traces_cache = all_traces
             logger.info("Discovered %d Azure AI traces", len(all_traces))

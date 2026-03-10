@@ -148,6 +148,51 @@ class BaseDiscoveryPlugin(ABC):
             self._webhook_executor = None
         logger.info(f"Stopped plugin {self.instance_id}")
 
+    # ------------------------------------------------------------------
+    # High-water mark persistence (DiscoveryStatus table)
+    # ------------------------------------------------------------------
+
+    def _hwm_key(self, name: str) -> str:
+        """Build a DiscoveryStatus key for a named high-water mark."""
+        return f"hwm:{self._instance_id}:{name}"
+
+    def save_hwm(self, name: str, value: str) -> None:
+        """Persist a high-water mark value to the database."""
+        try:
+            from open_cite.db import get_session, DiscoveryStatus
+            session = get_session()
+            try:
+                key = self._hwm_key(name)
+                existing = session.get(DiscoveryStatus, key)
+                if existing:
+                    existing.value = {"v": value}
+                else:
+                    session.add(DiscoveryStatus(key=key, value={"v": value}))
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+        except Exception as exc:
+            logger.warning("Failed to save HWM %s for %s: %s", name, self._instance_id, exc)
+
+    def load_hwm(self, name: str) -> Optional[str]:
+        """Load a persisted high-water mark value from the database."""
+        try:
+            from open_cite.db import get_session, DiscoveryStatus
+            session = get_session()
+            try:
+                row = session.get(DiscoveryStatus, self._hwm_key(name))
+                if row and isinstance(row.value, dict):
+                    return row.value.get("v")
+                return None
+            finally:
+                session.close()
+        except Exception as exc:
+            logger.warning("Failed to load HWM %s for %s: %s", name, self._instance_id, exc)
+            return None
+
     def notify_data_changed(self):
         """Notify that plugin data has changed (e.g., new traces ingested)."""
         if self._on_data_changed:
