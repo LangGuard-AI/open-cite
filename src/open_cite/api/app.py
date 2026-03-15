@@ -1478,6 +1478,79 @@ def register_api_routes(app: Flask):
         return jsonify({"success": True, "removed": removed, "webhooks": plugin.list_webhooks()})
 
     # =========================================================================
+    # Test Data Generation
+    # =========================================================================
+
+    # Module-level status tracker for test data generation
+    _test_data_status: Dict[str, Any] = {
+        "status": "idle",
+        "started_at": None,
+        "completed_at": None,
+        "error": None,
+    }
+
+    @app.route('/api/v1/generate-test-data', methods=['POST'])
+    def api_generate_test_data():
+        """Launch test data generation pipeline in a background thread.
+
+        Accepts LLM credentials and optionally an OpenCITE endpoint to
+        send traces to.  Returns 202 immediately; poll
+        ``/api/v1/generate-test-data/status`` for progress.
+        """
+        if _test_data_status["status"] == "running":
+            return jsonify({"error": "Test data generation is already running"}), 409
+
+        data = request.json or {}
+        api_key = data.get("api_key", "").strip()
+        if not api_key:
+            return jsonify({"error": "api_key is required"}), 400
+
+        base_url = data.get("base_url") or None
+        model = data.get("model", "gpt-4.1-mini").strip()
+        endpoint = data.get("endpoint", "").strip() or request.host_url.rstrip("/")
+        headers = data.get("headers") or {}
+
+        # Extract an auth token for the OpenCITE endpoint from headers
+        langguard_api_key = headers.get("Authorization", "").replace("Bearer ", "") or "unused"
+
+        from open_cite.generate_test_data import PipelineConfig, run_pipeline
+        import asyncio
+
+        cfg = PipelineConfig(
+            openai_api_key=api_key,
+            openai_base_url=base_url,
+            model_name=model,
+            langguard_url=endpoint,
+            langguard_api_key=langguard_api_key,
+        )
+
+        _test_data_status["status"] = "running"
+        _test_data_status["started_at"] = datetime.utcnow().isoformat() + "Z"
+        _test_data_status["completed_at"] = None
+        _test_data_status["error"] = None
+
+        def _run():
+            try:
+                asyncio.run(run_pipeline(cfg))
+                _test_data_status["status"] = "completed"
+                _test_data_status["completed_at"] = datetime.utcnow().isoformat() + "Z"
+            except Exception as exc:
+                logger.exception("Test data generation failed")
+                _test_data_status["status"] = "error"
+                _test_data_status["error"] = str(exc)
+                _test_data_status["completed_at"] = datetime.utcnow().isoformat() + "Z"
+
+        thread = Thread(target=_run, daemon=True, name="test-data-gen")
+        thread.start()
+
+        return jsonify({"status": "accepted", "message": "Test data generation started"}), 202
+
+    @app.route('/api/v1/generate-test-data/status', methods=['GET'])
+    def api_generate_test_data_status():
+        """Return current status of test data generation."""
+        return jsonify(_test_data_status)
+
+    # =========================================================================
     # Lineage Graph (visual HTML – used by GUI iframe)
     # =========================================================================
 
