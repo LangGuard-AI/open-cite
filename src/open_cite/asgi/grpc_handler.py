@@ -118,12 +118,17 @@ class GrpcOtlpHandler:
 # ---------------------------------------------------------------------------
 
 
+_MAX_GRPC_BODY_SIZE = 50 * 1024 * 1024  # 50 MB
+
+
 async def _read_grpc_body(receive) -> bytes:
     """Read the full request body from an ASGI receive channel."""
     body = b""
     while True:
         message = await receive()
         body += message.get("body", b"")
+        if len(body) > _MAX_GRPC_BODY_SIZE:
+            raise ValueError("Request body exceeds maximum allowed size")
         if not message.get("more_body", False):
             break
     return body

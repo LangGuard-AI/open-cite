@@ -618,7 +618,7 @@ def _deterministic_id(seed: str, length: int) -> str:
     Returns:
         Hex string of the specified length.
     """
-    h = hashlib.md5(seed.encode("utf-8")).hexdigest()
+    h = hashlib.sha256(seed.encode("utf-8")).hexdigest()
     return h[:length]
 
 

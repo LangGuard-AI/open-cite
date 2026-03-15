@@ -6,13 +6,76 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from typing import List, Dict, Any, Optional, Set
 from concurrent.futures import ThreadPoolExecutor
+import ipaddress
 import logging
+import os
+import socket
 import time
 import warnings
+from urllib.parse import urlparse
 
 import requests
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# SSRF protection for webhook URLs
+# ---------------------------------------------------------------------------
+
+# Default blocked CIDRs: cloud metadata + loopback.  Private RFC 1918 ranges
+# are intentionally allowed so webhooks work inside Docker / Kubernetes.
+_DEFAULT_BLOCKED_CIDRS = [
+    "169.254.169.254/32",  # AWS / GCP / Azure instance metadata
+    "169.254.0.0/16",      # link-local (broader)
+    "127.0.0.0/8",         # IPv4 loopback
+    "::1/128",             # IPv6 loopback
+]
+
+
+def _parse_blocked_networks():
+    """Build the set of blocked IP networks from env + defaults."""
+    raw = os.environ.get("OPENCITE_WEBHOOK_BLOCKED_CIDRS", "")
+    cidrs = [c.strip() for c in raw.split(",") if c.strip()] if raw else []
+    cidrs.extend(_DEFAULT_BLOCKED_CIDRS)
+    nets = []
+    for cidr in cidrs:
+        try:
+            nets.append(ipaddress.ip_network(cidr, strict=False))
+        except ValueError:
+            logger.warning("Ignoring invalid CIDR in OPENCITE_WEBHOOK_BLOCKED_CIDRS: %s", cidr)
+    return nets
+
+
+_blocked_networks = _parse_blocked_networks()
+
+
+def validate_webhook_url(url: str) -> Optional[str]:
+    """Resolve *url* and check its IPs against the SSRF blocklist.
+
+    Returns an error message string if blocked, or ``None`` if the URL is safe.
+    """
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except Exception:
+        return "Malformed URL"
+
+    if not hostname:
+        return "URL has no hostname"
+
+    try:
+        infos = socket.getaddrinfo(hostname, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        return f"Cannot resolve hostname: {hostname}"
+
+    for family, _type, _proto, _canonname, sockaddr in infos:
+        addr = ipaddress.ip_address(sockaddr[0])
+        for net in _blocked_networks:
+            if addr in net:
+                return f"Webhook URL resolves to blocked address ({addr} is in {net})"
+
+    return None
 
 
 class LoggingDefaultDict(defaultdict):
@@ -391,7 +454,14 @@ class BaseDiscoveryPlugin(ABC):
 
         Returns:
             True if newly added, False if already subscribed
+
+        Raises:
+            ValueError: If the URL resolves to a blocked IP address (SSRF protection).
         """
+        ssrf_err = validate_webhook_url(url)
+        if ssrf_err:
+            raise ValueError(ssrf_err)
+
         if url in self._webhook_urls:
             if headers:
                 self._webhook_urls[url] = headers
@@ -480,6 +550,12 @@ class BaseDiscoveryPlugin(ABC):
 
     def _send_webhook(self, url: str, otlp_payload: dict, inbound_headers: Optional[Dict[str, str]] = None):
         """POST an OTLP JSON payload to a webhook URL with retries."""
+        # Re-validate at delivery time to guard against DNS rebinding
+        ssrf_err = validate_webhook_url(url)
+        if ssrf_err:
+            logger.warning("Webhook delivery blocked (SSRF): %s — %s", url, ssrf_err)
+            return
+
         # Build outbound headers: start with per-webhook mandatory headers,
         # overlay inbound headers (preserves Authorization from original request),
         # then ensure Content-Type is set for JSON

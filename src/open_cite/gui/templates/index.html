@@ -8,7 +8,7 @@
     <link rel="icon" type="image/png" href="/static/OpenCiteBear.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&display=swap" rel="stylesheet" crossorigin="anonymous" referrerpolicy="no-referrer">
     <style>
         * {
             margin: 0;
@@ -1266,13 +1266,13 @@
                     <div class="instance-card">
                         <div class="instance-header">
                             <span class="status-indicator ${statusClass}"></span>
-                            <span class="instance-name" title="${instance.display_name}">${instance.display_name}</span>
+                            <span class="instance-name" title="${_escHtml(instance.display_name)}">${_escHtml(instance.display_name)}</span>
                         </div>
-                        <div class="instance-type" title="Type: ${typeText}">Type: ${typeText}</div>
-                        <div class="instance-info" title="ID: ${instance.instance_id}">ID: ${instance.instance_id}</div>
-                        ${endpointText ? `<div class="instance-info" title="Endpoint: ${endpointText}">Endpoint: ${endpointText}</div>`
-                        : (instance.config?.host ? `<div class="instance-info" title="Host: ${instance.config.host}">Host: ${instance.config.host}</div>` : '')
-                        + (instance.config?.port ? `<div class="instance-info" title="Port: ${instance.config.port}">Port: ${instance.config.port}</div>` : '')}
+                        <div class="instance-type" title="Type: ${_escHtml(typeText)}">Type: ${_escHtml(typeText)}</div>
+                        <div class="instance-info" title="ID: ${_escHtml(instance.instance_id)}">ID: ${_escHtml(instance.instance_id)}</div>
+                        ${endpointText ? `<div class="instance-info" title="Endpoint: ${_escHtml(endpointText)}">Endpoint: ${_escHtml(endpointText)}</div>`
+                        : (instance.config?.host ? `<div class="instance-info" title="Host: ${_escHtml(instance.config.host)}">Host: ${_escHtml(instance.config.host)}</div>` : '')
+                        + (instance.config?.port ? `<div class="instance-info" title="Port: ${_escHtml(instance.config.port)}">Port: ${_escHtml(instance.config.port)}</div>` : '')}
                         <div class="instance-actions">
                             ${isRunning
                         ? `<button class="btn-stop" onclick="stopInstance('${instance.instance_id}')">Stop</button>`
@@ -1312,9 +1312,9 @@
             const container = document.getElementById('pluginTypesList');
             container.innerHTML = Object.entries(pluginTypes).map(([key, plugin]) => `
                 <div class="plugin-type-card ${selectedPluginType === key ? 'selected' : ''}"
-                     onclick="selectPluginType('${key}')">
-                    <div class="plugin-type-name">${plugin.name}</div>
-                    <div class="plugin-type-description">${plugin.description}</div>
+                     onclick="selectPluginType('${_escHtml(key)}')">
+                    <div class="plugin-type-name">${_escHtml(plugin.name)}</div>
+                    <div class="plugin-type-description">${_escHtml(plugin.description)}</div>
                 </div>
             `).join('');
         }
@@ -1635,7 +1635,7 @@
             banner.style.transform = 'translateY(-100%)';
             banner.style.opacity = '0';
             setTimeout(() => { banner.style.display = 'none'; }, 400);
-            document.cookie = 'opencite_banner_dismissed=1;path=/;max-age=' + (365 * 24 * 60 * 60);
+            document.cookie = 'opencite_banner_dismissed=1;path=/;max-age=' + (365 * 24 * 60 * 60) + ';SameSite=Lax;Secure';
         }
 
         // Render assets
@@ -1691,12 +1691,12 @@
                 const isUnknown = !sourceName;
                 html += `
                     <div class="asset-card ${isUnknown ? 'unknown' : ''}">
-                        <div class="asset-title">🔧 ${tool.name}</div>
-                        <div class="asset-meta">Type: ${tool.type}</div>
-                        <div class="asset-meta">Discovery: ${tool.discovery_source}</div>
-                        ${sourceName ? `<div class="asset-meta"><b>Identified:</b> ${sourceName}</div>` :
+                        <div class="asset-title">🔧 ${_escHtml(tool.name)}</div>
+                        <div class="asset-meta">Type: ${_escHtml(tool.type)}</div>
+                        <div class="asset-meta">Discovery: ${_escHtml(tool.discovery_source)}</div>
+                        ${sourceName ? `<div class="asset-meta"><b>Identified:</b> ${_escHtml(sourceName)}</div>` :
                         `<span class="badge" style="background: var(--mapping-badge-bg); color: var(--mapping-badge-text);">Mapping Required</span>`}
-                        <div class="asset-meta">Models: ${tool.models?.join(', ') || 'none'}</div>
+                        <div class="asset-meta">Models: ${_escHtml(tool.models?.join(', ') || 'none')}</div>
                         <span class="badge badge-blue">Tool</span>
                         ${isUnknown ? `<button class="btn-map" onclick="openMapModal('${tool.name.replace(/'/g, "\\'")}')">Map Source</button>` : ''}
                     </div>
@@ -1714,8 +1714,8 @@
                 const source = model.discovery_source || 'unknown';
                 html += `
                     <div class="asset-card">
-                        <div class="asset-title">✨ ${model.name}</div>
-                        <div class="asset-meta">Provider: ${model.provider}</div>
+                        <div class="asset-title">✨ ${_escHtml(model.name)}</div>
+                        <div class="asset-meta">Provider: ${_escHtml(model.provider)}</div>
                         <div class="asset-meta">Usage: ${model.usage_count || 0} calls</div>
                         <span class="badge badge-green">Model</span>
                     </div>
@@ -1733,11 +1733,11 @@
                 const isAgentUnknown = !agentSourceName;
                 html += `
                     <div class="asset-card ${isAgentUnknown ? 'unknown' : ''}">
-                        <div class="asset-title">🤖 ${agent.name}</div>
-                        ${agentSourceName ? `<div class="asset-meta"><b>Identified:</b> ${agentSourceName}</div>` :
+                        <div class="asset-title">🤖 ${_escHtml(agent.name)}</div>
+                        ${agentSourceName ? `<div class="asset-meta"><b>Identified:</b> ${_escHtml(agentSourceName)}</div>` :
                         `<span class="badge" style="background: var(--mapping-badge-bg); color: var(--mapping-badge-text);">Mapping Required</span>`}
-                        <div class="asset-meta">Tools: ${agent.tools_used?.join(', ') || 'none'}</div>
-                        <div class="asset-meta">Models: ${agent.models_used?.join(', ') || 'none'}</div>
+                        <div class="asset-meta">Tools: ${_escHtml(agent.tools_used?.join(', ') || 'none')}</div>
+                        <div class="asset-meta">Models: ${_escHtml(agent.models_used?.join(', ') || 'none')}</div>
                         ${agent.first_seen ? `<div class="asset-meta">First seen: ${new Date(agent.first_seen).toLocaleString()}</div>` : ''}
                         ${agent.last_seen ? `<div class="asset-meta">Last seen: ${new Date(agent.last_seen).toLocaleString()}</div>` : ''}
                         <span class="badge badge-purple">Agent</span>
@@ -1755,10 +1755,10 @@
             _byName(assets.downstream_systems).forEach(system => {
                 html += `
                     <div class="asset-card">
-                        <div class="asset-title">🔗 ${system.name}</div>
-                        <div class="asset-meta">Type: ${system.type}</div>
-                        ${system.endpoint ? `<div class="asset-meta">Endpoint: ${system.endpoint}</div>` : ''}
-                        <div class="asset-meta">Connected tools: ${system.tools_connecting?.join(', ') || 'none'}</div>
+                        <div class="asset-title">🔗 ${_escHtml(system.name)}</div>
+                        <div class="asset-meta">Type: ${_escHtml(system.type)}</div>
+                        ${system.endpoint ? `<div class="asset-meta">Endpoint: ${_escHtml(system.endpoint)}</div>` : ''}
+                        <div class="asset-meta">Connected tools: ${_escHtml(system.tools_connecting?.join(', ') || 'none')}</div>
                         ${system.first_seen ? `<div class="asset-meta">First seen: ${new Date(system.first_seen).toLocaleString()}</div>` : ''}
                         ${system.last_seen ? `<div class="asset-meta">Last seen: ${new Date(system.last_seen).toLocaleString()}</div>` : ''}
                         <span class="badge badge-green">Downstream</span>
@@ -1776,8 +1776,8 @@
             _byName(assets.mcp_servers).forEach(server => {
                 html += `
                     <div class="asset-card">
-                        <div class="asset-title">🌐 ${server.name}</div>
-                        <div class="asset-meta">Transport: ${server.transport}</div>
+                        <div class="asset-title">🌐 ${_escHtml(server.name)}</div>
+                        <div class="asset-meta">Transport: ${_escHtml(server.transport)}</div>
                         <div class="asset-meta">Tools: ${server.tools_count || 0}</div>
                         <span class="badge badge-purple">MCP Server</span>
                     </div>
@@ -1786,8 +1786,8 @@
             _byName(assets.mcp_tools).forEach(tool => {
                 html += `
                     <div class="asset-card">
-                        <div class="asset-title">🛠️ ${tool.name}</div>
-                        <div class="asset-meta">Server: ${tool.server_id}</div>
+                        <div class="asset-title">🛠️ ${_escHtml(tool.name)}</div>
+                        <div class="asset-meta">Server: ${_escHtml(tool.server_id)}</div>
                         <span class="badge badge-blue">MCP Tool</span>
                     </div>
                 `;
@@ -1806,14 +1806,14 @@
                         : asset.type === 'document_store' ? '📂' : '📊';
                 html += `
                     <div class="asset-card">
-                        <div class="asset-title">${icon} ${asset.name}</div>
-                        <div class="asset-meta">Type: ${asset.type}</div>
-                        ${asset.owner ? `<div class="asset-meta">Owner: ${asset.owner}</div>` : ''}
-                        ${asset.endpoint ? `<div class="asset-meta">Endpoint: ${asset.endpoint}</div>` : ''}
-                        ${asset.tools_connecting?.length ? `<div class="asset-meta">Connected tools: ${asset.tools_connecting.join(', ')}</div>` : ''}
+                        <div class="asset-title">${icon} ${_escHtml(asset.name)}</div>
+                        <div class="asset-meta">Type: ${_escHtml(asset.type)}</div>
+                        ${asset.owner ? `<div class="asset-meta">Owner: ${_escHtml(asset.owner)}</div>` : ''}
+                        ${asset.endpoint ? `<div class="asset-meta">Endpoint: ${_escHtml(asset.endpoint)}</div>` : ''}
+                        ${asset.tools_connecting?.length ? `<div class="asset-meta">Connected tools: ${_escHtml(asset.tools_connecting.join(', '))}</div>` : ''}
                         ${asset.first_seen ? `<div class="asset-meta">First seen: ${new Date(asset.first_seen).toLocaleString()}</div>` : ''}
                         ${asset.last_seen ? `<div class="asset-meta">Last seen: ${new Date(asset.last_seen).toLocaleString()}</div>` : ''}
-                        <span class="badge badge-green">${asset.type}</span>
+                        <span class="badge badge-green">${_escHtml(asset.type)}</span>
                     </div>
                 `;
             });
@@ -1897,10 +1897,10 @@
                     if (value === null || value === undefined || typeof value === 'object') return '';
                     return `
                         <div class="attribute-item" onclick="if(event.target.tagName!=='INPUT')this.querySelector('input').click()">
-                            <input type="checkbox" data-key="${key}" data-value="${value}">
+                            <input type="checkbox" data-key="${_escHtml(key)}" data-value="${_escHtml(String(value))}">
                             <div style="flex-grow: 1;">
-                                <span style="color: var(--text-muted);">${key}:</span>
-                                <span style="font-weight: 600;">${value}</span>
+                                <span style="color: var(--text-muted);">${_escHtml(key)}:</span>
+                                <span style="font-weight: 600;">${_escHtml(String(value))}</span>
                             </div>
                         </div>
                     `;
@@ -1932,10 +1932,10 @@
                     if (value === null || value === undefined || typeof value === 'object') return '';
                     return `
                         <div class="attribute-item" onclick="if(event.target.tagName!=='INPUT')this.querySelector('input').click()">
-                            <input type="checkbox" data-key="${key}" data-value="${value}">
+                            <input type="checkbox" data-key="${_escHtml(key)}" data-value="${_escHtml(String(value))}">
                             <div style="flex-grow: 1;">
-                                <span style="color: var(--text-muted);">${key}:</span>
-                                <span style="font-weight: 600;">${value}</span>
+                                <span style="color: var(--text-muted);">${_escHtml(key)}:</span>
+                                <span style="font-weight: 600;">${_escHtml(String(value))}</span>
                             </div>
                         </div>
                     `;
@@ -2083,13 +2083,13 @@
                 frame.addEventListener('load', function onLoad() {
                     frame.removeEventListener('load', onLoad);
                     setTimeout(function () {
-                        frame.contentWindow.postMessage({ type: 'focusNode', nodeId: nodeId }, '*');
+                        frame.contentWindow.postMessage({ type: 'focusNode', nodeId: nodeId }, window.location.origin);
                     }, 300);
                 });
             } else {
                 const frame = document.getElementById('lineageFrame');
                 if (frame && frame.contentWindow) {
-                    frame.contentWindow.postMessage({ type: 'focusNode', nodeId: nodeId }, '*');
+                    frame.contentWindow.postMessage({ type: 'focusNode', nodeId: nodeId }, window.location.origin);
                 }
             }
 
@@ -2243,6 +2243,7 @@
 
         // Listen for graph node clicks (postMessage from lineage iframe)
         window.addEventListener('message', function (e) {
+            if (e.origin !== window.location.origin) return;
             if (!e.data || e.data.type !== 'openDetail') return;
             const nodeId = e.data.nodeId;
             if (!nodeId || typeof nodeId !== 'string') return;

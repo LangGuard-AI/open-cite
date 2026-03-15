@@ -227,15 +227,9 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
 
         # MLflow client pointed at Databricks tracking server
         # Extract token from SDK if not explicitly provided (Databricks App OAuth flow)
-        import sys
-        sys.stderr.write(f"[DatabricksPlugin MLflow setup] self.token={self.token!r}\n")
-        sys.stderr.flush()
         mlflow_token = self.token
-        sys.stderr.write(f"[DatabricksPlugin MLflow setup] mlflow_token={mlflow_token!r}, entering token extraction\n")
-        sys.stderr.flush()
         if not mlflow_token:
-            sys.stderr.write("[DatabricksPlugin MLflow setup] Token is None, extracting from SDK...\n")
-            sys.stderr.flush()
+            logger.debug("[DatabricksPlugin MLflow setup] Token is None, extracting from SDK...")
             print("  [DatabricksPlugin] No static token, extracting from SDK for MLflow...")
             try:
                 # SDK API varies: some versions take a headers dict, others return headers

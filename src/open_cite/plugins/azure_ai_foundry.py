@@ -66,8 +66,8 @@ def _make_attr_int(key: str, value: int) -> Dict[str, Any]:
 
 
 def _generate_span_id(seed: str, length: int = 16) -> str:
-    """Generate a deterministic hex ID from a seed string via MD5."""
-    return hashlib.md5(seed.encode("utf-8")).hexdigest()[:length]
+    """Generate a deterministic hex ID from a seed string."""
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:length]
 
 
 def _parse_json_safe(raw: str) -> Optional[Dict[str, Any]]:

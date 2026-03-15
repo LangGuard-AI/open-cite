@@ -109,9 +109,15 @@ class OTLPRequestHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
+    _MAX_BODY_SIZE = 50 * 1024 * 1024  # 50 MB
+
     def _read_body_and_headers(self):
         """Read request body and extract forwarded headers."""
         content_length = int(self.headers.get("Content-Length", 0))
+        if content_length > self._MAX_BODY_SIZE:
+            self.send_response(413)
+            self.end_headers()
+            return None, None
         body = self.rfile.read(content_length)
 
         _SKIP_HEADERS = {"content-length", "transfer-encoding", "connection",
@@ -130,6 +136,8 @@ class OTLPRequestHandler(BaseHTTPRequestHandler):
     def _handle_traces(self):
         """Handle POST /v1/traces for trace ingestion."""
         body, inbound_headers = self._read_body_and_headers()
+        if body is None:
+            return
         plugin = self.server.plugin
 
         try:
@@ -182,6 +190,8 @@ class OTLPRequestHandler(BaseHTTPRequestHandler):
     def _handle_logs(self):
         """Handle POST /v1/logs — convert OTLP logs to synthetic traces."""
         body, inbound_headers = self._read_body_and_headers()
+        if body is None:
+            return
         plugin = self.server.plugin
 
         try:

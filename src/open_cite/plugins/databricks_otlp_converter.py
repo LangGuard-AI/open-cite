@@ -210,8 +210,8 @@ def mlflow_trace_to_otlp(
 
 
 def _deterministic_id(seed: str, length: int = 16) -> str:
-    """Generate a deterministic hex ID from a seed string via MD5."""
-    return hashlib.md5(seed.encode("utf-8")).hexdigest()[:length]
+    """Generate a deterministic hex ID from a seed string."""
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:length]
 
 
 def genie_trace_to_otlp(trace_dict: Dict[str, Any]) -> Dict[str, Any]:

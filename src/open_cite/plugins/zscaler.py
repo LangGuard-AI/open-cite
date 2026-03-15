@@ -1,5 +1,6 @@
 import os
 import logging
+import time
 import requests
 from typing import List, Dict, Any, Optional, Set
 import socket
@@ -141,7 +142,7 @@ class ZscalerPlugin(BaseDiscoveryPlugin):
         # I will implement a simplified version or rely on a helper if available.
         # Given I cannot easily import proprietary Zscaler SDKs, I will implement the logic.
         
-        timestamp = str(int(os.popen("date +%s").read().strip()) * 1000)
+        timestamp = str(int(time.time() * 1000))
         # Using a mock-friendly approach for now as I don't want to implement the full custom obfuscation 
         # logic without verifying environment capabilities. 
         # I'll implement the standard login request structure.

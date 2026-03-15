@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from open_cite.db import get_session, init_db, PluginConfig
+from open_cite.config_crypto import encrypt_config, decrypt_config
 
 logger = logging.getLogger(__name__)
 
@@ -63,11 +64,12 @@ class PluginConfigStore:
         session = get_session()
         try:
             now = datetime.utcnow().isoformat()
+            encrypted = encrypt_config(config)
             existing = session.get(PluginConfig, instance_id)
             if existing:
                 existing.plugin_type = plugin_type
                 existing.display_name = display_name
-                existing.config = config
+                existing.config = encrypted
                 existing.auto_start = auto_start
                 existing.updated_at = now
             else:
@@ -75,7 +77,7 @@ class PluginConfigStore:
                     instance_id=instance_id,
                     plugin_type=plugin_type,
                     display_name=display_name,
-                    config=config,
+                    config=encrypted,
                     auto_start=auto_start,
                     created_at=now,
                     updated_at=now,
@@ -123,7 +125,7 @@ class PluginConfigStore:
                     "instance_id": r.instance_id,
                     "plugin_type": r.plugin_type,
                     "display_name": r.display_name,
-                    "config": r.config,
+                    "config": decrypt_config(r.config) if isinstance(r.config, dict) else r.config,
                     "auto_start": r.auto_start,
                     "created_at": r.created_at,
                     "updated_at": r.updated_at,

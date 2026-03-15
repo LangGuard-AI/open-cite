@@ -6,6 +6,7 @@ Supports SQLite (local dev), PostgreSQL, and Databricks SQL (via Unity Catalog).
 
 import logging
 import os
+import re
 from typing import Optional, Dict, Any
 
 from sqlalchemy import create_engine, event, text as sqltext
@@ -29,6 +30,16 @@ def set_forwarded_token(token: str):
     global _forwarded_access_token
     _forwarded_access_token = token
     logger.info("[db] Forwarded access token updated (length=%d)", len(token))
+
+_SAFE_SQL_IDENTIFIER = re.compile(r'^[a-zA-Z0-9_\-]+$')
+
+
+def _validate_sql_identifier(value: str, label: str) -> str:
+    """Validate that a value is safe for use as a SQL identifier."""
+    if not _SAFE_SQL_IDENTIFIER.match(value):
+        raise ValueError(f"Invalid {label}: {value!r} — must be alphanumeric, hyphens, or underscores only")
+    return value
+
 
 # Default catalog/schema for Databricks SQL persistence
 # Uses the warehouse's default catalog (typically "main") with an "opencite" schema.
@@ -262,8 +273,9 @@ def get_session():
 def _drop_table(engine, table_name: str):
     """Drop a table, using fully-qualified name on Databricks."""
     if engine.dialect.name == "databricks":
-        catalog = os.getenv("OPENCITE_DATABRICKS_CATALOG", _DATABRICKS_CATALOG)
-        schema = os.getenv("OPENCITE_DATABRICKS_SCHEMA", _DATABRICKS_SCHEMA)
+        catalog = _validate_sql_identifier(os.getenv("OPENCITE_DATABRICKS_CATALOG", _DATABRICKS_CATALOG), "catalog")
+        schema = _validate_sql_identifier(os.getenv("OPENCITE_DATABRICKS_SCHEMA", _DATABRICKS_SCHEMA), "schema")
+        _validate_sql_identifier(table_name, "table_name")
         fqn = f"`{catalog}`.`{schema}`.`{table_name}`"
     else:
         fqn = table_name
@@ -307,8 +319,8 @@ def init_db():
         # On Databricks, try to ensure the schema exists before creating tables.
         # This is best-effort — if permissions block it, the schema must already exist.
         if engine.dialect.name == "databricks":
-            catalog = os.getenv("OPENCITE_DATABRICKS_CATALOG", _DATABRICKS_CATALOG)
-            schema = os.getenv("OPENCITE_DATABRICKS_SCHEMA", _DATABRICKS_SCHEMA)
+            catalog = _validate_sql_identifier(os.getenv("OPENCITE_DATABRICKS_CATALOG", _DATABRICKS_CATALOG), "catalog")
+            schema = _validate_sql_identifier(os.getenv("OPENCITE_DATABRICKS_SCHEMA", _DATABRICKS_SCHEMA), "schema")
             logger.info("[db] Ensuring Databricks schema %s.%s exists...", catalog, schema)
             try:
                 with engine.connect() as conn:

@@ -326,6 +326,8 @@ class SplunkPlugin(BaseDiscoveryPlugin):
         self.username = username
         self.password = password
         self.verify_ssl = verify_ssl.lower() in ("true", "1", "yes") if isinstance(verify_ssl, str) else bool(verify_ssl)
+        if not self.verify_ssl:
+            logger.warning("SSL verification is disabled for Splunk plugin '%s' — connections are vulnerable to MITM attacks", display_name or instance_id)
         self.time_range = time_range
         self.use_raw_search = use_raw_search.lower() in ("true", "1", "yes") if isinstance(use_raw_search, str) else bool(use_raw_search)
         self.raw_index = raw_index

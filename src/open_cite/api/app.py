@@ -19,6 +19,8 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Any, Optional
 from flask import Flask, request, jsonify
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from threading import Lock, Thread
 
 from open_cite.client import OpenCiteClient
@@ -264,7 +266,31 @@ def create_app(config: Optional[OpenCiteConfig] = None) -> Flask:
     oc_logger.propagate = False
 
     app = Flask(__name__)
-    app.config['SECRET_KEY'] = os.urandom(24)
+    app.config['SECRET_KEY'] = os.environ.get('OPENCITE_SECRET_KEY') or os.urandom(24)
+    app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+    app.config['SESSION_COOKIE_HTTPONLY'] = True
+    if not os.environ.get('OPENCITE_SECRET_KEY'):
+        logger.warning("OPENCITE_SECRET_KEY not set — using random key (sessions will not survive restarts)")
+
+    # Security response headers
+    @app.after_request
+    def _set_security_headers(response):
+        response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+        response.headers.setdefault('X-Frame-Options', 'DENY')
+        response.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
+        response.headers.setdefault('Content-Security-Policy', "default-src 'self'; frame-ancestors 'none'")
+        return response
+
+    # Request body size limit (50 MB)
+    app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
+
+    # Rate limiting (default: 200 req/min per IP)
+    limiter = Limiter(
+        get_remote_address,
+        app=app,
+        default_limits=["200 per minute"],
+        storage_uri="memory://",
+    )
 
     # Initialise shared state (persistence, plugin_store)
     init_opencite_state(app, config)
@@ -277,6 +303,12 @@ def create_app(config: Optional[OpenCiteConfig] = None) -> Flask:
 
     # Register API routes
     register_api_routes(app)
+
+    # Higher rate limits for OTLP ingestion endpoints (1000/min vs 200/min default)
+    for ep in ('otlp_ingest_traces', 'otlp_ingest_logs'):
+        fn = app.view_functions.get(ep)
+        if fn:
+            app.view_functions[ep] = limiter.limit("1000 per minute")(fn)
 
     # Auto-configure plugins from environment when auto_start is enabled.
     # This is needed for gunicorn which calls create_app() directly
@@ -438,6 +470,41 @@ def register_api_routes(app: Flask):
         db_engine.set_forwarded_token(token)
 
     # -----------------------------------------------------------------
+    # CSRF protection — Origin validation on state-mutating API requests
+    # -----------------------------------------------------------------
+    @app.before_request
+    def _csrf_check():
+        """Block cross-origin state-mutating requests to /api/v1/ endpoints.
+
+        OTLP ingestion routes (/v1/traces, /v1/logs) are exempt because they
+        are machine-to-machine and never called from a browser.
+        """
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return
+        if request.path.startswith("/v1/"):  # OTLP ingestion — exempt
+            return
+        if not request.path.startswith("/api/"):
+            return
+
+        origin = request.headers.get("Origin")
+        if not origin:
+            # Non-browser clients (curl, SDKs) typically don't send Origin
+            return
+
+        # Allow same-origin requests
+        request_origin = f"{request.scheme}://{request.host}"
+        if origin == request_origin:
+            return
+
+        # Also allow if X-Requested-With is set (AJAX marker browsers won't
+        # attach cross-origin without CORS pre-flight approval)
+        if request.headers.get("X-Requested-With"):
+            return
+
+        logger.warning("CSRF check failed: Origin=%s, expected=%s, path=%s", origin, request_origin, request.path)
+        return jsonify({"error": "Cross-origin request blocked"}), 403
+
+    # -----------------------------------------------------------------
     # OTLP HTTP trace ingestion (JSON + protobuf)
     # -----------------------------------------------------------------
     @app.route('/v1/traces', methods=['POST'])
@@ -487,8 +554,8 @@ def register_api_routes(app: Flask):
             return jsonify({"status": "success"})
 
         except Exception as e:
-            logger.error(f"Error processing OTLP traces: {e}")
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     # -----------------------------------------------------------------
     # OTLP HTTP log ingestion (JSON + protobuf) — converts to traces
@@ -557,8 +624,8 @@ def register_api_routes(app: Flask):
             return jsonify({"status": "success"})
 
         except Exception as e:
-            logger.error(f"Error processing OTLP logs: {e}")
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/api/v1/status')
     def api_get_status():
@@ -573,8 +640,8 @@ def register_api_routes(app: Flask):
             plugins = discover_available_plugins()
             return jsonify(plugins)
         except Exception as e:
-            logger.error(f"Failed to discover plugins: {e}")
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/api/v1/plugins/configure', methods=['POST'])
     def api_configure_plugins():
@@ -606,17 +673,17 @@ def register_api_routes(app: Flask):
                     with state_lock:
                         discovery_status["plugins_enabled"].append(plugin_name)
                 except Exception as e:
-                    logger.error(f"Failed to configure {plugin_name}: {e}")
+                    logger.exception(f"Failed to configure {plugin_name}")
                     with state_lock:
                         discovery_status["progress"].append({
                             "step": plugin_name,
-                            "message": f"Failed: {str(e)}",
+                            "message": "Failed",
                             "status": "error"
                         })
-                        discovery_status["error"] = f"Failed to configure {plugin_name}: {str(e)}"
+                        discovery_status["error"] = f"Failed to configure {plugin_name}"
                         discovery_status["current_status"] = f"Error configuring {plugin_name}"
                     _notify_status_changed()
-                    return jsonify({"error": f"Failed to configure {plugin_name}: {str(e)}"}), 400
+                    return jsonify({"error": f"Failed to configure {plugin_name}"}), 400
 
             with state_lock:
                 discovery_status["last_updated"] = datetime.utcnow().isoformat()
@@ -639,7 +706,8 @@ def register_api_routes(app: Flask):
             with state_lock:
                 discovery_status["error"] = str(e)
                 discovery_status["running"] = False
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/api/v1/assets', methods=['GET'])
     def api_get_assets():
@@ -692,8 +760,8 @@ def register_api_routes(app: Flask):
                 raise
 
         except Exception as e:
-            logger.error(f"Error getting assets: {e}")
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/api/v1/tools', methods=['GET'])
     def api_list_tools():
@@ -704,7 +772,8 @@ def register_api_routes(app: Flask):
             tools = client.list_tools()
             return jsonify({"tools": tools, "count": len(tools)})
         except Exception as e:
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/api/v1/models', methods=['GET'])
     def api_list_models():
@@ -715,7 +784,8 @@ def register_api_routes(app: Flask):
             models = client.list_models()
             return jsonify({"models": models, "count": len(models)})
         except Exception as e:
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/api/v1/mcp/servers', methods=['GET'])
     def api_list_mcp_servers():
@@ -726,7 +796,8 @@ def register_api_routes(app: Flask):
             servers = client.list_mcp_servers()
             return jsonify({"servers": servers, "count": len(servers)})
         except Exception as e:
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/api/v1/mcp/tools', methods=['GET'])
     def api_list_mcp_tools():
@@ -738,7 +809,8 @@ def register_api_routes(app: Flask):
             tools = client.list_mcp_tools(server_id=server_id)
             return jsonify({"tools": tools, "count": len(tools)})
         except Exception as e:
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/api/v1/agents', methods=['GET'])
     def api_list_agents():
@@ -749,7 +821,8 @@ def register_api_routes(app: Flask):
             agents = client.list_agents()
             return jsonify({"agents": agents, "count": len(agents)})
         except Exception as e:
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/api/v1/downstream', methods=['GET'])
     def api_list_downstream():
@@ -760,7 +833,8 @@ def register_api_routes(app: Flask):
             systems = client.list_downstream_systems()
             return jsonify({"downstream_systems": systems, "count": len(systems)})
         except Exception as e:
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/api/v1/lineage', methods=['GET'])
     def api_list_lineage():
@@ -772,7 +846,8 @@ def register_api_routes(app: Flask):
             relationships = client.list_lineage(source_id=source_id)
             return jsonify({"relationships": relationships, "count": len(relationships)})
         except Exception as e:
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/api/v1/export', methods=['POST'])
     def api_export():
@@ -785,8 +860,8 @@ def register_api_routes(app: Flask):
             include_plugins = data.get('plugins', [])
             return jsonify(export_to_json(include_plugins))
         except Exception as e:
-            logger.error(f"Export failed: {e}")
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/api/v1/map-tool', methods=['POST'])
     def api_map_tool():
@@ -836,8 +911,8 @@ def register_api_routes(app: Flask):
                 return jsonify({"error": "Failed to save mapping"}), 500
 
         except Exception as e:
-            logger.error(f"Failed to map tool: {e}")
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/api/v1/stop', methods=['POST'])
     def api_stop():
@@ -872,7 +947,8 @@ def register_api_routes(app: Flask):
             return jsonify({"success": True})
 
         except Exception as e:
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     # =========================================================================
     # Persistence API endpoints
@@ -930,8 +1006,8 @@ def register_api_routes(app: Flask):
             _save_current_state()
             return jsonify({"success": True, "message": "State saved to persistence"})
         except Exception as e:
-            logger.error(f"Failed to save state: {e}")
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/api/v1/persistence/load', methods=['POST'])
     def api_persistence_load():
@@ -951,8 +1027,8 @@ def register_api_routes(app: Flask):
             data = persistence.export_all()
             return jsonify(data)
         except Exception as e:
-            logger.error(f"Failed to export persistence data: {e}")
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/api/v1/reset-discoveries', methods=['POST'])
     def api_reset_discoveries():
@@ -1016,8 +1092,8 @@ def register_api_routes(app: Flask):
                 plugin_info['plugin_type'] = plugin_name
             return jsonify({"plugin_types": plugins})
         except Exception as e:
-            logger.error(f"Failed to list plugin types: {e}")
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/api/v1/instances', methods=['GET'])
     def api_list_instances():
@@ -1044,8 +1120,8 @@ def register_api_routes(app: Flask):
                     instances = [i for i in instances if i['plugin_type'] == plugin_type]
                 return jsonify({"instances": instances, "count": len(instances)})
             except Exception as e:
-                logger.error(f"Failed to load instances from plugin store: {e}")
-                return jsonify({"error": str(e)}), 500
+                logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
         return jsonify({"instances": [], "count": 0})
 
@@ -1129,8 +1205,8 @@ def register_api_routes(app: Flask):
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except Exception as e:
-            logger.error(f"Failed to create plugin instance: {e}")
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/api/v1/instances/<instance_id>', methods=['GET'])
     def api_get_instance(instance_id: str):
@@ -1210,8 +1286,8 @@ def register_api_routes(app: Flask):
             return jsonify({"error": f"Instance '{instance_id}' not found"}), 404
 
         except Exception as e:
-            logger.error(f"Failed to update instance: {e}")
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/api/v1/instances/<instance_id>', methods=['DELETE'])
     def api_delete_instance(instance_id: str):
@@ -1232,8 +1308,8 @@ def register_api_routes(app: Flask):
         except ValueError as e:
             return jsonify({"error": str(e)}), 404
         except Exception as e:
-            logger.error(f"Failed to delete instance: {e}")
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/api/v1/instances/<instance_id>/start', methods=['POST'])
     def api_start_instance(instance_id: str):
@@ -1265,8 +1341,8 @@ def register_api_routes(app: Flask):
             return jsonify({"success": True, "message": f"Instance '{instance_id}' started"})
 
         except Exception as e:
-            logger.error(f"Failed to start instance: {e}")
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/api/v1/instances/<instance_id>/stop', methods=['POST'])
     def api_stop_instance(instance_id: str):
@@ -1282,8 +1358,8 @@ def register_api_routes(app: Flask):
             return jsonify({"success": True, "message": f"Instance '{instance_id}' stopped"})
 
         except Exception as e:
-            logger.error(f"Failed to stop instance: {e}")
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/api/v1/instances/<instance_id>/refresh', methods=['POST'])
     def api_refresh_instance(instance_id: str):
@@ -1331,8 +1407,8 @@ def register_api_routes(app: Flask):
             })
 
         except Exception as e:
-            logger.error(f"Failed to refresh instance '{instance_id}': {e}")
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/api/v1/instances/<instance_id>/verify', methods=['POST'])
     def api_verify_instance(instance_id: str):
@@ -1346,8 +1422,8 @@ def register_api_routes(app: Flask):
             return jsonify({"success": True, "verification": result})
 
         except Exception as e:
-            logger.error(f"Failed to verify instance '{instance_id}': {e}")
-            return jsonify({"error": str(e)}), 500
+            logger.exception("Request failed")
+            return jsonify({"error": "Internal server error"}), 500
 
     # =========================================================================
     # Webhook Management API endpoints
@@ -1379,7 +1455,10 @@ def register_api_routes(app: Flask):
         if wh_headers is not None and not isinstance(wh_headers, dict):
             return jsonify({"error": "'headers' must be a dict of string key-value pairs"}), 400
 
-        added = plugin.subscribe_webhook(url, headers=wh_headers)
+        try:
+            added = plugin.subscribe_webhook(url, headers=wh_headers)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
         return jsonify({"success": True, "added": added, "webhooks": plugin.list_webhooks()})
 
     @app.route('/api/v1/instances/<instance_id>/webhooks', methods=['DELETE'])
@@ -1641,6 +1720,25 @@ def register_api_routes(app: Flask):
 
         html = net.generate_html()
 
+        # Inline the pyvis utils.js (referenced as a relative path that
+        # doesn't exist when served via Flask) and remove stale references
+        # to node_modules that pyvis also emits.
+        try:
+            import pyvis as _pyvis
+            _utils_path = os.path.join(os.path.dirname(_pyvis.__file__),
+                                       "templates", "lib", "bindings", "utils.js")
+            with open(_utils_path) as _uf:
+                _utils_src = _uf.read()
+            html = html.replace(
+                '<script src="lib/bindings/utils.js"></script>',
+                f"<script>{_utils_src}</script>",
+            )
+        except Exception:
+            html = html.replace('<script src="lib/bindings/utils.js"></script>', '')
+        # Remove node_modules references (not available in Flask context)
+        html = html.replace('<link rel="stylesheet" href="../node_modules/vis/dist/vis.min.css" />', '')
+        html = html.replace('<script src="../node_modules/vis/dist/vis.js"></script>', '')
+
         # Override pyvis/Bootstrap default styles so the graph blends
         # seamlessly into the parent card (no white border or background).
         theme_css = (
@@ -1669,7 +1767,7 @@ window.addEventListener('message', function(e) {
 if (typeof network !== 'undefined') {
     network.on('selectNode', function(params) {
         if (params.nodes.length === 1) {
-            window.parent.postMessage({ type: 'openDetail', nodeId: params.nodes[0] }, '*');
+            window.parent.postMessage({ type: 'openDetail', nodeId: params.nodes[0] }, window.location.origin);
         }
     });
 }

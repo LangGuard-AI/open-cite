@@ -85,5 +85,5 @@ def readyz():
             return jsonify({"status": "not_ready", "checks": checks}), 503
 
     except Exception as e:
-        logger.error(f"Readiness check failed: {e}")
-        return jsonify({"status": "error", "error": str(e)}), 503
+        logger.exception("Readiness check failed")
+        return jsonify({"status": "error", "error": "Readiness check failed"}), 503

@@ -38,8 +38,33 @@ logger = logging.getLogger(__name__)
 # =========================================================================
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.urandom(24)
+app.config['SECRET_KEY'] = os.environ.get('OPENCITE_SECRET_KEY') or os.urandom(24)
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+if not os.environ.get('OPENCITE_SECRET_KEY'):
+    logger.warning("OPENCITE_SECRET_KEY not set — using random key (sessions will not survive restarts)")
 app.json.sort_keys = False  # Preserve dict insertion order (e.g. plugin config fields)
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB request body limit
+
+
+@app.after_request
+def _set_security_headers(response):
+    response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    response.headers.setdefault('X-Frame-Options', 'SAMEORIGIN')
+    response.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
+    response.headers.setdefault(
+        'Content-Security-Policy',
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.socket.io https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "frame-src 'self'; "
+        "connect-src 'self' wss: ws: https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; "
+        "img-src 'self' data:; "
+        "object-src 'none'"
+    )
+    return response
+
 
 # AsyncServer is required for the ASGI layer (Hypercorn).
 # Sync emit calls from plugin threads use _sync_emit() below.
@@ -300,4 +325,4 @@ def run_gui(host=None, port=None, debug=False):
 
 
 if __name__ == '__main__':
-    run_gui(debug=True)
+    run_gui(debug=os.getenv("FLASK_DEBUG", "false").lower() == "true")
