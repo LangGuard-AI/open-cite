@@ -530,6 +530,28 @@
             background: #059669;
         }
 
+        .btn-generate-inline {
+            margin-bottom: 4px;
+            padding: 8px 16px;
+            background: var(--accent-primary);
+            color: var(--text-on-accent);
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+
+        .btn-generate-inline:hover {
+            background: var(--accent-hover);
+        }
+
+        .btn-generate-inline:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
         .asset-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -1049,6 +1071,9 @@
                         <button class="btn-export-inline" id="exportBtnInline" onclick="exportData()" style="display: none;" title="Download Discovered Assets in JSON">
                             Download JSON
                         </button>
+                        <button class="btn-generate-inline" id="generateBtnInline" onclick="openGenerateTestDataModal()" style="display: none;" title="Generate test data using an AI agent pipeline">
+                            Generate Test Data
+                        </button>
                     </div>
 
                     <div id="assetsContainer">
@@ -1137,6 +1162,60 @@
             <div style="margin-top: 30px;">
                 <button class="btn btn-primary" onclick="submitMapping()">Save Mapping</button>
                 <button class="btn btn-secondary" onclick="closeMapModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Generate Test Data Modal -->
+    <div id="generateTestDataModal" class="modal">
+        <div class="modal-content" style="max-width: 500px;">
+            <div class="modal-header">
+                <h2>Generate Test Data</h2>
+                <span class="close" onclick="closeGenerateTestDataModal()">&times;</span>
+            </div>
+
+            <p style="color: var(--text-muted); font-size: 0.9em; margin-bottom: 20px;">
+                Run an AI agent pipeline to generate realistic test traces and send them to this OpenCITE instance.
+            </p>
+
+            <div id="generateErrorMessage" class="error-message" style="display: none;"></div>
+            <div id="generateStatusMessage" style="display: none; padding: 12px; border-radius: 6px; margin-bottom: 16px; font-size: 0.9em;"></div>
+
+            <div class="form-group">
+                <label>API Key *</label>
+                <input type="password" id="genApiKey" placeholder="API key for the model provider" autocomplete="off">
+            </div>
+
+            <div class="form-group">
+                <label>Model Provider</label>
+                <select id="genProvider" onchange="onProviderChange()">
+                    <option value="openai">OpenAI</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="google">Google Gemini</option>
+                    <option value="custom">Custom</option>
+                </select>
+            </div>
+
+            <div class="form-group" id="genBaseUrlGroup" style="display: none;">
+                <label>Base URL</label>
+                <input type="text" id="genBaseUrl" placeholder="https://...">
+            </div>
+
+            <div class="form-group">
+                <label>Model</label>
+                <select id="genModel" onchange="onModelChange()"></select>
+            </div>
+
+            <div class="form-group" id="genCustomModelGroup" style="display: none;">
+                <label>Custom Model Name</label>
+                <input type="text" id="genCustomModel" placeholder="model-name">
+            </div>
+
+            <div style="margin-top: 30px; display: flex; gap: 10px;">
+                <button class="btn btn-primary" id="genSubmitBtn" onclick="submitGenerateTestData()">
+                    Generate
+                </button>
+                <button class="btn btn-secondary" onclick="closeGenerateTestDataModal()">Cancel</button>
             </div>
         </div>
     </div>
@@ -1231,6 +1310,7 @@
                 const hasRunning = instances.some(i => i.status === 'running');
                 document.getElementById('resetBtnInline').style.display = hasRunning ? 'block' : 'none';
                 document.getElementById('exportBtnInline').style.display = hasRunning ? 'block' : 'none';
+                document.getElementById('generateBtnInline').style.display = hasRunning ? 'block' : 'none';
             } catch (error) {
                 console.error('Error loading instances:', error);
             }
@@ -1868,6 +1948,202 @@
             } catch (error) {
                 console.error('Export failed:', error);
                 alert('Export failed: ' + error.message);
+            }
+        }
+
+        // =========================================================================
+        // Generate Test Data
+        // =========================================================================
+
+        const _providerModels = {
+            openai: [
+                { value: 'gpt-4.1-mini', label: 'gpt-4.1-mini' },
+                { value: 'gpt-4.1', label: 'gpt-4.1' },
+                { value: 'gpt-4o', label: 'gpt-4o' },
+                { value: 'gpt-4o-mini', label: 'gpt-4o-mini' },
+            ],
+            anthropic: [
+                { value: 'claude-sonnet-4-6', label: 'claude-sonnet-4-6' },
+                { value: 'claude-haiku-4-5-20251001', label: 'claude-haiku-4-5' },
+                { value: 'claude-opus-4-6', label: 'claude-opus-4-6' },
+            ],
+            google: [
+                { value: 'gemini-2.5-flash', label: 'gemini-2.5-flash' },
+                { value: 'gemini-2.5-pro', label: 'gemini-2.5-pro' },
+                { value: 'gemini-2.0-flash', label: 'gemini-2.0-flash' },
+            ],
+            custom: [],
+        };
+
+        const _providerBaseUrls = {
+            openai: null,
+            anthropic: 'https://api.anthropic.com/v1/',
+            google: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+            custom: '',
+        };
+
+        let _genStatusPollTimer = null;
+
+        function onProviderChange() {
+            const provider = document.getElementById('genProvider').value;
+            const baseUrlGroup = document.getElementById('genBaseUrlGroup');
+            const baseUrlInput = document.getElementById('genBaseUrl');
+
+            if (provider === 'custom') {
+                baseUrlGroup.style.display = 'block';
+                baseUrlInput.value = '';
+            } else if (_providerBaseUrls[provider]) {
+                baseUrlGroup.style.display = 'block';
+                baseUrlInput.value = _providerBaseUrls[provider];
+            } else {
+                baseUrlGroup.style.display = 'none';
+                baseUrlInput.value = '';
+            }
+
+            // Update model list
+            const modelSelect = document.getElementById('genModel');
+            const models = _providerModels[provider] || [];
+            modelSelect.innerHTML = models.map(m =>
+                `<option value="${m.value}">${m.label}</option>`
+            ).join('') + '<option value="custom">Custom</option>';
+
+            document.getElementById('genCustomModelGroup').style.display = 'none';
+            document.getElementById('genCustomModel').value = '';
+        }
+
+        function onModelChange() {
+            const val = document.getElementById('genModel').value;
+            document.getElementById('genCustomModelGroup').style.display = val === 'custom' ? 'block' : 'none';
+        }
+
+        function _setGenFormDisabled(disabled) {
+            const ids = ['genApiKey', 'genProvider', 'genBaseUrl', 'genModel', 'genCustomModel', 'genSubmitBtn'];
+            ids.forEach(id => { document.getElementById(id).disabled = disabled; });
+        }
+
+        function openGenerateTestDataModal() {
+            document.getElementById('generateErrorMessage').style.display = 'none';
+            document.getElementById('generateStatusMessage').style.display = 'none';
+            document.getElementById('genApiKey').value = '';
+            document.getElementById('genProvider').value = 'openai';
+            onProviderChange();
+            _setGenFormDisabled(false);
+            document.getElementById('genSubmitBtn').textContent = 'Generate';
+
+            // Check if already running
+            fetch('/api/v1/generate-test-data/status').then(r => r.json()).then(s => {
+                if (s.status === 'running') {
+                    _showGenStatus('running', 'Test data generation is in progress...');
+                    _setGenFormDisabled(true);
+                    document.getElementById('genSubmitBtn').textContent = 'Running...';
+                    _startGenStatusPoll();
+                }
+            }).catch(() => {});
+
+            document.getElementById('generateTestDataModal').style.display = 'block';
+        }
+
+        function closeGenerateTestDataModal() {
+            document.getElementById('generateTestDataModal').style.display = 'none';
+            if (_genStatusPollTimer) {
+                clearInterval(_genStatusPollTimer);
+                _genStatusPollTimer = null;
+            }
+        }
+
+        function _showGenStatus(type, message) {
+            const el = document.getElementById('generateStatusMessage');
+            el.textContent = message;
+            el.style.display = 'block';
+            if (type === 'running') {
+                el.style.background = '#fef3c7';
+                el.style.color = '#92400e';
+            } else if (type === 'completed') {
+                el.style.background = '#d1fae5';
+                el.style.color = '#065f46';
+            } else if (type === 'error') {
+                el.style.background = '#fee2e2';
+                el.style.color = '#991b1b';
+            }
+        }
+
+        function _startGenStatusPoll() {
+            if (_genStatusPollTimer) return;
+            _genStatusPollTimer = setInterval(async () => {
+                try {
+                    const resp = await fetch('/api/v1/generate-test-data/status');
+                    const s = await resp.json();
+                    if (s.status === 'completed') {
+                        _showGenStatus('completed', 'Test data generation completed successfully.');
+                        _setGenFormDisabled(false);
+                        document.getElementById('genSubmitBtn').textContent = 'Generate';
+                        clearInterval(_genStatusPollTimer);
+                        _genStatusPollTimer = null;
+                        refreshAssets();
+                    } else if (s.status === 'error') {
+                        _showGenStatus('error', 'Generation failed: ' + (s.error || 'Unknown error'));
+                        _setGenFormDisabled(false);
+                        document.getElementById('genSubmitBtn').textContent = 'Generate';
+                        clearInterval(_genStatusPollTimer);
+                        _genStatusPollTimer = null;
+                    }
+                } catch (e) {
+                    console.error('Status poll error:', e);
+                }
+            }, 3000);
+        }
+
+        async function submitGenerateTestData() {
+            const apiKey = document.getElementById('genApiKey').value.trim();
+            if (!apiKey) {
+                const errEl = document.getElementById('generateErrorMessage');
+                errEl.textContent = 'API Key is required.';
+                errEl.style.display = 'block';
+                return;
+            }
+            document.getElementById('generateErrorMessage').style.display = 'none';
+
+            const provider = document.getElementById('genProvider').value;
+            const baseUrl = document.getElementById('genBaseUrl').value.trim() || null;
+            let model = document.getElementById('genModel').value;
+            if (model === 'custom') {
+                model = document.getElementById('genCustomModel').value.trim();
+                if (!model) {
+                    const errEl = document.getElementById('generateErrorMessage');
+                    errEl.textContent = 'Please enter a custom model name.';
+                    errEl.style.display = 'block';
+                    return;
+                }
+            }
+
+            _setGenFormDisabled(true);
+            document.getElementById('genSubmitBtn').textContent = 'Starting...';
+
+            try {
+                const resp = await fetch('/api/v1/generate-test-data', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        api_key: apiKey,
+                        base_url: baseUrl,
+                        model: model,
+                    })
+                });
+
+                const result = await resp.json();
+                if (resp.status === 202) {
+                    _showGenStatus('running', 'Test data generation started. This may take a few minutes...');
+                    document.getElementById('genSubmitBtn').textContent = 'Running...';
+                    _startGenStatusPoll();
+                } else {
+                    _showGenStatus('error', result.error || 'Failed to start generation.');
+                    _setGenFormDisabled(false);
+                    document.getElementById('genSubmitBtn').textContent = 'Generate';
+                }
+            } catch (error) {
+                _showGenStatus('error', 'Request failed: ' + error.message);
+                _setGenFormDisabled(false);
+                document.getElementById('genSubmitBtn').textContent = 'Generate';
             }
         }
 
