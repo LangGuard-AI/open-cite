@@ -1512,6 +1512,7 @@ def register_api_routes(app: Flask):
 
         # Extract an auth token for the OpenCITE endpoint from headers
         langguard_api_key = headers.get("Authorization", "").replace("Bearer ", "") or "unused"
+        tenant_id = data.get("tenant_id")  # optional
 
         from open_cite.generate_test_data import PipelineConfig, run_pipeline
         import asyncio
@@ -1522,6 +1523,7 @@ def register_api_routes(app: Flask):
             model_name=model,
             langguard_url=endpoint,
             langguard_api_key=langguard_api_key,
+            tenant_id=tenant_id,
         )
 
         _test_data_status["status"] = "running"
