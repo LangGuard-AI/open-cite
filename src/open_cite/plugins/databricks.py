@@ -1172,7 +1172,6 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         # Restore high-water marks from DB so we resume where we left off
         saved_gw = self.load_hwm("last_gateway_event_time")
         if saved_gw:
-            from datetime import datetime, timezone
             try:
                 self._last_gateway_event_time = datetime.fromisoformat(saved_gw)
                 logger.info("Restored gateway HWM for %s: %s", self.instance_id, saved_gw)
