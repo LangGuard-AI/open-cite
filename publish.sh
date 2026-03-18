@@ -7,9 +7,6 @@ IMAGE_NAME="opencite"
 REGISTRY="ghcr.io"
 FULL_IMAGE="${REGISTRY}/${GITHUB_ORG}/${IMAGE_NAME}"
 
-# Read version from pyproject.toml
-VERSION=$(grep -m1 'version' pyproject.toml | sed 's/.*"\(.*\)".*/\1/')
-
 # ─── Helpers ────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -27,7 +24,7 @@ Usage: $(basename "$0") [OPTIONS]
 Publish the Open-CITE Docker image to GitHub Container Registry.
 
 Options:
-  --version VERSION   Override version tag (default: ${VERSION} from pyproject.toml)
+  --version VERSION   Set version (required — prompted if not provided)
   --skip-login        Skip the GHCR login step
   --skip-release      Skip the GitHub release step
   --multi-arch        Build for linux/amd64 and linux/arm64
@@ -35,15 +32,24 @@ Options:
   -h, --help          Show this help message
 
 Examples:
-  ./publish.sh                      # Build and push v${VERSION}
-  ./publish.sh --version 0.2.0      # Override version
+  ./publish.sh                      # Prompted for version
+  ./publish.sh --version 0.2.0      # Set version explicitly
   ./publish.sh --multi-arch         # Multi-arch build (amd64 + arm64)
   ./publish.sh --dry-run            # Preview commands without running them
 EOF
     exit 0
 }
 
+run() {
+    if $DRY_RUN; then
+        echo -e "${YELLOW}[DRY-RUN]${NC} $*"
+    else
+        "$@"
+    fi
+}
+
 # ─── Parse arguments ────────────────────────────────────────────────────────
+VERSION=""
 SKIP_LOGIN=false
 SKIP_RELEASE=false
 MULTI_ARCH=false
@@ -61,20 +67,62 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-run() {
-    if $DRY_RUN; then
-        echo -e "${YELLOW}[DRY-RUN]${NC} $*"
-    else
-        "$@"
-    fi
-}
+# ─── Gather all inputs up front ───────────────────────────────────────────
 
-# ─── Preflight checks ──────────────────────────────────────────────────────
+# Fetch the latest tagged version and suggest next patch bump
+git fetch --tags --quiet 2>/dev/null || true
+LATEST_TAG=$(git tag --sort=-v:refname --list 'v[0-9]*' | head -1)
+if [[ -n "$LATEST_TAG" ]]; then
+    IFS='.' read -r MAJOR MINOR PATCH <<< "${LATEST_TAG#v}"
+    SUGGESTED_VERSION="${MAJOR}.${MINOR}.$(( PATCH + 1 ))"
+    info "Latest tag:       ${LATEST_TAG}"
+    info "Suggested version: ${SUGGESTED_VERSION}"
+else
+    SUGGESTED_VERSION="0.1.0"
+    info "No existing tags found."
+    info "Suggested version: ${SUGGESTED_VERSION}"
+fi
+echo
+
+# Prompt for version if not provided via --version
+if [[ -z "$VERSION" ]]; then
+    read -rp "Version [${SUGGESTED_VERSION}]: " VERSION
+    VERSION="${VERSION:-${SUGGESTED_VERSION}}"
+fi
+
+# Validate version is not empty
+[[ -z "$VERSION" ]] && error "Version is required."
+
+TAG="v${VERSION}"
+
+# Prompt for release inputs if not skipping
+RELEASE_TITLE=""
+RELEASE_BODY=""
+if ! $SKIP_RELEASE; then
+    if ! command -v gh &>/dev/null; then
+        warn "gh CLI not installed — will skip GitHub release."
+        SKIP_RELEASE=true
+    else
+        read -rp "Release title [${TAG}]: " RELEASE_TITLE
+        RELEASE_TITLE="${RELEASE_TITLE:-${TAG}}"
+
+        echo "Release description (enter an empty line to finish, or leave blank for auto-generated notes):"
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && break
+            RELEASE_BODY="${RELEASE_BODY}${line}"$'\n'
+        done
+    fi
+fi
+
+# ─── Summary ──────────────────────────────────────────────────────────────
+echo
 info "Image:   ${FULL_IMAGE}"
 info "Version: ${VERSION}"
 info "Tags:    ${VERSION}, latest"
+info "Release: ${TAG}"
 echo
 
+# ─── Preflight checks ────────────────────────────────────────────────────
 if ! command -v docker &>/dev/null; then
     error "Docker is not installed or not in PATH."
 fi
@@ -85,7 +133,7 @@ if $MULTI_ARCH; then
     fi
 fi
 
-# ─── Login to GHCR ─────────────────────────────────────────────────────────
+# ─── Login to GHCR ───────────────────────────────────────────────────────
 if ! $SKIP_LOGIN; then
     info "Logging in to ${REGISTRY}..."
     if [[ -n "${GITHUB_TOKEN:-}" ]]; then
@@ -102,7 +150,7 @@ else
     info "Skipping login (--skip-login)."
 fi
 
-# ─── Build and push ────────────────────────────────────────────────────────
+# ─── Build and push ──────────────────────────────────────────────────────
 if $MULTI_ARCH; then
     info "Building multi-arch image (linux/amd64, linux/arm64)..."
 
@@ -141,63 +189,28 @@ else
     run docker push "${FULL_IMAGE}:latest"
 fi
 
-# ─── GitHub Release ────────────────────────────────────────────────────────
+# ─── GitHub Release ───────────────────────────────────────────────────────
 if ! $SKIP_RELEASE; then
     echo
-    if ! command -v gh &>/dev/null; then
-        warn "gh CLI not installed — skipping GitHub release."
-        warn "Install from: https://cli.github.com"
+    if $DRY_RUN; then
+        echo -e "${YELLOW}[DRY-RUN]${NC} gh release create ${TAG} --title \"${RELEASE_TITLE}\" --notes \"...\""
     else
-        # Auto-increment: find latest vX.Y.Z tag and bump patch
-        LATEST_TAG=$(git tag --sort=-v:refname --list 'v[0-9]*' | head -1)
-        if [[ -n "$LATEST_TAG" ]]; then
-            # Strip leading 'v', split on '.', bump patch
-            IFS='.' read -r MAJOR MINOR PATCH <<< "${LATEST_TAG#v}"
-            SUGGESTED_TAG="v${MAJOR}.${MINOR}.$(( PATCH + 1 ))"
-            info "Latest tag:    ${LATEST_TAG}"
+        if [[ -n "$RELEASE_BODY" ]]; then
+            gh release create "${TAG}" \
+                --title "${RELEASE_TITLE}" \
+                --notes "${RELEASE_BODY}"
         else
-            SUGGESTED_TAG="v0.1.0"
-            info "No existing tags found."
+            gh release create "${TAG}" \
+                --title "${RELEASE_TITLE}" \
+                --generate-notes
         fi
-        info "Suggested tag: ${SUGGESTED_TAG}"
-        echo
-
-        # Prompt for tag (accept default, or enter custom like vX.Y.Z)
-        read -rp "Release tag [${SUGGESTED_TAG}]: " TAG
-        TAG="${TAG:-${SUGGESTED_TAG}}"
-
-        # Prompt for title
-        read -rp "Release title [${TAG}]: " RELEASE_TITLE
-        RELEASE_TITLE="${RELEASE_TITLE:-${TAG}}"
-
-        # Prompt for description (multi-line)
-        echo "Release description (enter an empty line to finish, or leave blank for auto-generated notes):"
-        RELEASE_BODY=""
-        while IFS= read -r line; do
-            [[ -z "$line" ]] && break
-            RELEASE_BODY="${RELEASE_BODY}${line}"$'\n'
-        done
-
-        if $DRY_RUN; then
-            echo -e "${YELLOW}[DRY-RUN]${NC} gh release create ${TAG} --title \"${RELEASE_TITLE}\" --notes \"...\""
-        else
-            if [[ -n "$RELEASE_BODY" ]]; then
-                gh release create "${TAG}" \
-                    --title "${RELEASE_TITLE}" \
-                    --notes "${RELEASE_BODY}"
-            else
-                gh release create "${TAG}" \
-                    --title "${RELEASE_TITLE}" \
-                    --generate-notes
-            fi
-            info "GitHub release ${TAG} created."
-        fi
+        info "GitHub release ${TAG} created."
     fi
 else
     info "Skipping GitHub release (--skip-release)."
 fi
 
-# ─── Done ───────────────────────────────────────────────────────────────────
+# ─── Done ─────────────────────────────────────────────────────────────────
 echo
 info "Published successfully!"
 info "Pull with: docker pull ${FULL_IMAGE}:${VERSION}"

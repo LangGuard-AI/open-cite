@@ -1512,6 +1512,7 @@ def register_api_routes(app: Flask):
 
         # Extract an auth token for the OpenCITE endpoint from headers
         langguard_api_key = headers.get("Authorization", "").replace("Bearer ", "") or "unused"
+        tenant_id = data.get("tenant_id")  # optional
 
         from open_cite.generate_test_data import PipelineConfig, run_pipeline
         import asyncio
@@ -1522,6 +1523,7 @@ def register_api_routes(app: Flask):
             model_name=model,
             langguard_url=endpoint,
             langguard_api_key=langguard_api_key,
+            tenant_id=tenant_id,
         )
 
         _test_data_status["status"] = "running"
@@ -2469,8 +2471,9 @@ def auto_configure_plugins(app: Flask):
     logger.info(f"Auto-configuring plugins: {[p['name'] for p in plugins_to_enable]}")
 
     with state_lock:
-        client = OpenCiteClient()
-        if persistence:
+        if not client:
+            client = OpenCiteClient()
+        if persistence and not client.persistence:
             client.persistence = persistence
         discovery_status["error"] = None
         discovery_status["plugins_enabled"] = []
@@ -2488,8 +2491,15 @@ def auto_configure_plugins(app: Flask):
     # _configure_plugin() creates a new instance with the real config and
     # calls register_plugin(), which raises ValueError if the instance_id
     # is already taken.  Unregistering first avoids this conflict.
+    #
+    # IMPORTANT: Skip the embedded 'opentelemetry' plugin — it is set up by
+    # _init_state() and referenced by the module-level _default_otel_plugin
+    # global that Flask routes use to process incoming OTLP data.  Replacing
+    # it here would orphan that global reference, breaking webhook delivery.
     for plugin_config in plugins_to_enable:
         plugin_name = plugin_config['name']
+        if plugin_name == 'opentelemetry':
+            continue
         if plugin_name in client.plugins:
             try:
                 client.unregister_plugin(plugin_name)
@@ -2498,6 +2508,11 @@ def auto_configure_plugins(app: Flask):
 
     for plugin_config in plugins_to_enable:
         plugin_name = plugin_config['name']
+        if plugin_name == 'opentelemetry':
+            # Already configured by _init_state(); mark as enabled and skip.
+            with state_lock:
+                discovery_status["plugins_enabled"].append(plugin_name)
+            continue
         config_dict = plugin_config['config']
 
         try:

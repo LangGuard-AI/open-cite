@@ -61,6 +61,9 @@ class PipelineConfig:
     openai_base_url: str | None = None
     model_name: str = "gpt-4.1-mini"
 
+    # Tenant context — relayed back to LangGuard via X-Tenant-ID header
+    tenant_id: str | None = None
+
     # Output directories
     eval_data_dir: Path = field(default_factory=lambda: Path("eval_data"))
     eval_results_dir: Path = field(default_factory=lambda: Path("eval_results"))
@@ -190,12 +193,14 @@ def _configure_openai_client(cfg: PipelineConfig) -> None:
     set_default_openai_api("chat_completions")
 
 
-def _configure_tracing(cfg: PipelineConfig) -> None:
+def _configure_tracing(cfg: PipelineConfig) -> "TracerProvider":
     """Set up OpenTelemetry tracing with GenAI semantic conventions.
 
     Spans are exported to the LangGuard endpoint via OTLP/HTTP. The
     OpenAIAgentsInstrumentor bridges the Agents SDK's internal tracing
     into OTel spans with standard gen_ai.* attributes.
+
+    Returns the TracerProvider so callers can flush/shutdown after the pipeline.
     """
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -209,9 +214,15 @@ def _configure_tracing(cfg: PipelineConfig) -> None:
     except (ImportError, Exception):
         pass
 
+    export_headers = {"Authorization": f"Bearer {cfg.langguard_api_key}"}
+    if cfg.tenant_id:
+        export_headers["X-Tenant-ID"] = cfg.tenant_id
+
+    logging.info("Configuring OTLP exporter: endpoint=%s tenant_id=%s", cfg.langguard_url, cfg.tenant_id)
+
     otlp_exporter = OTLPSpanExporter(
         endpoint=f"{cfg.langguard_url}/v1/traces",
-        headers={"Authorization": f"Bearer {cfg.langguard_api_key}"},
+        headers=export_headers,
     )
 
     tracer_provider = TracerProvider()
@@ -224,6 +235,8 @@ def _configure_tracing(cfg: PipelineConfig) -> None:
         capture_message_content=True,
         base_url=cfg.openai_base_url,
     )
+
+    return tracer_provider
 
 
 def _test_endpoints(cfg: PipelineConfig) -> None:
@@ -419,10 +432,14 @@ async def _run_agent_tests(agent, results: PipelineResults) -> None:
         logging.info("=" * 60)
         logging.info("TEST: %s", label)
         logging.info("=" * 60)
-        result = await Runner.run(agent, query)
-        output = result.final_output[:500]
-        logging.info("Response: %s...", output)
-        results.agent_test_outputs.append({"label": label, "query": query, "output": output})
+        try:
+            result = await Runner.run(agent, query)
+            output = result.final_output[:500]
+            logging.info("Response: %s...", output)
+            results.agent_test_outputs.append({"label": label, "query": query, "output": output})
+        except Exception as exc:
+            logging.warning("Test '%s' failed: %s", label, exc)
+            results.agent_test_outputs.append({"label": label, "query": query, "error": str(exc)})
 
 
 # ---------------------------------------------------------------------------
@@ -433,16 +450,19 @@ async def _run_traced_query(agent, results: PipelineResults) -> None:
     """Execute a query wrapped in a trace context for OTel export."""
     from agents import Runner, trace
 
-    with trace("PE Deal Inquiry"):
-        result = await Runner.run(
-            agent,
-            "Find me SaaS companies in the deal pipeline with over $20M ARR",
-        )
-        output = result.final_output[:300]
-        logging.info("Traced response: %s...", output)
-        results.traced_output = output
+    try:
+        with trace("PE Deal Inquiry"):
+            result = await Runner.run(
+                agent,
+                "Find me SaaS companies in the deal pipeline with over $20M ARR",
+            )
+            output = result.final_output[:300]
+            logging.info("Traced response: %s...", output)
+            results.traced_output = output
 
-    logging.info("Trace captured and exported to OTel backend.")
+        logging.info("Trace captured and exported to OTel backend.")
+    except Exception as exc:
+        logging.warning("Traced query failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -723,7 +743,7 @@ async def run_pipeline(cfg: PipelineConfig) -> PipelineResults:
     # 1. Configure client and tracing
     logging.info("Configuring OpenAI client (model=%s)...", cfg.model_name)
     _configure_openai_client(cfg)
-    _configure_tracing(cfg)
+    tracer_provider = _configure_tracing(cfg)
 
     # 2. Test endpoints
     _test_endpoints(cfg)
@@ -734,32 +754,55 @@ async def run_pipeline(cfg: PipelineConfig) -> PipelineResults:
     triage = _build_triage_agent(cfg.model_name, specialists, tools)
 
     # 4. Basic agent tests
-    logging.info("Running basic agent routing tests...")
-    await _run_agent_tests(triage, results)
+    try:
+        logging.info("Running basic agent routing tests...")
+        await _run_agent_tests(triage, results)
+    except Exception as exc:
+        logging.warning("Stage 4 (agent tests) failed: %s", exc)
 
     # 5. Traced workflow
-    logging.info("Running traced workflow...")
-    await _run_traced_query(triage, results)
+    try:
+        logging.info("Running traced workflow...")
+        await _run_traced_query(triage, results)
+    except Exception as exc:
+        logging.warning("Stage 5 (traced workflow) failed: %s", exc)
 
     # 6–9. OpenAI-only stages (guardrails require OpenAI API)
     if cfg.openai_base_url:
         logging.info("Skipping guardrail stages (non-OpenAI provider)")
     else:
         # 6. Built-in guardrails
-        logging.info("Testing built-in guardrails...")
-        await _run_builtin_guardrail_tests(cfg.model_name, specialists, tools, results)
+        try:
+            logging.info("Testing built-in guardrails...")
+            await _run_builtin_guardrail_tests(cfg.model_name, specialists, tools, results)
+        except Exception as exc:
+            logging.warning("Stage 6 (built-in guardrails) failed: %s", exc)
 
         # 7. Centralized guardrails
-        logging.info("Testing centralized guardrails (GuardrailsOpenAI)...")
-        _run_guardrails_openai_tests(cfg, results)
+        try:
+            logging.info("Testing centralized guardrails (GuardrailsOpenAI)...")
+            _run_guardrails_openai_tests(cfg, results)
+        except Exception as exc:
+            logging.warning("Stage 7 (GuardrailsOpenAI) failed: %s", exc)
 
         # 8. Governed agent
-        logging.info("Testing governed agent (GuardrailAgent)...")
-        await _run_governed_agent_tests(cfg, specialists, tools, results)
+        try:
+            logging.info("Testing governed agent (GuardrailAgent)...")
+            await _run_governed_agent_tests(cfg, specialists, tools, results)
+        except Exception as exc:
+            logging.warning("Stage 8 (governed agent) failed: %s", exc)
 
         # 9. Evaluation
-        logging.info("Running guardrail evaluation...")
-        await _run_eval(cfg, results)
+        try:
+            logging.info("Running guardrail evaluation...")
+            await _run_eval(cfg, results)
+        except Exception as exc:
+            logging.warning("Stage 9 (evaluation) failed: %s", exc)
+
+    # Flush all pending spans to ensure they reach LangGuard
+    logging.info("Flushing trace exporter...")
+    tracer_provider.force_flush(timeout_millis=10_000)
+    tracer_provider.shutdown()
 
     logging.info("Pipeline complete.")
     return results
