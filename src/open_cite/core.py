@@ -6,7 +6,10 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from typing import List, Dict, Any, Optional, Set
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
+import hmac
 import ipaddress
+import json
 import logging
 import os
 import socket
@@ -15,6 +18,11 @@ import warnings
 from urllib.parse import urlparse
 
 import requests
+
+# Shared secret for HMAC-signing webhook deliveries.
+# When set, every outbound webhook POST includes an
+# ``x-opencite-signature: sha256=<hex>`` header.
+_WEBHOOK_SECRET: Optional[str] = os.getenv("OPENCITE_WEBHOOK_SECRET") or None
 
 logger = logging.getLogger(__name__)
 
@@ -565,6 +573,17 @@ class BaseDiscoveryPlugin(ABC):
             headers.update(inbound_headers)
         headers["Content-Type"] = "application/json"
 
+        # HMAC-sign the payload so the receiving webapp can verify authenticity.
+        # We serialize once and send raw bytes so the signature matches exactly.
+        body_bytes = json.dumps(otlp_payload, separators=(",", ":")).encode("utf-8")
+        if _WEBHOOK_SECRET:
+            sig = hmac.new(
+                _WEBHOOK_SECRET.encode("utf-8"),
+                body_bytes,
+                hashlib.sha256,
+            ).hexdigest()
+            headers["x-opencite-signature"] = f"sha256={sig}"
+
         # Mask token in debug output
         masked_url = url.split("?")[0] + ("?token=***" if "token=" in url else "")
         backoffs = [0.5, 1.0]
@@ -572,7 +591,7 @@ class BaseDiscoveryPlugin(ABC):
             try:
                 resp = requests.post(
                     url,
-                    json=otlp_payload,
+                    data=body_bytes,
                     headers=headers,
                     timeout=30,
                 )

@@ -51,6 +51,9 @@ class OpenCiteConfig:
     # Logging
     log_level: str = field(default_factory=lambda: os.getenv("OPENCITE_LOG_LEVEL", "INFO"))
 
+    # Shared secret for HMAC-signing webhook deliveries
+    webhook_secret: Optional[str] = field(default_factory=lambda: os.getenv("OPENCITE_WEBHOOK_SECRET"))
+
     # Database URL (SQLAlchemy — supports SQLite and PostgreSQL)
     database_url: Optional[str] = field(
         default_factory=lambda: os.getenv("OPENCITE_DATABASE_URL")
