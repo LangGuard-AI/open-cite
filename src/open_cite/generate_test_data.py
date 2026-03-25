@@ -64,6 +64,9 @@ class PipelineConfig:
     # Tenant context — relayed back to LangGuard via X-Tenant-ID header
     tenant_id: str | None = None
 
+    # Extra headers to include in OTLP export requests (e.g. Databricks UC table name)
+    export_headers: dict[str, str] = field(default_factory=dict)
+
     # Output directories
     eval_data_dir: Path = field(default_factory=lambda: Path("eval_data"))
     eval_results_dir: Path = field(default_factory=lambda: Path("eval_results"))
@@ -180,6 +183,31 @@ PE_SYSTEM_PROMPT = (
 # Pipeline stages
 # ---------------------------------------------------------------------------
 
+def _strip_reasoning_blocks(response) -> None:
+    """Normalize chat completion responses that contain reasoning content blocks.
+
+    Some model providers (e.g. Databricks) return ``message.content`` as a list
+    of typed blocks (``{"type": "reasoning", ...}``, ``{"type": "text", ...}``)
+    instead of a plain string.  The OpenAI Agents SDK expects ``content`` to be
+    a string, so we collapse text blocks and discard reasoning blocks in-place.
+    """
+    if not hasattr(response, "choices"):
+        return
+    for choice in response.choices:
+        msg = getattr(choice, "message", None)
+        if msg is None or not isinstance(msg.content, list):
+            continue
+        texts = []
+        for block in msg.content:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    texts.append(block.get("text", ""))
+                elif block.get("type") != "reasoning":
+                    # Unknown block type — preserve whatever text it has
+                    texts.append(block.get("text", str(block)))
+        msg.content = "\n".join(texts) if texts else ""
+
+
 def _configure_openai_client(cfg: PipelineConfig) -> None:
     """Register the AsyncOpenAI client as the default for the Agents SDK."""
     from openai import AsyncOpenAI
@@ -189,6 +217,18 @@ def _configure_openai_client(cfg: PipelineConfig) -> None:
         api_key=cfg.openai_api_key,
         base_url=cfg.openai_base_url,
     )
+
+    # Wrap completions.create to strip reasoning content blocks that some
+    # providers (Databricks) inject into message.content as a list of dicts.
+    _original_create = client.chat.completions.create
+
+    async def _create_without_reasoning(*args, **kwargs):
+        response = await _original_create(*args, **kwargs)
+        _strip_reasoning_blocks(response)
+        return response
+
+    client.chat.completions.create = _create_without_reasoning  # type: ignore[assignment]
+
     set_default_openai_client(client, use_for_tracing=False)
     set_default_openai_api("chat_completions")
 
@@ -217,6 +257,9 @@ def _configure_tracing(cfg: PipelineConfig) -> "TracerProvider":
     export_headers = {"Authorization": f"Bearer {cfg.langguard_api_key}"}
     if cfg.tenant_id:
         export_headers["X-Tenant-ID"] = cfg.tenant_id
+    # Merge any extra headers (e.g. X-Databricks-UC-Table-Name for Databricks OTLP)
+    if cfg.export_headers:
+        export_headers.update(cfg.export_headers)
 
     logging.info("Configuring OTLP exporter: endpoint=%s tenant_id=%s", cfg.langguard_url, cfg.tenant_id)
 

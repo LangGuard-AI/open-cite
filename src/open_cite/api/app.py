@@ -1517,6 +1517,9 @@ def register_api_routes(app: Flask):
         from open_cite.generate_test_data import PipelineConfig, run_pipeline
         import asyncio
 
+        # Collect extra export headers (exclude Authorization which is handled separately)
+        export_headers = {k: v for k, v in headers.items() if k.lower() != "authorization"}
+
         cfg = PipelineConfig(
             openai_api_key=api_key,
             openai_base_url=base_url,
@@ -1524,6 +1527,7 @@ def register_api_routes(app: Flask):
             langguard_url=endpoint,
             langguard_api_key=langguard_api_key,
             tenant_id=tenant_id,
+            export_headers=export_headers,
         )
 
         _test_data_status["status"] = "running"
