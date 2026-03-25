@@ -1376,29 +1376,59 @@ def register_api_routes(app: Flask):
         }
         """
         try:
+            logger.info("Refresh requested for instance '%s'", instance_id)
             plugin = _ensure_instance(instance_id)
             if not plugin:
+                logger.warning("Refresh: instance '%s' not found", instance_id)
                 return jsonify({"error": f"Instance '{instance_id}' not found"}), 404
 
             data = request.json or {}
             days = data.get('days')
+            plugin_type = type(plugin).__name__
+            logger.info(
+                "Refresh instance '%s' (plugin=%s): days=%s, "
+                "has_refresh_discovery=%s, has_refresh_traces=%s",
+                instance_id, plugin_type, days,
+                hasattr(plugin, 'refresh_discovery'),
+                hasattr(plugin, 'refresh_traces'),
+            )
 
             if hasattr(plugin, 'refresh_discovery') and callable(plugin.refresh_discovery):
                 # Full discovery refresh — models, deployments, agents, tools, traces
+                logger.info("Refresh instance '%s': invoking refresh_discovery()", instance_id)
                 plugin.refresh_discovery()
                 method = 'refresh_discovery'
             elif hasattr(plugin, 'refresh_traces') and callable(plugin.refresh_traces):
                 # Incremental trace-only refresh
                 if days is not None:
+                    logger.info(
+                        "Refresh instance '%s': invoking refresh_traces(days=%s)",
+                        instance_id, days,
+                    )
                     plugin.refresh_traces(days=int(days))
                 else:
+                    last_query = getattr(plugin, '_last_query_time', None)
+                    logger.info(
+                        "Refresh instance '%s': invoking refresh_traces() "
+                        "(last_query_time=%s)",
+                        instance_id, last_query,
+                    )
                     plugin.refresh_traces()
                 method = 'refresh_traces'
             else:
                 # Fallback: full discovery via start()
+                logger.info(
+                    "Refresh instance '%s': no refresh method available, "
+                    "falling back to start()",
+                    instance_id,
+                )
                 _start_plugin_instance(plugin)
                 method = 'start'
 
+            logger.info(
+                "Refresh instance '%s' completed: method=%s, days=%s",
+                instance_id, method, days,
+            )
             return jsonify({
                 "success": True,
                 "message": f"Instance '{instance_id}' refreshed via {method}",
@@ -1407,7 +1437,9 @@ def register_api_routes(app: Flask):
             })
 
         except Exception as e:
-            logger.exception("Request failed")
+            logger.exception(
+                "Refresh failed for instance '%s': %s", instance_id, e,
+            )
             return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/api/v1/instances/<instance_id>/verify', methods=['POST'])
