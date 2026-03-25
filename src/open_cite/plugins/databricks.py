@@ -199,6 +199,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         self.lookback_days = lookback_days
         self._auto_poll = auto_poll
         self._last_query_time: Optional[datetime] = None
+        self._last_genie_query_time: Optional[datetime] = None
 
         # Build WorkspaceClient
         print(f"  [DatabricksPlugin] __init__ host={self.host!r}, token={'set' if self.token else 'None'}")
@@ -1186,6 +1187,14 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             except ValueError:
                 logger.warning("Invalid MLflow HWM value for %s: %s", self.instance_id, saved_qt)
 
+        saved_gq = self.load_hwm("last_genie_query_time")
+        if saved_gq:
+            try:
+                self._last_genie_query_time = datetime.fromisoformat(saved_gq)
+                logger.info("Restored Genie HWM for %s: %s", self.instance_id, saved_gq)
+            except ValueError:
+                logger.warning("Invalid Genie HWM value for %s: %s", self.instance_id, saved_gq)
+
         thread = threading.Thread(
             target=self._run_discovery,
             args=(self.lookback_days, "start"),
@@ -1404,7 +1413,17 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
 
     def refresh_discovery(self):
         """Refresh all discovery data: Unity Catalog assets, traces, Genie, MCP."""
-        logger.info("Refreshing full Databricks discovery for %s", self.instance_id)
+        # Compute incremental lookback from the trace HWM when available
+        if self._last_query_time:
+            elapsed = datetime.utcnow() - self._last_query_time
+            days = max(1, int(elapsed.total_seconds() / 86400) + 1)
+        else:
+            days = self.lookback_days
+
+        logger.info(
+            "Refreshing full Databricks discovery for %s (lookback=%d days, hwm=%s)",
+            self.instance_id, days, self._last_query_time,
+        )
 
         # Unity Catalog assets
         for asset_type in ("catalog", "schema", "table", "volume", "model", "function"):
@@ -1414,7 +1433,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                 logger.warning("Failed to discover %s: %s", asset_type, e)
 
         # Traces, Genie conversations, MCP servers
-        self._run_discovery(self.lookback_days, "refresh_discovery")
+        self._run_discovery(days, "refresh_discovery")
 
         logger.info("Full Databricks discovery refresh complete for %s", self.instance_id)
 
@@ -1611,8 +1630,8 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             f"{len(self.genie_traces)} traces created"
         )
 
-        self._last_query_time = datetime.utcnow()
-        self.save_hwm("last_query_time", self._last_query_time.isoformat())
+        self._last_genie_query_time = datetime.utcnow()
+        self.save_hwm("last_genie_query_time", self._last_genie_query_time.isoformat())
         self.notify_data_changed()
 
     def _resolve_user_email(self, user_id: str) -> str:
