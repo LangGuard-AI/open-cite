@@ -11,6 +11,7 @@ Shared route registration:
 """
 
 import os
+import sys
 import json
 import logging
 import socket
@@ -258,7 +259,7 @@ def create_app(config: Optional[OpenCiteConfig] = None) -> Flask:
     oc_logger = logging.getLogger('open_cite')
     oc_logger.setLevel(log_level)
     if not oc_logger.handlers:
-        handler = logging.StreamHandler()
+        handler = logging.StreamHandler(sys.stdout)
         handler.setFormatter(logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         ))
