@@ -1252,6 +1252,11 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             days: Number of days to look back
             max_per_experiment: Maximum traces/runs to fetch per experiment
         """
+        # Use own HWM to narrow the lookback when available
+        if self._last_query_time:
+            elapsed = datetime.utcnow() - self._last_query_time
+            days = max(1, int(elapsed.total_seconds() / 86400) + 1)
+
         logger.info(f"Starting MLflow discovery (lookback={days} days)")
 
         try:
@@ -1508,6 +1513,11 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             max_messages: Maximum messages to process across all spaces
             space_ids: Optional list of space IDs to filter (None = all)
         """
+        # Use own HWM to narrow the lookback when available
+        if self._last_genie_query_time:
+            elapsed = datetime.utcnow() - self._last_genie_query_time
+            days = max(1, int(elapsed.total_seconds() / 86400) + 1)
+
         logger.info(f"Starting Genie conversation discovery (lookback={days} days)")
 
         validation = self.genie_client.validate_connection()

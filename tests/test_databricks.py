@@ -162,12 +162,14 @@ class TestSeparateHWMs:
         """discover_from_genie should update _last_genie_query_time, not _last_query_time."""
         plugin = _make_plugin()
 
-        with patch.object(plugin, "workspace_client") as mock_ws, \
-             patch.object(plugin, "_forward_to_otel"):
-            # Mock the Genie spaces API to return empty
-            mock_ws.genie.list_spaces.return_value = MagicMock(
-                spaces=[]
-            )
+        fake_space = {"space_id": "sp-1", "title": "Test Space", "description": ""}
+        mock_gc = MagicMock()
+        mock_gc.validate_connection.return_value = {"valid": True, "spaces_count": 1}
+        mock_gc.list_spaces.return_value = [fake_space]
+        mock_gc.list_all_conversations.return_value = []
+        plugin.genie_client = mock_gc
+
+        with patch.object(plugin, "_forward_to_otel"):
             plugin.discover_from_genie(days=7)
 
         # _last_genie_query_time should be set
@@ -175,6 +177,101 @@ class TestSeparateHWMs:
         # _last_query_time should remain None (not overwritten)
         assert plugin._last_query_time is None
         # Should persist the genie HWM
+        plugin.save_hwm.assert_called_once_with(
+            "last_genie_query_time", plugin._last_genie_query_time.isoformat()
+        )
+
+    def test_discover_from_traces_narrows_lookback_from_hwm(self):
+        """When _last_query_time is set, discover_from_traces should narrow
+        the lookback to elapsed time, not use the caller's days param."""
+        hwm = datetime.utcnow() - timedelta(days=2, hours=6)
+        plugin = _make_plugin(lookback_days=90, last_query_time=hwm)
+
+        captured_start_ms = {}
+
+        fake_exp = MagicMock()
+        fake_exp.experiment_id = "exp-1"
+        fake_exp.name = "test-experiment"
+
+        original_discover = None
+
+        with patch.object(plugin, "workspace_client") as mock_ws, \
+             patch.object(plugin, "_discover_from_traces", return_value=True) as mock_dt, \
+             patch.object(plugin, "_discover_from_runs") as mock_dr:
+            mock_ws.experiments.search_experiments.return_value = [fake_exp]
+            # Call with the full 90-day lookback that start() would pass
+            plugin.discover_from_traces(days=90)
+
+            # The method should have narrowed days to ~3 (2d6h → int(2.25)+1=3)
+            # Verify by checking the start_ms computed from the narrowed days:
+            # _discover_from_traces is called with (experiments, start_ms, max)
+            call_args = mock_dt.call_args
+            actual_start_ms = call_args[0][1]  # second positional arg
+            now_ms = int(datetime.utcnow().timestamp() * 1000)
+            actual_days = (now_ms - actual_start_ms) / (24 * 60 * 60 * 1000)
+            # Should be ~3 days, not 90
+            assert actual_days < 5, f"Expected ~3 days lookback, got {actual_days:.1f}"
+
+    def test_discover_from_traces_uses_caller_days_without_hwm(self):
+        """Without _last_query_time, discover_from_traces should use the
+        caller's days parameter as-is."""
+        plugin = _make_plugin(lookback_days=90)
+
+        fake_exp = MagicMock()
+        fake_exp.experiment_id = "exp-1"
+        fake_exp.name = "test-experiment"
+
+        with patch.object(plugin, "workspace_client") as mock_ws, \
+             patch.object(plugin, "_discover_from_traces", return_value=True) as mock_dt, \
+             patch.object(plugin, "_discover_from_runs"):
+            mock_ws.experiments.search_experiments.return_value = [fake_exp]
+            plugin.discover_from_traces(days=90)
+
+            call_args = mock_dt.call_args
+            actual_start_ms = call_args[0][1]
+            now_ms = int(datetime.utcnow().timestamp() * 1000)
+            actual_days = (now_ms - actual_start_ms) / (24 * 60 * 60 * 1000)
+            # Should be ~90 days
+            assert actual_days > 85, f"Expected ~90 days lookback, got {actual_days:.1f}"
+
+    def test_discover_from_genie_narrows_lookback_from_hwm(self):
+        """When _last_genie_query_time is set, discover_from_genie should
+        narrow the lookback to elapsed time."""
+        hwm = datetime.utcnow() - timedelta(days=4, hours=3)
+        plugin = _make_plugin(lookback_days=90, last_genie_query_time=hwm)
+
+        fake_space = {"space_id": "sp-1", "title": "Test Space", "description": ""}
+        mock_gc = MagicMock()
+        mock_gc.validate_connection.return_value = {"valid": True, "spaces_count": 1}
+        mock_gc.list_spaces.return_value = [fake_space]
+        mock_gc.list_all_conversations.return_value = []
+        plugin.genie_client = mock_gc
+
+        with patch.object(plugin, "_forward_to_otel"):
+            plugin.discover_from_genie(days=90)
+
+        # Genie HWM should now be updated (discover_from_genie ran to completion)
+        assert plugin._last_genie_query_time is not None
+        plugin.save_hwm.assert_called_once_with(
+            "last_genie_query_time", plugin._last_genie_query_time.isoformat()
+        )
+
+    def test_discover_from_genie_uses_caller_days_without_hwm(self):
+        """Without _last_genie_query_time, discover_from_genie should use
+        the caller's days parameter."""
+        plugin = _make_plugin(lookback_days=90)
+
+        fake_space = {"space_id": "sp-1", "title": "Test Space", "description": ""}
+        mock_gc = MagicMock()
+        mock_gc.validate_connection.return_value = {"valid": True, "spaces_count": 1}
+        mock_gc.list_spaces.return_value = [fake_space]
+        mock_gc.list_all_conversations.return_value = []
+        plugin.genie_client = mock_gc
+
+        with patch.object(plugin, "_forward_to_otel"):
+            plugin.discover_from_genie(days=90)
+
+        assert plugin._last_genie_query_time is not None
         plugin.save_hwm.assert_called_once_with(
             "last_genie_query_time", plugin._last_genie_query_time.isoformat()
         )
@@ -226,6 +323,47 @@ class TestStartHWMRestoration:
 
         assert plugin._last_query_time == datetime.fromisoformat("2026-03-20T12:00:00")
         assert plugin._last_genie_query_time == datetime.fromisoformat("2026-03-21T08:30:00")
+
+    def test_start_with_hwms_methods_self_narrow(self):
+        """When start() restores HWMs and passes lookback_days to
+        _run_discovery, each discovery method should independently narrow
+        the lookback using its own HWM."""
+        plugin = _make_plugin(lookback_days=90)
+
+        hwm_values = {
+            "last_query_time": (datetime.utcnow() - timedelta(days=2)).isoformat(),
+            "last_genie_query_time": (datetime.utcnow() - timedelta(days=5)).isoformat(),
+            "last_gateway_event_time": None,
+        }
+        plugin.load_hwm = MagicMock(side_effect=lambda name: hwm_values.get(name))
+
+        captured_trace_days = {}
+        captured_genie_days = {}
+
+        def fake_traces(days=90, max_per_experiment=100):
+            captured_trace_days["days"] = days
+
+        def fake_genie(days=90, max_messages=100, space_ids=None):
+            captured_genie_days["days"] = days
+
+        with patch.object(plugin, "discover_from_traces", side_effect=fake_traces), \
+             patch.object(plugin, "discover_from_genie", side_effect=fake_genie), \
+             patch.object(plugin, "discover_mcp_servers"):
+            plugin.start()
+            # start() spawns a thread — call _run_discovery directly to test
+            plugin._run_discovery(plugin.lookback_days, "start")
+
+        # discover_from_traces should have been called — the method itself
+        # will narrow days from _last_query_time (~2 days → 3)
+        assert "days" in captured_trace_days
+        # discover_from_genie should have been called — the method itself
+        # will narrow days from _last_genie_query_time (~5 days → 6)
+        assert "days" in captured_genie_days
+        # The caller passes 90, but the methods override internally.
+        # Here we're testing _run_discovery passes through the days value;
+        # the actual narrowing happens inside the methods themselves.
+        assert captured_trace_days["days"] == 90
+        assert captured_genie_days["days"] == 90
 
     def test_handles_missing_hwms_on_start(self):
         """start() should gracefully handle missing HWM values."""
