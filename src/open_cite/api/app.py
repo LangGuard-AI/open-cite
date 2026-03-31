@@ -416,7 +416,8 @@ def _otlp_ingest(data: dict, headers: dict):
     """
     if _default_otel_plugin is None:
         raise RuntimeError("No embedded OTLP receiver configured")
-    _default_otel_plugin._ingest_traces(data)
+    integration_id = headers.get("X-Integration-Id") or headers.get("x-integration-id")
+    _default_otel_plugin._ingest_traces(data, integration_id=integration_id)
     _default_otel_plugin._deliver_to_webhooks(data, inbound_headers=headers)
 
 
@@ -429,9 +430,10 @@ def _otlp_ingest_logs(data: dict, headers: dict):
     if _default_otel_plugin is None:
         raise RuntimeError("No embedded OTLP receiver configured")
     from open_cite.plugins.logs_adapter import convert_logs_to_traces
+    integration_id = headers.get("X-Integration-Id") or headers.get("x-integration-id")
     synthetic_traces = convert_logs_to_traces(data)
     if synthetic_traces.get("resourceSpans"):
-        _default_otel_plugin._ingest_traces(synthetic_traces)
+        _default_otel_plugin._ingest_traces(synthetic_traces, integration_id=integration_id)
         _default_otel_plugin._deliver_to_webhooks(synthetic_traces, inbound_headers=headers)
 
 
@@ -543,7 +545,8 @@ def register_api_routes(app: Flask):
             else:
                 return jsonify({"error": f"Unsupported Content-Type: {content_type}"}), 415
 
-            _default_otel_plugin._ingest_traces(data)
+            integration_id = inbound_headers.get("x-integration-id") or inbound_headers.get("X-Integration-Id")
+            _default_otel_plugin._ingest_traces(data, integration_id=integration_id)
             _default_otel_plugin._deliver_to_webhooks(data, inbound_headers=inbound_headers)
 
             num_spans = sum(
@@ -607,7 +610,8 @@ def register_api_routes(app: Flask):
             )
 
             if synthetic_traces.get("resourceSpans"):
-                _default_otel_plugin._ingest_traces(synthetic_traces)
+                integration_id = inbound_headers.get("x-integration-id") or inbound_headers.get("X-Integration-Id")
+                _default_otel_plugin._ingest_traces(synthetic_traces, integration_id=integration_id)
                 _default_otel_plugin._deliver_to_webhooks(
                     synthetic_traces, inbound_headers=inbound_headers
                 )
@@ -764,13 +768,26 @@ def register_api_routes(app: Flask):
             logger.exception("Request failed")
             return jsonify({"error": "Internal server error"}), 500
 
+    def _filter_by_integration_id(items):
+        """Filter a list of assets by ?integration_id= query param if provided."""
+        integration_id = request.args.get('integration_id')
+        if not integration_id:
+            return items
+        return [
+            i for i in items
+            if integration_id in (
+                (i.get("metadata", {}) or {}).get("integration_ids") or
+                i.get("integration_ids") or []
+            )
+        ]
+
     @app.route('/api/v1/tools', methods=['GET'])
     def api_list_tools():
         """List discovered tools."""
         if not client:
             return jsonify({"error": "No client initialized"}), 400
         try:
-            tools = client.list_tools()
+            tools = _filter_by_integration_id(client.list_tools())
             return jsonify({"tools": tools, "count": len(tools)})
         except Exception as e:
             logger.exception("Request failed")
@@ -782,7 +799,7 @@ def register_api_routes(app: Flask):
         if not client:
             return jsonify({"error": "No client initialized"}), 400
         try:
-            models = client.list_models()
+            models = _filter_by_integration_id(client.list_models())
             return jsonify({"models": models, "count": len(models)})
         except Exception as e:
             logger.exception("Request failed")
@@ -794,7 +811,7 @@ def register_api_routes(app: Flask):
         if not client:
             return jsonify({"error": "No client initialized"}), 400
         try:
-            servers = client.list_mcp_servers()
+            servers = _filter_by_integration_id(client.list_mcp_servers())
             return jsonify({"servers": servers, "count": len(servers)})
         except Exception as e:
             logger.exception("Request failed")
@@ -819,7 +836,7 @@ def register_api_routes(app: Flask):
         if not client:
             return jsonify({"error": "No client initialized"}), 400
         try:
-            agents = client.list_agents()
+            agents = _filter_by_integration_id(client.list_agents())
             return jsonify({"agents": agents, "count": len(agents)})
         except Exception as e:
             logger.exception("Request failed")
@@ -831,7 +848,7 @@ def register_api_routes(app: Flask):
         if not client:
             return jsonify({"error": "No client initialized"}), 400
         try:
-            systems = client.list_downstream_systems()
+            systems = _filter_by_integration_id(client.list_downstream_systems())
             return jsonify({"downstream_systems": systems, "count": len(systems)})
         except Exception as e:
             logger.exception("Request failed")
@@ -839,12 +856,39 @@ def register_api_routes(app: Flask):
 
     @app.route('/api/v1/lineage', methods=['GET'])
     def api_list_lineage():
-        """List lineage relationships."""
+        """List lineage relationships, optionally filtered by integration_id."""
         if not client:
             return jsonify({"error": "No client initialized"}), 400
         try:
             source_id = request.args.get('source_id')
             relationships = client.list_lineage(source_id=source_id)
+            integration_id = request.args.get('integration_id')
+            if integration_id:
+                # Build set of entity names that belong to this integration
+                entity_names = set()
+                for asset_list in [
+                    client.list_tools(),
+                    client.list_models(),
+                    client.list_agents(),
+                    client.list_downstream_systems(),
+                ]:
+                    for item in asset_list:
+                        ids = (item.get("metadata", {}) or {}).get("integration_ids") or item.get("integration_ids") or []
+                        if integration_id in ids:
+                            entity_names.add(item.get("name", ""))
+                            if item.get("id"):
+                                entity_names.add(item["id"])
+                # Also check MCP servers
+                for srv in client.list_mcp_servers():
+                    ids = (srv.get("metadata", {}) or {}).get("integration_ids") or srv.get("integration_ids") or []
+                    if integration_id in ids:
+                        entity_names.add(srv.get("name", ""))
+                        if srv.get("id"):
+                            entity_names.add(srv["id"])
+                relationships = [
+                    r for r in relationships
+                    if r.get("source_id") in entity_names or r.get("target_id") in entity_names
+                ]
             return jsonify({"relationships": relationships, "count": len(relationships)})
         except Exception as e:
             logger.exception("Request failed")
@@ -2228,9 +2272,18 @@ def _save_current_state():
     for plugin_name, plugin in client.plugins.items():
         count = 0
 
+        # For non-OTLP plugins, tag assets with instance_id as integration_ids
+        # so they are filterable per-integration just like OTLP assets.
+        plugin_instance_id = getattr(plugin, 'instance_id', None)
+
         # --- Tools ---
         discovered_tools = getattr(plugin, 'discovered_tools', {})
         for tool_name, tool_data in discovered_tools.items():
+            if plugin_instance_id and plugin_instance_id != "opentelemetry":
+                metadata = tool_data.setdefault("metadata", {})
+                ids = metadata.setdefault("integration_ids", [])
+                if plugin_instance_id not in ids:
+                    ids.append(plugin_instance_id)
             models = sorted(tool_data.get('models', set()))
             trace_count = len(tool_data.get('traces', []))
             metadata = tool_data.get('metadata', {})
@@ -2251,6 +2304,11 @@ def _save_current_state():
         # --- Agents ---
         discovered_agents = getattr(plugin, 'discovered_agents', {})
         for agent_name, agent_data in discovered_agents.items():
+            if plugin_instance_id and plugin_instance_id != "opentelemetry":
+                metadata = agent_data.setdefault("metadata", {})
+                ids = metadata.setdefault("integration_ids", [])
+                if plugin_instance_id not in ids:
+                    ids.append(plugin_instance_id)
             tools_used = sorted(agent_data.get("tools_used", set()))
             models_used = sorted(agent_data.get("models_used", set()))
             fp = ("agent", agent_name, tuple(tools_used), tuple(models_used))
@@ -2274,6 +2332,11 @@ def _save_current_state():
         # --- Downstream systems ---
         discovered_downstream = getattr(plugin, 'discovered_downstream', {})
         for sys_id, sys_data in discovered_downstream.items():
+            if plugin_instance_id and plugin_instance_id != "opentelemetry":
+                metadata = sys_data.setdefault("metadata", {})
+                ids = metadata.setdefault("integration_ids", [])
+                if plugin_instance_id not in ids:
+                    ids.append(plugin_instance_id)
             tools_conn = sorted(sys_data.get("tools_connecting", set()))
             fp = ("ds", sys_id, sys_data.get("type", "unknown"), tuple(tools_conn))
             if _persisted_fingerprints.get(f"ds:{sys_id}") == fp:
