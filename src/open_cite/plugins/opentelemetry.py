@@ -170,7 +170,8 @@ class OTLPRequestHandler(BaseHTTPRequestHandler):
                         )
                         return
 
-            plugin._ingest_traces(data)
+            integration_id = inbound_headers.get("x-integration-id") or inbound_headers.get("X-Integration-Id")
+            plugin._ingest_traces(data, integration_id=integration_id)
             plugin._deliver_to_webhooks(data, inbound_headers=inbound_headers)
 
             num_spans = sum(len(rs.get("scopeSpans", [])) for rs in data.get("resourceSpans", []))
@@ -716,12 +717,13 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
         return injected
 
-    def _ingest_traces(self, otlp_data: Dict[str, Any]):
+    def _ingest_traces(self, otlp_data: Dict[str, Any], integration_id: Optional[str] = None):
         """
         Ingest OTLP trace data and extract tool/model information.
 
         Args:
             otlp_data: OTLP JSON payload
+            integration_id: Optional integration connection ID for per-tenant asset scoping
         """
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(f"[OTLP] Raw ingested data: {json.dumps(otlp_data, indent=2)}")
@@ -789,6 +791,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                             tool_name = self._detect_tool_usage(
                                 trace_id, span_id, span_name, attributes, resource,
                                 span_time=span_times.get(span_id),
+                                integration_id=integration_id,
                             )
                             if tool_name:
                                 span_tools[span_id] = tool_name
@@ -813,13 +816,15 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                             agent_name = self._detect_agent(
                                 trace_id, span_id, span_name, attributes, resource,
                                 span_time=span_times.get(span_id),
+                                integration_id=integration_id,
                             )
                             if agent_name:
                                 span_agents[span_id] = agent_name
 
                             # Detect downstream systems
                             self._detect_downstream_system(
-                                trace_id, span_id, span_name, attributes, resource
+                                trace_id, span_id, span_name, attributes, resource,
+                                integration_id=integration_id,
                             )
 
                             # Extract token usage
@@ -827,7 +832,8 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
                             # Detect MCP tool/resource usage
                             self._detect_mcp_usage(
-                                trace_id, span_id, span_name, attributes, resource
+                                trace_id, span_id, span_name, attributes, resource,
+                                integration_id=integration_id,
                             )
 
                             # Detect tools from span events (e.g. Claude Code
@@ -835,6 +841,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                             event_tools = self._detect_tools_from_events(
                                 trace_id, span_id, span_name, span, resource,
                                 span_time=span_times.get(span_id),
+                                integration_id=integration_id,
                             )
 
                             # When a span emits tool-use events it is
@@ -1021,6 +1028,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         attributes: List[Dict[str, Any]],
         resource: Dict[str, Any],
         span_time: Optional[str] = None,
+        integration_id: Optional[str] = None,
     ) -> Optional[str]:
         """
         Detect if a span represents tool or LLM usage.
@@ -1242,6 +1250,12 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             "discovery_source": merged_attrs.get("opencite.discovery_source", "opentelemetry"),
         })
 
+        # Tag with integration_id for per-tenant asset scoping
+        if integration_id:
+            ids = self.discovered_tools[tool_name]["metadata"].setdefault("integration_ids", [])
+            if integration_id not in ids:
+                ids.append(integration_id)
+
         # Check for attributes matching configured patterns
         if self.attribute_patterns:
             for key, value in merged_attrs.items():
@@ -1280,6 +1294,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         span: Dict[str, Any],
         resource: Dict[str, Any],
         span_time: Optional[str] = None,
+        integration_id: Optional[str] = None,
     ) -> List[str]:
         """Extract tool names from span events.
 
@@ -1337,6 +1352,12 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             tool["metadata"].update({
                 "discovery_source": merged_span.get("opencite.discovery_source", "opentelemetry"),
             })
+
+            # Tag with integration_id for per-tenant asset scoping
+            if integration_id:
+                ids = tool["metadata"].setdefault("integration_ids", [])
+                if integration_id not in ids:
+                    ids.append(integration_id)
 
             # Carry over useful event attributes as metadata
             for k, v in evt_attrs.items():
@@ -1566,6 +1587,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         attributes: List[Dict[str, Any]],
         resource: Dict[str, Any],
         span_time: Optional[str] = None,
+        integration_id: Optional[str] = None,
     ) -> Optional[str]:
         """
         Detect if a span represents an agent.
@@ -1642,6 +1664,13 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             "last_seen": agent["last_seen"],
             "discovery_source": merged.get("opencite.discovery_source", "opentelemetry"),
         })
+
+        # Tag with integration_id for per-tenant asset scoping
+        if integration_id:
+            ids = agent["metadata"].setdefault("integration_ids", [])
+            if integration_id not in ids:
+                ids.append(integration_id)
+
         for key in ("service.name", "service.version", "gen_ai.system",
                      "gen_ai.operation.name", "enduser.id",
                      "net.peer.ip", "http.url", "http.user_agent",
@@ -1755,6 +1784,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         span_name: str,
         attributes: List[Dict[str, Any]],
         resource: Dict[str, Any],
+        integration_id: Optional[str] = None,
     ):
         """
         Detect downstream systems (databases, external APIs, message queues, etc.)
@@ -1818,6 +1848,14 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         if not system["first_seen"]:
             system["first_seen"] = now
         system["last_seen"] = now
+
+        # Tag with integration_id for per-tenant asset scoping
+        if integration_id:
+            if "metadata" not in system:
+                system["metadata"] = {}
+            ids = system["metadata"].setdefault("integration_ids", [])
+            if integration_id not in ids:
+                ids.append(integration_id)
 
         # Track which tools connect to this system
         tool_name = (
@@ -1921,6 +1959,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         span_name: str,
         attributes: List[Dict[str, Any]],
         resource: Dict[str, Any],
+        integration_id: Optional[str] = None,
     ):
         """
         Detect if a span represents MCP tool or resource usage.
@@ -1969,6 +2008,12 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             )
 
             server_id = self._generate_mcp_server_id(mcp_server)
+
+            # Tag MCP server with integration_id for per-tenant asset scoping
+            if integration_id and server_id in self.mcp_servers:
+                ids = self.mcp_servers[server_id].setdefault("metadata", {}).setdefault("integration_ids", [])
+                if integration_id not in ids:
+                    ids.append(integration_id)
 
             # Register tool if present
             if mcp_tool:

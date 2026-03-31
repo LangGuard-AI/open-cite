@@ -4,8 +4,31 @@
 echo "🚀 Starting Open-CITE GUI in Development Mode"
 echo ""
 
-# Activate virtual environment
-source venv/bin/activate
+# Check if virtual environment exists
+if [ ! -d "venv" ]; then
+    read -p "Virtual environment not found. Create it and install packages? [y/N] " answer
+    if [[ "$answer" =~ ^[Yy]$ ]]; then
+        python3 -m venv venv
+        source venv/bin/activate
+        pip install -e .
+    else
+        echo "Cannot continue without a virtual environment."
+        exit 1
+    fi
+else
+    source venv/bin/activate
+
+    # Check if the package is installed
+    if ! pip show open-cite &>/dev/null; then
+        read -p "Packages not installed. Install them now? [y/N] " answer
+        if [[ "$answer" =~ ^[Yy]$ ]]; then
+            pip install -e .
+        else
+            echo "Cannot continue without packages installed."
+            exit 1
+        fi
+    fi
+fi
 
 # Enable persistence
 export OPENCITE_PERSISTENCE_ENABLED=true
