@@ -305,6 +305,20 @@ def _run_migrations(engine):
                 logger.info("[db] Migrating agents table: dropping old schema with 'confidence' column")
                 _drop_table(engine, "agents")
 
+        # Tools: name-as-PK → id-as-PK (per-integration segregation)
+        if insp.has_table("tools"):
+            columns = {c["name"] for c in insp.get_columns("tools")}
+            if "id" not in columns:
+                logger.info("[db] Migrating tools table: recreating with 'id' primary key")
+                _drop_table(engine, "tools")
+
+        # Models: name-as-PK → id-as-PK (per-integration segregation)
+        if insp.has_table("models"):
+            columns = {c["name"] for c in insp.get_columns("models")}
+            if "id" not in columns:
+                logger.info("[db] Migrating models table: recreating with 'id' primary key")
+                _drop_table(engine, "models")
+
     except Exception as exc:
         logger.warning("[db] Migration check failed (non-fatal): %s", exc)
 

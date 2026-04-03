@@ -27,7 +27,7 @@ WORKDIR /app
 
 # Install the wheel and gunicorn
 COPY --from=builder /build/dist/*.whl /tmp/
-RUN pip install --no-cache-dir /tmp/*.whl gunicorn>=21.0.0 && \
+RUN pip install --no-cache-dir --timeout=300 /tmp/*.whl gunicorn>=21.0.0 && \
     rm /tmp/*.whl
 
 # Create data directory for persistence

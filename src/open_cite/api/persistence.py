@@ -70,20 +70,22 @@ class PersistenceManager:
     # =========================================================================
 
     @_retry_on_concurrent_write
-    def save_tool(self, name: str, models: List[str], trace_count: int,
-                  metadata: Optional[Dict] = None):
+    def save_tool(self, tool_id: str, name: str, models: List[str],
+                  trace_count: int, metadata: Optional[Dict] = None):
         """Save or update a discovered tool."""
         session = get_session()
         try:
             now = datetime.utcnow().isoformat()
-            existing = session.get(Tool, name)
+            existing = session.get(Tool, tool_id)
             if existing:
+                existing.name = name
                 existing.models = models
                 existing.trace_count = trace_count
                 existing.metadata_ = metadata or {}
                 existing.last_updated = now
             else:
                 session.add(Tool(
+                    id=tool_id,
                     name=name,
                     models=models,
                     trace_count=trace_count,
@@ -104,7 +106,9 @@ class PersistenceManager:
             rows = session.query(Tool).all()
             tools = {}
             for row in rows:
-                tools[row.name] = {
+                tools[row.id] = {
+                    'id': row.id,
+                    'name': row.name,
                     'models': set(row.models or []),
                     'traces': [],
                     'metadata': row.metadata_ or {},
@@ -119,24 +123,29 @@ class PersistenceManager:
     # =========================================================================
 
     @_retry_on_concurrent_write
-    def save_model(self, name: str, provider: str, tools: List[str],
-                   usage_count: int):
+    def save_model(self, model_id: str, name: str, provider: str,
+                   tools: List[str], usage_count: int,
+                   metadata: Optional[Dict] = None):
         """Save or update a discovered model."""
         session = get_session()
         try:
             now = datetime.utcnow().isoformat()
-            existing = session.get(Model, name)
+            existing = session.get(Model, model_id)
             if existing:
+                existing.name = name
                 existing.provider = provider
                 existing.tools = tools
                 existing.usage_count = usage_count
+                existing.metadata_ = metadata or {}
                 existing.last_updated = now
             else:
                 session.add(Model(
+                    id=model_id,
                     name=name,
                     provider=provider,
                     tools=tools,
                     usage_count=usage_count,
+                    metadata_=metadata or {},
                     last_updated=now,
                 ))
             session.commit()
@@ -152,10 +161,13 @@ class PersistenceManager:
         try:
             rows = session.query(Model).all()
             return {
-                row.name: {
+                row.id: {
+                    'id': row.id,
+                    'name': row.name,
                     'provider': row.provider,
                     'tools': set(row.tools or []),
                     'usage_count': row.usage_count,
+                    'metadata': row.metadata_ or {},
                 }
                 for row in rows
             }

@@ -429,11 +429,11 @@ class OpenCiteClient:
         """Read tools from the database."""
         rows = self.persistence.load_tools()
         tools = []
-        for name, data in rows.items():
+        for tool_id, data in rows.items():
             metadata = data.get("metadata", {})
             tool = {
-                "id": name,
-                "name": name,
+                "id": data.get("id", tool_id),
+                "name": data.get("name", tool_id),
                 "type": "llm_client",
                 "discovery_source": metadata.get("discovery_source", "opentelemetry"),
                 "models": list(data.get("models", set())),
@@ -460,15 +460,18 @@ class OpenCiteClient:
 
         rows = self.persistence.load_models()
         models = []
-        for name, data in rows.items():
+        for model_id, data in rows.items():
+            name = data.get("name", model_id)
             provider = data.get("provider", "unknown")
             if provider == "unknown":
                 provider = _infer_provider_from_model_name(name) or "unknown"
             models.append({
+                "id": data.get("id", model_id),
                 "name": name,
                 "provider": provider,
                 "tools": list(data.get("tools", set())),
                 "usage_count": data.get("usage_count", 0),
+                "metadata": data.get("metadata", {}),
             })
         return models
 

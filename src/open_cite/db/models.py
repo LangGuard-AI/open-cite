@@ -88,7 +88,8 @@ class PluginConfig(Base):
 class Tool(Base):
     __tablename__ = "tools"
 
-    name = Column(String, primary_key=True)
+    id = Column(String, primary_key=True)
+    name = Column(String, nullable=False, index=True)
     models = Column(JSON, nullable=False)
     trace_count = Column(Integer, default=0)
     metadata_ = Column("metadata", JSON)
@@ -98,10 +99,12 @@ class Tool(Base):
 class Model(Base):
     __tablename__ = "models"
 
-    name = Column(String, primary_key=True)
+    id = Column(String, primary_key=True)
+    name = Column(String, nullable=False, index=True)
     provider = Column(String)
     tools = Column(JSON, nullable=False)
     usage_count = Column(Integer, default=0)
+    metadata_ = Column("metadata", JSON)
     last_updated = Column(String, nullable=False)
 
 

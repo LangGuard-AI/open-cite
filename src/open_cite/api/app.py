@@ -71,6 +71,12 @@ _last_data_modified: Optional[str] = None  # ISO-8601 timestamp of most recent d
 # Keys are like "tool:Bash", "agent:claude", "lineage:src->tgt:rel", etc.
 _persisted_fingerprints: Dict[str, Any] = {}
 
+# Fixed namespace UUIDs for deterministic ID generation.
+# Must match the constants in plugins/opentelemetry.py.
+_AGENT_NS = uuid.UUID("a3c1f8d2-7b4e-4f6a-9c0d-5e8b1a2f3d4c")
+_TOOL_NS = uuid.UUID("b4d2e6f8-1a3c-4f7e-9c0d-5e8b1a2f3d4c")
+_MODEL_NS = uuid.UUID("c5e3f7a9-2b4d-4e8f-0a1c-3d5e7f9b1c2d")
+
 # Last seen x-forwarded-access-token from the Databricks App proxy.
 # Used to deduplicate so we only recreate clients when the token changes.
 _forwarded_access_token: Optional[str] = None
@@ -2286,28 +2292,65 @@ def _save_current_state():
 
         # --- Tools ---
         discovered_tools = getattr(plugin, 'discovered_tools', {})
+        tool_int_data = getattr(plugin, 'tool_integration_data', {})
         for tool_name, tool_data in discovered_tools.items():
-            if plugin_instance_id and plugin_instance_id != "opentelemetry":
-                metadata = tool_data.setdefault("metadata", {})
-                ids = metadata.setdefault("integration_ids", [])
-                if plugin_instance_id not in ids:
-                    ids.append(plugin_instance_id)
-            models = sorted(tool_data.get('models', set()))
-            trace_count = len(tool_data.get('traces', []))
-            metadata = tool_data.get('metadata', {})
-            source_name = metadata.get('tool_source_name', '')
-            source_id = metadata.get('tool_source_id', '')
-            fp = ("tool", tool_name, tuple(models), trace_count,
-                  source_name, source_id)
-            if _persisted_fingerprints.get(f"tool:{tool_name}") == fp:
-                continue
-            try:
-                persistence.save_tool(tool_name, models, trace_count, metadata)
-                _persisted_fingerprints[f"tool:{tool_name}"] = fp
-                count += 1
-                changed_types.add("tool")
-            except Exception as e:
-                logger.warning(f"Failed to save tool {tool_name}: {e}")
+            base_metadata = tool_data.get('metadata', {})
+            source_name = base_metadata.get('tool_source_name', '')
+            source_id = base_metadata.get('tool_source_id', '')
+
+            # Per-integration rows: save one DB row per integration context
+            int_entries = tool_int_data.get(tool_name, {})
+            if not int_entries:
+                # Non-OTLP plugin or no per-integration data: tag and save globally
+                if plugin_instance_id and plugin_instance_id != "opentelemetry":
+                    metadata = tool_data.setdefault("metadata", {})
+                    ids = metadata.setdefault("integration_ids", [])
+                    if plugin_instance_id not in ids:
+                        ids.append(plugin_instance_id)
+                    tool_id = str(uuid.uuid5(_TOOL_NS, f"{plugin_instance_id}:{tool_name}"))
+                else:
+                    tool_id = str(uuid.uuid5(_TOOL_NS, tool_name))
+                models = sorted(tool_data.get('models', set()))
+                trace_count = len(tool_data.get('traces', []))
+                metadata = tool_data.get('metadata', {})
+                fp = ("tool", tool_id, tuple(models), trace_count,
+                      source_name, source_id)
+                if _persisted_fingerprints.get(f"tool:{tool_id}") != fp:
+                    try:
+                        persistence.save_tool(tool_id, tool_name, models,
+                                              trace_count, metadata)
+                        _persisted_fingerprints[f"tool:{tool_id}"] = fp
+                        count += 1
+                        changed_types.add("tool")
+                    except Exception as e:
+                        logger.warning(f"Failed to save tool {tool_name}: {e}")
+            else:
+                for int_key, int_entry in int_entries.items():
+                    if int_key:
+                        tool_id = str(uuid.uuid5(_TOOL_NS, f"{int_key}:{tool_name}"))
+                        tool_meta = {k: v for k, v in base_metadata.items()
+                                     if k != "integration_ids"}
+                        tool_meta["integration_ids"] = [int_key]
+                    else:
+                        tool_id = str(uuid.uuid5(_TOOL_NS, tool_name))
+                        tool_meta = {k: v for k, v in base_metadata.items()
+                                     if k != "integration_ids"}
+                    tool_meta["tool_source_name"] = source_name
+                    tool_meta["tool_source_id"] = source_id
+                    int_models = sorted(int_entry.get("models", set()))
+                    int_trace_count = int_entry.get("trace_count", 0)
+                    fp = ("tool", tool_id, tuple(int_models), int_trace_count,
+                          source_name, source_id)
+                    if _persisted_fingerprints.get(f"tool:{tool_id}") != fp:
+                        try:
+                            persistence.save_tool(tool_id, tool_name,
+                                                  int_models, int_trace_count,
+                                                  tool_meta)
+                            _persisted_fingerprints[f"tool:{tool_id}"] = fp
+                            count += 1
+                            changed_types.add("tool")
+                        except Exception as e:
+                            logger.warning(f"Failed to save tool {tool_name}: {e}")
 
         # --- Agents ---
         discovered_agents = getattr(plugin, 'discovered_agents', {})
@@ -2317,21 +2360,30 @@ def _save_current_state():
                 ids = metadata.setdefault("integration_ids", [])
                 if plugin_instance_id not in ids:
                     ids.append(plugin_instance_id)
+            # Deterministic UUID: same agent + same integration = same ID
+            agent_meta = agent_data.get("metadata", {})
+            integration_ids = agent_meta.get("integration_ids", [])
+            if integration_ids:
+                agent_id = str(uuid.uuid5(_AGENT_NS, f"{sorted(integration_ids)[0]}:{agent_name}"))
+            elif plugin_instance_id and plugin_instance_id != "opentelemetry":
+                agent_id = str(uuid.uuid5(_AGENT_NS, f"{plugin_instance_id}:{agent_name}"))
+            else:
+                agent_id = str(uuid.uuid5(_AGENT_NS, agent_name))
             tools_used = sorted(agent_data.get("tools_used", set()))
             models_used = sorted(agent_data.get("models_used", set()))
-            fp = ("agent", agent_name, tuple(tools_used), tuple(models_used))
-            if _persisted_fingerprints.get(f"agent:{agent_name}") == fp:
+            fp = ("agent", agent_id, agent_name, tuple(tools_used), tuple(models_used))
+            if _persisted_fingerprints.get(f"agent:{agent_id}") == fp:
                 continue
             try:
                 persistence.save_agent(
-                    agent_id=agent_name,
+                    agent_id=agent_id,
                     name=agent_name,
                     tools_used=tools_used,
                     models_used=models_used,
                     first_seen=agent_data.get("first_seen"),
-                    metadata=agent_data.get("metadata", {}),
+                    metadata=agent_meta,
                 )
-                _persisted_fingerprints[f"agent:{agent_name}"] = fp
+                _persisted_fingerprints[f"agent:{agent_id}"] = fp
                 count += 1
                 changed_types.add("agent")
             except Exception as e:
@@ -2400,30 +2452,74 @@ def _save_current_state():
         for ad in discovered_agents.values():
             model_names.update(ad.get('models_used', set()))
 
+        model_int_data = getattr(plugin, 'model_integration_data', {})
+
+        # Build reverse index: model -> {int_key -> set of tools} from
+        # tool_integration_data so each per-integration model row gets
+        # only the tools seen in that integration.
+        _model_tools_by_int: Dict[str, Dict[str, set]] = defaultdict(lambda: defaultdict(set))
+        for _tn, _ti in tool_int_data.items():
+            for _ik, _ie in _ti.items():
+                for _mn in _ie.get("models", set()):
+                    _model_tools_by_int[_mn][_ik].add(_tn)
+
         for model_name in model_names:
             provider = model_providers.get(model_name) or (
                 model_name.split("/")[0] if "/" in model_name else "unknown"
             )
-            tools_using = sorted(
-                t for t, td in discovered_tools.items()
-                if model_name in td.get('models', set())
-            )
-            # Prefer model_call_count (counts all spans) over tool-trace count
-            model_call_count = getattr(plugin, 'model_call_count', {})
-            usage_count = model_call_count.get(model_name, 0) or sum(
-                len([tr for tr in td.get('traces', []) if tr.get('model') == model_name])
-                for td in discovered_tools.values()
-            )
-            fp = ("model", model_name, provider, tuple(tools_using), usage_count)
-            if _persisted_fingerprints.get(f"model:{model_name}") == fp:
-                continue
-            try:
-                persistence.save_model(model_name, provider, tools_using, usage_count)
-                _persisted_fingerprints[f"model:{model_name}"] = fp
-                count += 1
-                changed_types.add("model")
-            except Exception as e:
-                logger.warning(f"Failed to save model {model_name}: {e}")
+            int_entries = model_int_data.get(model_name, {})
+
+            if not int_entries:
+                # Non-OTLP plugin or no per-integration data
+                tools_using = sorted(
+                    t for t, td in discovered_tools.items()
+                    if model_name in td.get('models', set())
+                )
+                model_call_count = getattr(plugin, 'model_call_count', {})
+                usage_count = model_call_count.get(model_name, 0) or sum(
+                    len([tr for tr in td.get('traces', []) if tr.get('model') == model_name])
+                    for td in discovered_tools.values()
+                )
+                model_meta = dict(getattr(plugin, 'model_metadata', {}).get(model_name, {}))
+                if plugin_instance_id and plugin_instance_id != "opentelemetry":
+                    ids = model_meta.setdefault("integration_ids", [])
+                    if plugin_instance_id not in ids:
+                        ids.append(plugin_instance_id)
+                    model_id = str(uuid.uuid5(_MODEL_NS, f"{plugin_instance_id}:{model_name}"))
+                else:
+                    model_id = str(uuid.uuid5(_MODEL_NS, model_name))
+                fp = ("model", model_id, provider, tuple(tools_using), usage_count)
+                if _persisted_fingerprints.get(f"model:{model_id}") != fp:
+                    try:
+                        persistence.save_model(model_id, model_name, provider,
+                                               tools_using, usage_count,
+                                               metadata=model_meta)
+                        _persisted_fingerprints[f"model:{model_id}"] = fp
+                        count += 1
+                        changed_types.add("model")
+                    except Exception as e:
+                        logger.warning(f"Failed to save model {model_name}: {e}")
+            else:
+                for int_key, int_entry in int_entries.items():
+                    if int_key:
+                        model_id = str(uuid.uuid5(_MODEL_NS, f"{int_key}:{model_name}"))
+                        model_meta = {"integration_ids": [int_key]}
+                    else:
+                        model_id = str(uuid.uuid5(_MODEL_NS, model_name))
+                        model_meta = {}
+                    int_usage = int_entry.get("call_count", 0)
+                    int_tools = sorted(_model_tools_by_int.get(model_name, {}).get(int_key, set()))
+                    fp = ("model", model_id, provider, tuple(int_tools), int_usage)
+                    if _persisted_fingerprints.get(f"model:{model_id}") != fp:
+                        try:
+                            persistence.save_model(model_id, model_name, provider,
+                                                   int_tools, int_usage,
+                                                   metadata=model_meta)
+                            _persisted_fingerprints[f"model:{model_id}"] = fp
+                            count += 1
+                            changed_types.add("model")
+                        except Exception as e:
+                            logger.warning(f"Failed to save model {model_name}: {e}")
 
         # --- MCP entities ---
         mcp_servers = getattr(plugin, 'mcp_servers', {})
