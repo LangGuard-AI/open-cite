@@ -842,6 +842,14 @@ async def run_pipeline(cfg: PipelineConfig) -> PipelineResults:
         except Exception as exc:
             logging.warning("Stage 9 (evaluation) failed: %s", exc)
 
+    # Let any pending async callbacks / microtasks drain so instrumentor
+    # span-end hooks fire before we shut down the exporter.
+    await asyncio.sleep(1)
+
+    # Detach instrumentor so no new spans are created after flush
+    from opentelemetry.instrumentation.openai_agents import OpenAIAgentsInstrumentor
+    OpenAIAgentsInstrumentor().uninstrument()
+
     # Flush all pending spans to ensure they reach LangGuard
     logging.info("Flushing trace exporter...")
     tracer_provider.force_flush(timeout_millis=10_000)
