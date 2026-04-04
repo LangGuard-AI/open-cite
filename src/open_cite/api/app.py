@@ -235,6 +235,8 @@ def init_opencite_state(app: Flask, config: Optional[OpenCiteConfig] = None):
             config=otel_config,
         )
         client.register_plugin(_default_otel_plugin)
+        if persistence:
+            _default_otel_plugin.on_data_changed = _maybe_save_state
         _default_otel_plugin.start()
         logger.info("Embedded OTLP receiver active on main web port")
 
@@ -2292,8 +2294,9 @@ def _save_current_state():
         plugin_instance_id = getattr(plugin, 'instance_id', None)
 
         # --- Tools ---
-        discovered_tools = getattr(plugin, 'discovered_tools', {})
-        tool_int_data = getattr(plugin, 'tool_integration_data', {})
+        # Snapshot dicts to avoid RuntimeError from concurrent mutation
+        discovered_tools = dict(getattr(plugin, 'discovered_tools', {}))
+        tool_int_data = dict(getattr(plugin, 'tool_integration_data', {}))
         for tool_name, tool_data in discovered_tools.items():
             base_metadata = tool_data.get('metadata', {})
             source_name = base_metadata.get('tool_source_name', '')
@@ -2354,44 +2357,69 @@ def _save_current_state():
                             logger.warning(f"Failed to save tool {tool_name}: {e}")
 
         # --- Agents ---
-        discovered_agents = getattr(plugin, 'discovered_agents', {})
+        discovered_agents = dict(getattr(plugin, 'discovered_agents', {}))
+        agent_int_data = dict(getattr(plugin, 'agent_integration_data', {}))
         for agent_name, agent_data in discovered_agents.items():
-            if plugin_instance_id and plugin_instance_id != "opentelemetry":
-                metadata = agent_data.setdefault("metadata", {})
-                ids = metadata.setdefault("integration_ids", [])
-                if plugin_instance_id not in ids:
-                    ids.append(plugin_instance_id)
-            # Deterministic UUID: same agent + same integration = same ID
-            agent_meta = agent_data.get("metadata", {})
-            integration_ids = agent_meta.get("integration_ids", [])
-            if integration_ids:
-                agent_id = str(uuid.uuid5(_AGENT_NS, f"{sorted(integration_ids)[0]}:{agent_name}"))
-            elif plugin_instance_id and plugin_instance_id != "opentelemetry":
-                agent_id = str(uuid.uuid5(_AGENT_NS, f"{plugin_instance_id}:{agent_name}"))
+            base_metadata = agent_data.get("metadata", {})
+
+            int_entries = agent_int_data.get(agent_name, {})
+            if not int_entries:
+                # Non-OTLP plugin or no per-integration data
+                if plugin_instance_id and plugin_instance_id != "opentelemetry":
+                    metadata = agent_data.setdefault("metadata", {})
+                    ids = metadata.setdefault("integration_ids", [])
+                    if plugin_instance_id not in ids:
+                        ids.append(plugin_instance_id)
+                    agent_id = str(uuid.uuid5(_AGENT_NS, f"{plugin_instance_id}:{agent_name}"))
+                else:
+                    agent_id = str(uuid.uuid5(_AGENT_NS, agent_name))
+                tools_used = sorted(agent_data.get("tools_used", set()))
+                models_used = sorted(agent_data.get("models_used", set()))
+                agent_meta = agent_data.get("metadata", {})
+                fp = ("agent", agent_id, agent_name, tuple(tools_used), tuple(models_used))
+                if _persisted_fingerprints.get(f"agent:{agent_id}") != fp:
+                    try:
+                        persistence.save_agent(
+                            agent_id=agent_id, name=agent_name,
+                            tools_used=tools_used, models_used=models_used,
+                            first_seen=agent_data.get("first_seen"),
+                            metadata=agent_meta,
+                        )
+                        _persisted_fingerprints[f"agent:{agent_id}"] = fp
+                        count += 1
+                        changed_types.add("agent")
+                    except Exception as e:
+                        logger.warning(f"Failed to save agent {agent_name}: {e}")
             else:
-                agent_id = str(uuid.uuid5(_AGENT_NS, agent_name))
-            tools_used = sorted(agent_data.get("tools_used", set()))
-            models_used = sorted(agent_data.get("models_used", set()))
-            fp = ("agent", agent_id, agent_name, tuple(tools_used), tuple(models_used))
-            if _persisted_fingerprints.get(f"agent:{agent_id}") == fp:
-                continue
-            try:
-                persistence.save_agent(
-                    agent_id=agent_id,
-                    name=agent_name,
-                    tools_used=tools_used,
-                    models_used=models_used,
-                    first_seen=agent_data.get("first_seen"),
-                    metadata=agent_meta,
-                )
-                _persisted_fingerprints[f"agent:{agent_id}"] = fp
-                count += 1
-                changed_types.add("agent")
-            except Exception as e:
-                logger.warning(f"Failed to save agent {agent_name}: {e}")
+                for int_key, int_entry in int_entries.items():
+                    if int_key:
+                        agent_id = str(uuid.uuid5(_AGENT_NS, f"{int_key}:{agent_name}"))
+                        agent_meta = {k: v for k, v in base_metadata.items()
+                                      if k != "integration_ids"}
+                        agent_meta["integration_ids"] = [int_key]
+                    else:
+                        agent_id = str(uuid.uuid5(_AGENT_NS, agent_name))
+                        agent_meta = {k: v for k, v in base_metadata.items()
+                                      if k != "integration_ids"}
+                    int_tools = sorted(int_entry.get("tools_used", set()))
+                    int_models = sorted(int_entry.get("models_used", set()))
+                    fp = ("agent", agent_id, agent_name, tuple(int_tools), tuple(int_models))
+                    if _persisted_fingerprints.get(f"agent:{agent_id}") != fp:
+                        try:
+                            persistence.save_agent(
+                                agent_id=agent_id, name=agent_name,
+                                tools_used=int_tools, models_used=int_models,
+                                first_seen=agent_data.get("first_seen"),
+                                metadata=agent_meta,
+                            )
+                            _persisted_fingerprints[f"agent:{agent_id}"] = fp
+                            count += 1
+                            changed_types.add("agent")
+                        except Exception as e:
+                            logger.warning(f"Failed to save agent {agent_name}: {e}")
 
         # --- Downstream systems ---
-        discovered_downstream = getattr(plugin, 'discovered_downstream', {})
+        discovered_downstream = dict(getattr(plugin, 'discovered_downstream', {}))
         for sys_id, sys_data in discovered_downstream.items():
             if plugin_instance_id and plugin_instance_id != "opentelemetry":
                 metadata = sys_data.setdefault("metadata", {})
@@ -2419,7 +2447,7 @@ def _save_current_state():
                 logger.warning(f"Failed to save downstream {sys_id}: {e}")
 
         # --- Lineage ---
-        lineage = getattr(plugin, 'lineage', {})
+        lineage = dict(getattr(plugin, 'lineage', {}))
         for rel_key, rel in lineage.items():
             weight = rel.get("weight", 1)
             fp = ("lin", rel["source_id"], rel["target_id"],
@@ -2453,15 +2481,15 @@ def _save_current_state():
         for ad in discovered_agents.values():
             model_names.update(ad.get('models_used', set()))
 
-        model_int_data = getattr(plugin, 'model_integration_data', {})
+        model_int_data = dict(getattr(plugin, 'model_integration_data', {}))
 
         # Build reverse index: model -> {int_key -> set of tools} from
         # tool_integration_data so each per-integration model row gets
         # only the tools seen in that integration.
         _model_tools_by_int: Dict[str, Dict[str, set]] = defaultdict(lambda: defaultdict(set))
         for _tn, _ti in tool_int_data.items():
-            for _ik, _ie in _ti.items():
-                for _mn in _ie.get("models", set()):
+            for _ik, _ie in dict(_ti).items():
+                for _mn in set(_ie.get("models", set())):
                     _model_tools_by_int[_mn][_ik].add(_tn)
 
         for model_name in model_names:

@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from open_cite.plugins.opentelemetry import OpenTelemetryPlugin, _AGENT_NS
+from open_cite.plugins.opentelemetry import OpenTelemetryPlugin, _AGENT_NS, _TOOL_NS, _MODEL_NS
 
 
 # ---------------------------------------------------------------------------
@@ -276,17 +276,39 @@ class TestLineageIntegrationId:
             assert rel["source_id"] != "my-agent"
             assert rel["source_id"] == agent_id
 
-    def test_lineage_target_id_is_tool_name(self):
-        """Lineage target_id for tools should remain the tool name (tools use name as PK)."""
+    def test_lineage_target_id_is_tool_uuid(self):
+        """Lineage target_id for tools should be the tool's UUID, not the raw name."""
         plugin = _make_plugin()
         plugin._ingest_traces(
             _otlp_agent_with_tool("my-agent", "gpt-4o", "web-search"),
             integration_id="tenant-a",
         )
 
+        expected_tool_id = str(uuid.uuid5(_TOOL_NS, "tenant-a:web-search"))
+
         lineage = plugin.list_lineage()
         tool_targets = [r for r in lineage if r["target_type"] == "tool"]
-        assert any(r["target_id"] == "web-search" for r in tool_targets)
+        assert len(tool_targets) > 0
+        for r in tool_targets:
+            assert r["target_id"] == expected_tool_id
+            assert r["target_id"] != "web-search"
+
+    def test_lineage_target_id_is_model_uuid(self):
+        """Lineage target_id for models should be the model's UUID, not the raw name."""
+        plugin = _make_plugin()
+        plugin._ingest_traces(
+            _otlp_payload("my-agent", "chat", "gpt-4o"),
+            integration_id="tenant-a",
+        )
+
+        expected_model_id = str(uuid.uuid5(_MODEL_NS, "tenant-a:gpt-4o"))
+
+        lineage = plugin.list_lineage()
+        model_targets = [r for r in lineage if r["target_type"] == "model"]
+        assert len(model_targets) > 0
+        for r in model_targets:
+            assert r["target_id"] == expected_model_id
+            assert r["target_id"] != "gpt-4o"
 
 
 # ---------------------------------------------------------------------------
@@ -445,3 +467,49 @@ class TestPerIntegrationCounts:
         int_data = plugin.model_integration_data["gpt-4o"]
         assert int_data["tenant-a"]["call_count"] == 1
         assert int_data[""]["call_count"] == 1
+
+    def test_agent_tools_models_tracked_per_integration(self):
+        """agent_integration_data should track tools/models per integration."""
+        plugin = _make_plugin()
+        # Tenant A agent uses gpt-4o and web-search
+        plugin._ingest_traces(
+            _otlp_agent_with_tool("shared-agent", "gpt-4o", "web-search"),
+            integration_id="tenant-a",
+        )
+        # Tenant B agent uses claude-3-opus and code-exec
+        plugin._ingest_traces(
+            _otlp_agent_with_tool("shared-agent", "claude-3-opus", "code-exec"),
+            integration_id="tenant-b",
+        )
+
+        int_data = plugin.agent_integration_data["shared-agent"]
+        assert "web-search" in int_data["tenant-a"]["tools_used"]
+        assert "gpt-4o" in int_data["tenant-a"]["models_used"]
+        assert "code-exec" in int_data["tenant-b"]["tools_used"]
+        assert "claude-3-opus" in int_data["tenant-b"]["models_used"]
+
+        # Tenant A should NOT see tenant B's tools/models
+        assert "code-exec" not in int_data["tenant-a"]["tools_used"]
+        assert "claude-3-opus" not in int_data["tenant-a"]["models_used"]
+
+    def test_same_agent_gets_separate_db_rows_per_integration(self):
+        """Same-named agent from two tenants should produce two distinct UUIDs."""
+        plugin = _make_plugin()
+        plugin._ingest_traces(
+            _otlp_payload("shared-agent", "chat", "gpt-4o"),
+            integration_id="tenant-a",
+        )
+        plugin._ingest_traces(
+            _otlp_payload("shared-agent", "chat", "gpt-4o"),
+            integration_id="tenant-b",
+        )
+
+        # agent_integration_data should have entries for both tenants
+        int_data = plugin.agent_integration_data["shared-agent"]
+        assert "tenant-a" in int_data
+        assert "tenant-b" in int_data
+
+        # The UUIDs should be different
+        id_a = str(uuid.uuid5(_AGENT_NS, "tenant-a:shared-agent"))
+        id_b = str(uuid.uuid5(_AGENT_NS, "tenant-b:shared-agent"))
+        assert id_a != id_b
