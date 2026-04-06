@@ -513,3 +513,280 @@ class TestPerIntegrationCounts:
         id_a = str(uuid.uuid5(_AGENT_NS, "tenant-a:shared-agent"))
         id_b = str(uuid.uuid5(_AGENT_NS, "tenant-b:shared-agent"))
         assert id_a != id_b
+
+
+# ---------------------------------------------------------------------------
+# Agent handoff (delegates_to) correlation
+# ---------------------------------------------------------------------------
+
+def _otlp_handoff_payload(
+    *,
+    source_agent: str,
+    target_agent: str | None = None,
+    trace_id: str | None = None,
+    integration_id_for_attrs: str | None = None,
+):
+    """Build an OTLP payload modelling a handoff between two agents.
+
+    Span hierarchy:
+        workflow-root
+        ├── source-agent span  (gen_ai.agent.name = source_agent)
+        │   └── handoff span   (traceloop.span.kind = handoff)
+        └── target-agent span  (gen_ai.agent.name = target_agent)  [if provided]
+    """
+    trace_id = trace_id or uuid.uuid4().hex[:32]
+    workflow_span_id = uuid.uuid4().hex[:16]
+    source_span_id = uuid.uuid4().hex[:16]
+    handoff_span_id = uuid.uuid4().hex[:16]
+
+    workflow_span = {
+        "traceId": trace_id,
+        "spanId": workflow_span_id,
+        "name": "workflow-root",
+        "attributes": [],
+        "startTimeUnixNano": "1700000000000000000",
+    }
+    source_span = {
+        "traceId": trace_id,
+        "spanId": source_span_id,
+        "parentSpanId": workflow_span_id,
+        "name": f"{source_agent} agent",
+        "attributes": [
+            {"key": "gen_ai.agent.name", "value": {"stringValue": source_agent}},
+            {"key": "gen_ai.system", "value": {"stringValue": "openai"}},
+            {"key": "gen_ai.request.model", "value": {"stringValue": "gpt-4o"}},
+        ],
+        "startTimeUnixNano": "1700000000000000000",
+    }
+
+    handoff_attrs = [
+        {"key": "traceloop.span.kind", "value": {"stringValue": "handoff"}},
+        {"key": "gen_ai.handoff.from_agent", "value": {"stringValue": source_agent}},
+    ]
+    if target_agent is not None:
+        handoff_attrs.append(
+            {"key": "gen_ai.handoff.to_agent", "value": {"stringValue": target_agent}},
+        )
+
+    handoff_span = {
+        "traceId": trace_id,
+        "spanId": handoff_span_id,
+        "parentSpanId": source_span_id,
+        "name": "handoff",
+        "attributes": handoff_attrs,
+        "startTimeUnixNano": "1700000001000000000",
+    }
+
+    spans = [workflow_span, source_span, handoff_span]
+
+    # Add target agent span as sibling of source under workflow root
+    if target_agent is not None:
+        target_span_id = uuid.uuid4().hex[:16]
+        target_span = {
+            "traceId": trace_id,
+            "spanId": target_span_id,
+            "parentSpanId": workflow_span_id,
+            "name": f"{target_agent} agent",
+            "attributes": [
+                {"key": "gen_ai.agent.name", "value": {"stringValue": target_agent}},
+                {"key": "gen_ai.system", "value": {"stringValue": "openai"}},
+                {"key": "gen_ai.request.model", "value": {"stringValue": "gpt-4o"}},
+            ],
+            "startTimeUnixNano": "1700000002000000000",
+        }
+        spans.append(target_span)
+
+    return {
+        "resourceSpans": [{
+            "resource": {
+                "attributes": [
+                    {"key": "service.name", "value": {"stringValue": "multi-agent-app"}},
+                ]
+            },
+            "scopeSpans": [{"spans": spans}],
+        }]
+    }
+
+
+class TestAgentHandoffs:
+
+    def test_explicit_handoff_creates_delegates_to_lineage(self):
+        """When gen_ai.handoff.to_agent is set, delegates_to lineage is created directly."""
+        plugin = _make_plugin()
+        plugin._ingest_traces(
+            _otlp_handoff_payload(source_agent="triage", target_agent="specialist"),
+            integration_id="tenant-a",
+        )
+
+        lineage = plugin.list_lineage()
+        delegates = [r for r in lineage if r["relationship_type"] == "delegates_to"]
+        assert len(delegates) == 1
+
+        src_id = str(uuid.uuid5(_AGENT_NS, "tenant-a:triage"))
+        tgt_id = str(uuid.uuid5(_AGENT_NS, "tenant-a:specialist"))
+        assert delegates[0]["source_id"] == src_id
+        assert delegates[0]["target_id"] == tgt_id
+        assert delegates[0]["source_type"] == "agent"
+        assert delegates[0]["target_type"] == "agent"
+
+    def test_unknown_to_agent_falls_back_to_hierarchy(self):
+        """When to_agent is 'unknown', the target is inferred from sibling spans."""
+        plugin = _make_plugin()
+
+        # Build payload with to_agent="unknown" — the helper sets it explicitly
+        trace_id = uuid.uuid4().hex[:32]
+        payload = _otlp_handoff_payload(
+            source_agent="router", target_agent="unknown", trace_id=trace_id,
+        )
+        # Overwrite the to_agent value to "unknown" so the fast-path is skipped
+        # (the helper already sets it, which is what we want)
+        plugin._ingest_traces(payload, integration_id="tenant-a")
+
+        lineage = plugin.list_lineage()
+        delegates = [r for r in lineage if r["relationship_type"] == "delegates_to"]
+        # "unknown" is filtered out, so hierarchy inference kicks in and finds
+        # the sibling agent span. But since the target agent in the payload is
+        # named "unknown", it will be detected as an agent named "unknown".
+        # The hierarchy fallback should match it as a sibling.
+        assert len(delegates) >= 1
+        # Source should be router
+        src_id = str(uuid.uuid5(_AGENT_NS, "tenant-a:router"))
+        assert any(d["source_id"] == src_id for d in delegates)
+
+    def test_missing_to_agent_uses_hierarchy_inference(self):
+        """When gen_ai.handoff.to_agent is absent, target is inferred from siblings."""
+        plugin = _make_plugin()
+        payload = _otlp_handoff_payload(
+            source_agent="coordinator", target_agent=None,
+        )
+        # Manually add a sibling target agent span under the workflow root
+        spans = payload["resourceSpans"][0]["scopeSpans"][0]["spans"]
+        workflow_span_id = spans[0]["spanId"]
+        trace_id = spans[0]["traceId"]
+        target_span_id = uuid.uuid4().hex[:16]
+        spans.append({
+            "traceId": trace_id,
+            "spanId": target_span_id,
+            "parentSpanId": workflow_span_id,
+            "name": "worker agent",
+            "attributes": [
+                {"key": "gen_ai.agent.name", "value": {"stringValue": "worker"}},
+                {"key": "gen_ai.system", "value": {"stringValue": "openai"}},
+                {"key": "gen_ai.request.model", "value": {"stringValue": "gpt-4o"}},
+            ],
+            "startTimeUnixNano": "1700000002000000000",
+        })
+
+        plugin._ingest_traces(payload, integration_id="tenant-a")
+
+        lineage = plugin.list_lineage()
+        delegates = [r for r in lineage if r["relationship_type"] == "delegates_to"]
+        assert len(delegates) == 1
+
+        src_id = str(uuid.uuid5(_AGENT_NS, "tenant-a:coordinator"))
+        tgt_id = str(uuid.uuid5(_AGENT_NS, "tenant-a:worker"))
+        assert delegates[0]["source_id"] == src_id
+        assert delegates[0]["target_id"] == tgt_id
+
+    def test_no_handoff_spans_produces_no_delegates_lineage(self):
+        """Normal traces without handoff spans should not create delegates_to lineage."""
+        plugin = _make_plugin()
+        plugin._ingest_traces(
+            _otlp_agent_with_tool("my-agent", "gpt-4o", "web-search"),
+            integration_id="tenant-a",
+        )
+
+        lineage = plugin.list_lineage()
+        delegates = [r for r in lineage if r["relationship_type"] == "delegates_to"]
+        assert len(delegates) == 0
+
+    def test_root_source_agent_no_workflow_parent_skipped(self):
+        """If the source agent span has no parent (is root), hierarchy inference is skipped."""
+        plugin = _make_plugin()
+        trace_id = uuid.uuid4().hex[:32]
+        source_span_id = uuid.uuid4().hex[:16]
+        handoff_span_id = uuid.uuid4().hex[:16]
+        target_span_id = uuid.uuid4().hex[:16]
+
+        # Source agent is root (no parentSpanId)
+        source_span = {
+            "traceId": trace_id,
+            "spanId": source_span_id,
+            "name": "root-agent",
+            "attributes": [
+                {"key": "gen_ai.agent.name", "value": {"stringValue": "root-agent"}},
+                {"key": "gen_ai.system", "value": {"stringValue": "openai"}},
+                {"key": "gen_ai.request.model", "value": {"stringValue": "gpt-4o"}},
+            ],
+            "startTimeUnixNano": "1700000000000000000",
+        }
+        # Handoff is child of root agent
+        handoff_span = {
+            "traceId": trace_id,
+            "spanId": handoff_span_id,
+            "parentSpanId": source_span_id,
+            "name": "handoff",
+            "attributes": [
+                {"key": "traceloop.span.kind", "value": {"stringValue": "handoff"}},
+                {"key": "gen_ai.handoff.from_agent", "value": {"stringValue": "root-agent"}},
+            ],
+            "startTimeUnixNano": "1700000001000000000",
+        }
+        # Another agent at root level
+        target_span = {
+            "traceId": trace_id,
+            "spanId": target_span_id,
+            "name": "other-agent",
+            "attributes": [
+                {"key": "gen_ai.agent.name", "value": {"stringValue": "other-agent"}},
+                {"key": "gen_ai.system", "value": {"stringValue": "openai"}},
+                {"key": "gen_ai.request.model", "value": {"stringValue": "gpt-4o"}},
+            ],
+            "startTimeUnixNano": "1700000002000000000",
+        }
+
+        payload = {
+            "resourceSpans": [{
+                "resource": {
+                    "attributes": [
+                        {"key": "service.name", "value": {"stringValue": "test-app"}},
+                    ]
+                },
+                "scopeSpans": [{"spans": [source_span, handoff_span, target_span]}],
+            }]
+        }
+
+        plugin._ingest_traces(payload, integration_id="tenant-a")
+
+        lineage = plugin.list_lineage()
+        delegates = [r for r in lineage if r["relationship_type"] == "delegates_to"]
+        # workflow_parent is None → hierarchy inference skipped → no delegates_to
+        assert len(delegates) == 0
+
+    def test_cross_integration_handoffs_isolated(self):
+        """Handoffs from different integrations should not cross-link."""
+        plugin = _make_plugin()
+
+        plugin._ingest_traces(
+            _otlp_handoff_payload(source_agent="dispatcher", target_agent="handler"),
+            integration_id="tenant-a",
+        )
+        plugin._ingest_traces(
+            _otlp_handoff_payload(source_agent="dispatcher", target_agent="handler"),
+            integration_id="tenant-b",
+        )
+
+        lineage = plugin.list_lineage()
+        delegates = [r for r in lineage if r["relationship_type"] == "delegates_to"]
+        assert len(delegates) == 2
+
+        # Each should use its own integration-scoped UUIDs
+        src_a = str(uuid.uuid5(_AGENT_NS, "tenant-a:dispatcher"))
+        src_b = str(uuid.uuid5(_AGENT_NS, "tenant-b:dispatcher"))
+        tgt_a = str(uuid.uuid5(_AGENT_NS, "tenant-a:handler"))
+        tgt_b = str(uuid.uuid5(_AGENT_NS, "tenant-b:handler"))
+
+        sources = {d["source_id"] for d in delegates}
+        targets = {d["target_id"] for d in delegates}
+        assert sources == {src_a, src_b}
+        assert targets == {tgt_a, tgt_b}

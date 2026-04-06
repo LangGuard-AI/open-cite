@@ -762,6 +762,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 span_tools: Dict[str, str] = {}     # span_id -> tool_name
                 span_models: Dict[str, str] = {}    # span_id -> model_name
                 span_parents: Dict[str, str] = {}   # span_id -> parent_span_id
+                span_handoffs: Dict[str, Dict[str, str]] = {}  # span_id -> {from, to}
                 span_attrs: Dict[str, Dict[str, Any]] = {}  # span_id -> merged attributes
                 span_traces: Dict[str, str] = {}   # span_id -> trace_id
                 span_times: Dict[str, str] = {}    # span_id -> ISO timestamp from span
@@ -851,6 +852,20 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                             )
                             if agent_name:
                                 span_agents[span_id] = agent_name
+
+                            # Detect handoff spans (agent-to-agent delegation)
+                            span_kind = attr_dict.get("traceloop.span.kind", "")
+                            if span_kind == "handoff":
+                                from_agent = (
+                                    attr_dict.get("gen_ai.handoff.from_agent")
+                                    or attr_dict.get("gen_ai.agent.name")
+                                )
+                                if from_agent:
+                                    to_agent = attr_dict.get("gen_ai.handoff.to_agent") or ""
+                                    span_handoffs[span_id] = {
+                                        "from": from_agent,
+                                        "to": to_agent if to_agent and to_agent != "unknown" else "",
+                                    }
 
                             # Detect downstream systems
                             self._detect_downstream_system(
@@ -1050,6 +1065,10 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
                 # Correlate agents with models via parent-child span relationships
                 self._correlate_agent_models(span_agents, span_models, span_parents, integration_id)
+
+                # Correlate agent-to-agent handoffs (delegates_to lineage)
+                self._correlate_agent_handoffs(
+                    span_agents, span_handoffs, span_parents, span_traces, integration_id)
 
                 logger.info(f"Ingested traces. Total traces: {len(self.traces)}")
 
@@ -1836,6 +1855,71 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                     )
                     break
                 current = parent
+
+    def _correlate_agent_handoffs(
+        self,
+        span_agents: Dict[str, str],
+        span_handoffs: Dict[str, Dict[str, str]],
+        span_parents: Dict[str, str],
+        span_traces: Dict[str, str],
+        integration_id: Optional[str] = None,
+    ):
+        """
+        Correlate agent-to-agent handoffs via span hierarchy.
+
+        If the handoff span has an explicit ``gen_ai.handoff.to_agent``
+        attribute (and it is not ``"unknown"``), the lineage is created
+        directly.  Otherwise we fall back to hierarchy inference: the
+        handoff span is a child of the source agent span, and the target
+        agent span is a sibling (shares the same workflow-root parent)
+        within the same trace.
+        """
+        if not span_agents or not span_handoffs:
+            return
+
+        for handoff_span_id, handoff_info in span_handoffs.items():
+            from_agent = handoff_info["from"]
+            to_agent = handoff_info["to"]
+
+            # ---- Fast path: explicit target ----
+            if to_agent:
+                self._add_lineage(
+                    self._agent_id_for(from_agent, integration_id), "agent",
+                    self._agent_id_for(to_agent, integration_id), "agent",
+                    "delegates_to")
+                logger.info(
+                    f"Correlated handoff: agent '{from_agent}' -> agent '{to_agent}' via explicit attribute"
+                )
+                continue
+
+            # ---- Slow path: infer target from span hierarchy ----
+            source_agent_span = span_parents.get(handoff_span_id)
+            if not source_agent_span:
+                continue
+            workflow_parent = span_parents.get(source_agent_span)
+            if not workflow_parent:
+                continue
+
+            handoff_trace = span_traces.get(handoff_span_id)
+            if not handoff_trace:
+                continue
+
+            for sid, aname in span_agents.items():
+                if aname == from_agent:
+                    continue
+                if span_traces.get(sid) != handoff_trace:
+                    continue
+                # Target must be a true sibling (same workflow-root parent)
+                if span_parents.get(sid) != workflow_parent:
+                    continue
+
+                self._add_lineage(
+                    self._agent_id_for(from_agent, integration_id), "agent",
+                    self._agent_id_for(aname, integration_id), "agent",
+                    "delegates_to")
+                logger.info(
+                    f"Correlated handoff: agent '{from_agent}' -> agent '{aname}' via span hierarchy"
+                )
 
     def _detect_downstream_system(
         self,
