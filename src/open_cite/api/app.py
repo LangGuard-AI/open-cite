@@ -71,6 +71,8 @@ _last_data_modified: Optional[str] = None  # ISO-8601 timestamp of most recent d
 # Tracks fingerprints of persisted items so we only write new/changed data.
 # Keys are like "tool:Bash", "agent:claude", "lineage:src->tgt:rel", etc.
 _persisted_fingerprints: Dict[str, Any] = {}
+# Eviction threshold to prevent unbounded fingerprint growth
+MAX_FINGERPRINTS = 50000
 
 # Fixed namespace UUIDs for deterministic ID generation.
 # Must match the constants in plugins/opentelemetry.py.
@@ -276,6 +278,13 @@ def create_app(config: Optional[OpenCiteConfig] = None) -> Flask:
     oc_logger.propagate = False
 
     app = Flask(__name__)
+
+    @app.teardown_appcontext
+    def _shutdown_session(exception=None):
+        from open_cite.db.engine import _session_factory
+        if _session_factory is not None:
+            _session_factory.remove()
+
     app.config['SECRET_KEY'] = os.environ.get('OPENCITE_SECRET_KEY') or os.urandom(24)
     app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
     app.config['SESSION_COOKIE_HTTPONLY'] = True
@@ -2620,6 +2629,15 @@ def _save_current_state():
     # Refresh the in-memory cache for any asset types that changed
     if changed_types or lineage_changed:
         client.refresh_cache(changed_types, include_lineage=lineage_changed)
+
+    # Evict oldest fingerprints to prevent unbounded memory growth (keep 80%)
+    if len(_persisted_fingerprints) > MAX_FINGERPRINTS:
+        keep = int(MAX_FINGERPRINTS * 0.8)
+        evict_count = len(_persisted_fingerprints) - keep
+        keys = list(_persisted_fingerprints)[:evict_count]
+        for k in keys:
+            del _persisted_fingerprints[k]
+        logger.debug("Evicted %d persisted fingerprints (kept %d)", evict_count, keep)
 
 
 def _collect_assets(asset_type: str) -> Dict[str, List]:
