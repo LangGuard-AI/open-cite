@@ -878,6 +878,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                                     "first_seen": span_times.get(span_id) or datetime.utcnow().isoformat(),
                                 }
 
+                            self.traces[trace_id]["last_seen"] = span_times.get(span_id) or datetime.utcnow().isoformat()
                             self.traces[trace_id]["spans"].append({
                                 "span_id": span_id,
                                 "span_name": span_name,
@@ -1154,7 +1155,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                     keep = int(self.MAX_TRACES * 0.8)
                     sorted_ids = sorted(
                         self.traces,
-                        key=lambda tid: self.traces[tid].get("first_seen", ""),
+                        key=lambda tid: self.traces[tid].get("last_seen", ""),
                     )
                     to_remove = sorted_ids[: len(self.traces) - keep]
                     for tid in to_remove:
