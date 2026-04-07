@@ -437,6 +437,23 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             lambda: {"tool_calls": 0, "resource_accesses": 0}
         )
 
+        # Cross-batch span correlation state, keyed by integration_id.
+        # Spans from the same trace often arrive in separate batches (e.g.
+        # OpenAI Agents SDK + SimpleSpanProcessor exports each span individually).
+        # Accumulating these across batches allows correlation methods to find
+        # relationships between spans that were never in the same batch.
+        # Keyed by (integration_id or "") to prevent cross-tenant pollution.
+        self._cross_batch: Dict[str, Dict[str, dict]] = defaultdict(
+            lambda: {
+                "agents": {},    # span_id -> agent_name
+                "tools": {},     # span_id -> tool_name
+                "models": {},    # span_id -> model_name
+                "parents": {},   # span_id -> parent_span_id
+                "handoffs": {},  # span_id -> {"from": str, "to": str}
+                "traces": {},    # span_id -> trace_id
+            }
+        )
+
         # Per-session cache of user.* attributes so that every span in the
         # same session inherits user context seen on earlier spans.
         # {session_id: {"user.email": "...", "user.account_uuid": "...", ...}}
@@ -1023,52 +1040,54 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                     # Clean up if it was previously registered as a tool
                     self.discovered_tools.pop(_svc, None)
 
-                # ----------------------------------------------------------
-                # Post-processing stage 2: trace-level correlation.
-                #
-                # Link agents to every tool and model that appears in the
-                # same trace.  This works regardless of parentSpanId and
-                # regardless of whether spans arrived in the same batch.
-                # ----------------------------------------------------------
-                _trace_agents: Dict[str, Set[str]] = defaultdict(set)
-                _trace_tools: Dict[str, Set[str]] = defaultdict(set)
-                _trace_models: Dict[str, Set[str]] = defaultdict(set)
+                # Merge per-batch detections into cross-batch state so that
+                # spans from the same trace arriving in separate batches can
+                # still be correlated (e.g. OpenAI Agents SDK with
+                # SimpleSpanProcessor exports one span per batch).
+                _iid = integration_id or ""
+                cb = self._cross_batch[_iid]
+                cb["agents"].update(span_agents)
+                cb["tools"].update(span_tools)
+                cb["models"].update(span_models)
+                cb["parents"].update(span_parents)
+                cb["handoffs"].update(span_handoffs)
+                cb["traces"].update(span_traces)
 
-                for _sid, _aname in span_agents.items():
-                    _tid = span_traces.get(_sid)
-                    if _tid:
-                        _trace_agents[_tid].add(_aname)
-                for _sid, _tname in span_tools.items():
-                    _tid = span_traces.get(_sid)
-                    if _tid:
-                        _trace_tools[_tid].add(_tname)
-                for _sid, _mname in span_models.items():
-                    _tid = span_traces.get(_sid)
-                    if _tid:
-                        _trace_models[_tid].add(_mname)
+                # Run correlation using accumulated cross-batch state.
+                # This is idempotent — _add_lineage deduplicates by key.
+                self._correlate_agent_tools(cb["agents"], cb["tools"], cb["parents"], integration_id)
+                self._correlate_agent_models(cb["agents"], cb["models"], cb["parents"], integration_id)
+                self._correlate_agent_handoffs(
+                    cb["agents"], cb["handoffs"], cb["parents"], cb["traces"], integration_id)
 
-                for _tid, _agents in _trace_agents.items():
+                # Also re-run trace-level correlation with accumulated state
+                _trace_agents_cb: Dict[str, Set[str]] = defaultdict(set)
+                _trace_tools_cb: Dict[str, Set[str]] = defaultdict(set)
+                _trace_models_cb: Dict[str, Set[str]] = defaultdict(set)
+                for _sid, _aname in cb["agents"].items():
+                    _tid = cb["traces"].get(_sid)
+                    if _tid:
+                        _trace_agents_cb[_tid].add(_aname)
+                for _sid, _tname in cb["tools"].items():
+                    _tid = cb["traces"].get(_sid)
+                    if _tid:
+                        _trace_tools_cb[_tid].add(_tname)
+                for _sid, _mname in cb["models"].items():
+                    _tid = cb["traces"].get(_sid)
+                    if _tid:
+                        _trace_models_cb[_tid].add(_mname)
+                for _tid, _agents in _trace_agents_cb.items():
                     for _aname in _agents:
                         _aid = self._agent_id_for(_aname, integration_id)
-                        for _tname in _trace_tools.get(_tid, ()):
+                        for _tname in _trace_tools_cb.get(_tid, ()):
                             if _tname != _aname:
                                 self._agent_add_tool(_aname, _tname, integration_id)
                                 self._add_lineage(
                                     _aid, "agent", self._tool_id_for(_tname, integration_id), "tool", "uses")
-                        for _mname in _trace_models.get(_tid, ()):
+                        for _mname in _trace_models_cb.get(_tid, ()):
                             self._agent_add_model(_aname, _mname, integration_id)
                             self._add_lineage(
                                 _aid, "agent", self._model_id_for(_mname, integration_id), "model", "uses")
-
-                # Correlate agents with tools via parent-child span relationships
-                self._correlate_agent_tools(span_agents, span_tools, span_parents, integration_id)
-
-                # Correlate agents with models via parent-child span relationships
-                self._correlate_agent_models(span_agents, span_models, span_parents, integration_id)
-
-                # Correlate agent-to-agent handoffs (delegates_to lineage)
-                self._correlate_agent_handoffs(
-                    span_agents, span_handoffs, span_parents, span_traces, integration_id)
 
                 logger.info(f"Ingested traces. Total traces: {len(self.traces)}")
 
