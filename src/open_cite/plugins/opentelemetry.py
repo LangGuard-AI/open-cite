@@ -279,6 +279,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
     # Memory eviction thresholds to prevent unbounded growth / OOM
     MAX_TRACES = int(os.environ.get("OPENCITE_MAX_TRACES", "10000"))
     MAX_SESSION_CACHE = int(os.environ.get("OPENCITE_MAX_SESSION_CACHE", "1000"))
+    MAX_CROSS_BATCH_SPANS = int(os.environ.get("OPENCITE_MAX_CROSS_BATCH_SPANS", "50000"))
     MAX_RECEIVER_RESTARTS = int(os.environ.get("OPENCITE_MAX_RECEIVER_RESTARTS", "5"))
 
     @classmethod
@@ -767,6 +768,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         self,
         attributes: List[Dict[str, Any]],
         resource: Dict[str, Any],
+        integration_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Collect ``user.*`` attributes per ``session.id`` and inject cached values.
 
@@ -788,7 +790,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         user_attrs = {k: v for k, v in merged.items() if k.startswith("user.")}
         if user_attrs:
             if session_id not in self._session_user_attrs:
-                self._session_user_attrs[session_id] = {}
+                self._session_user_attrs[session_id] = {"_integration_id": integration_id or ""}
             self._session_user_attrs[session_id].update(user_attrs)
 
         # Inject any cached user attributes not already on this span
@@ -865,7 +867,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
                             # Enrich with session-level user attributes
                             attributes = self._enrich_session_user_attrs(
-                                attributes, resource)
+                                attributes, resource, integration_id=integration_id)
 
                             if parent_span_id:
                                 span_parents[span_id] = parent_span_id
@@ -875,6 +877,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                                 self.traces[trace_id] = {
                                     "trace_id": trace_id,
                                     "spans": [],
+                                    "integration_id": integration_id or "",
                                     "first_seen": span_times.get(span_id) or datetime.utcnow().isoformat(),
                                 }
 
@@ -1148,33 +1151,78 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
                 # ----------------------------------------------------------
                 # Memory eviction: keep in-memory caches bounded
+                # Eviction is proportional per integration to prevent a
+                # noisy tenant from starving quieter ones.
                 # ----------------------------------------------------------
 
-                # Evict oldest traces when over MAX_TRACES (keep 80%)
+                # 1) Evict least-recently-active traces when over MAX_TRACES
                 if len(self.traces) > self.MAX_TRACES:
                     keep = int(self.MAX_TRACES * 0.8)
-                    sorted_ids = sorted(
-                        self.traces,
-                        key=lambda tid: self.traces[tid].get("last_seen", ""),
-                    )
-                    to_remove = sorted_ids[: len(self.traces) - keep]
+                    evict_total = len(self.traces) - keep
+
+                    # Group trace_ids by integration_id
+                    traces_by_iid: Dict[str, list] = defaultdict(list)
+                    for tid, tdata in self.traces.items():
+                        traces_by_iid[tdata.get("integration_id", "")].append(tid)
+
+                    # Evict proportionally from each integration (LRU within each)
+                    to_remove: list = []
+                    for _iid, tids in traces_by_iid.items():
+                        proportion = len(tids) / len(self.traces)
+                        n_evict = max(1, int(evict_total * proportion))
+                        sorted_tids = sorted(
+                            tids,
+                            key=lambda t: self.traces[t].get("last_seen", ""),
+                        )
+                        to_remove.extend(sorted_tids[:n_evict])
+
                     for tid in to_remove:
-                        del self.traces[tid]
-                    logger.debug(
+                        self.traces.pop(tid, None)
+                    logger.info(
                         "Evicted %d traces (kept %d)", len(to_remove), len(self.traces)
                     )
 
-                # Evict oldest half of session user-attr cache (FIFO order)
+                # 2) Evict session user-attr cache proportionally per integration
                 if len(self._session_user_attrs) > self.MAX_SESSION_CACHE:
-                    evict_count = len(self._session_user_attrs) // 2
-                    keys = list(self._session_user_attrs)[:evict_count]
-                    for k in keys:
-                        del self._session_user_attrs[k]
-                    logger.debug(
-                        "Evicted %d session user-attr entries", evict_count
+                    evict_total = len(self._session_user_attrs) // 2
+
+                    # Group session keys by integration_id
+                    sessions_by_iid: Dict[str, list] = defaultdict(list)
+                    for sk, sv in self._session_user_attrs.items():
+                        sessions_by_iid[sv.get("_integration_id", "")].append(sk)
+
+                    to_remove_sessions: list = []
+                    for _iid, skeys in sessions_by_iid.items():
+                        proportion = len(skeys) / len(self._session_user_attrs)
+                        n_evict = max(1, int(evict_total * proportion))
+                        # FIFO within each integration (dict insertion order)
+                        to_remove_sessions.extend(skeys[:n_evict])
+
+                    for sk in to_remove_sessions:
+                        self._session_user_attrs.pop(sk, None)
+                    logger.info(
+                        "Evicted %d session user-attr entries", len(to_remove_sessions)
                     )
 
-                # Trim per-tool trace lists to most recent 100 entries
+                # 3) Evict cross-batch span caches per integration
+                for _iid, cb_data in list(self._cross_batch.items()):
+                    cb_size = sum(len(v) for v in cb_data.values())
+                    if cb_size > self.MAX_CROSS_BATCH_SPANS:
+                        # Keep only the most recent half of span entries.
+                        # Entries are inserted in arrival order; slice from midpoint.
+                        for key in ("agents", "tools", "models", "parents", "handoffs", "traces"):
+                            mapping = cb_data[key]
+                            if len(mapping) > self.MAX_CROSS_BATCH_SPANS // 6:
+                                keep_n = len(mapping) // 2
+                                # dict preserves insertion order; drop the oldest half
+                                keys_to_drop = list(mapping.keys())[:-keep_n] if keep_n else list(mapping.keys())
+                                for k in keys_to_drop:
+                                    del mapping[k]
+                        logger.info(
+                            "Evicted cross-batch spans for integration=%s", _iid or "(default)"
+                        )
+
+                # 4) Trim per-tool trace lists to most recent 100 entries
                 for tool_data in self.discovered_tools.values():
                     traces_list = tool_data.get("traces")
                     if traces_list and len(traces_list) > 100:
