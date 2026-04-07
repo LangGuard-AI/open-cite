@@ -268,7 +268,7 @@ def _configure_tracing(cfg: PipelineConfig) -> "TracerProvider":
         headers=export_headers,
     )
 
-    tracer_provider = TracerProvider()
+    tracer_provider = TracerProvider(shutdown_on_exit=False)
     tracer_provider.add_span_processor(SimpleSpanProcessor(otlp_exporter))
 
     os.environ["OTEL_SEMCONV_STABILITY_OPT_IN"] = "gen_ai_latest_experimental"
