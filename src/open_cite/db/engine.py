@@ -254,6 +254,8 @@ def get_engine():
             poolclass=QueuePool,
             pool_pre_ping=True,
             pool_size=5,
+            pool_recycle=300,
+            pool_timeout=10,
         )
         logger.info("[db] SQLAlchemy engine created (PostgreSQL): %s", url.split("@")[-1] if "@" in url else url)
 

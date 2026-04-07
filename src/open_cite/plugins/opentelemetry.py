@@ -249,6 +249,10 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
     plugin_type = "opentelemetry"
 
+    # Memory eviction thresholds to prevent unbounded growth / OOM
+    MAX_TRACES = 10000
+    MAX_SESSION_CACHE = 1000
+
     @classmethod
     def plugin_metadata(cls):
         import socket
@@ -627,10 +631,25 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 self.server.plugin = self  # Pass plugin reference to handler
                 logger.info(f"OTLP receiver started on {self.host}:{self.port}")
                 server_ready.set()  # Signal that server is ready
-                self.server.serve_forever()
             except OSError as e:
                 server_error.append(e)
                 server_ready.set()  # Unblock the waiting thread immediately
+                return  # Bind failure — don't retry
+
+            while True:
+                try:
+                    self.server.serve_forever()
+                    break  # Normal shutdown via shutdown() call
+                except Exception as e:
+                    logger.error(f"OTLP receiver crashed, restarting in 5s: {e}", exc_info=True)
+                    time.sleep(5)
+                    try:
+                        self.server = ThreadingHTTPServer((self.host, self.port), OTLPRequestHandler)
+                        self.server.plugin = self
+                        logger.info("OTLP receiver restarted successfully")
+                    except Exception as bind_err:
+                        logger.error(f"OTLP receiver restart bind failed: {bind_err}")
+                        break
 
         self.server_thread = threading.Thread(target=run_server, daemon=True)
         self.server_thread.start()
@@ -1009,6 +1028,40 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
                 # Correlate agents with models via parent-child span relationships
                 self._correlate_agent_models(span_agents, span_models, span_parents)
+
+                # ----------------------------------------------------------
+                # Memory eviction: keep in-memory caches bounded
+                # ----------------------------------------------------------
+
+                # Evict oldest traces when over MAX_TRACES (keep 80%)
+                if len(self.traces) > self.MAX_TRACES:
+                    keep = int(self.MAX_TRACES * 0.8)
+                    sorted_ids = sorted(
+                        self.traces,
+                        key=lambda tid: self.traces[tid].get("first_seen", ""),
+                    )
+                    to_remove = sorted_ids[: len(self.traces) - keep]
+                    for tid in to_remove:
+                        del self.traces[tid]
+                    logger.debug(
+                        "Evicted %d traces (kept %d)", len(to_remove), len(self.traces)
+                    )
+
+                # Evict oldest half of session user-attr cache (FIFO order)
+                if len(self._session_user_attrs) > self.MAX_SESSION_CACHE:
+                    evict_count = len(self._session_user_attrs) // 2
+                    keys = list(self._session_user_attrs)[:evict_count]
+                    for k in keys:
+                        del self._session_user_attrs[k]
+                    logger.debug(
+                        "Evicted %d session user-attr entries", evict_count
+                    )
+
+                # Trim per-tool trace lists to most recent 100 entries
+                for tool_data in self.discovered_tools.values():
+                    traces_list = tool_data.get("traces")
+                    if traces_list and len(traces_list) > 100:
+                        del traces_list[:-100]
 
                 logger.info(f"Ingested traces. Total traces: {len(self.traces)}")
 
