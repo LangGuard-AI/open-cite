@@ -7,14 +7,15 @@ tools that use models through OpenRouter.
 
 import json
 import logging
+import os
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 from collections import defaultdict
 from http.server import BaseHTTPRequestHandler
-from socketserver import ThreadingMixIn
 from http.server import HTTPServer
 import re
 
@@ -77,9 +78,28 @@ def _infer_provider_from_model_name(model_name: str) -> Optional[str]:
     return None
 
 
-class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
-    """HTTP Server that handles each request in a separate thread."""
-    daemon_threads = True  # Don't wait for threads to finish on shutdown
+class PooledHTTPServer(HTTPServer):
+    """HTTP Server that handles requests in a bounded thread pool."""
+    daemon_threads = True
+
+    def __init__(self, *args, max_workers=20, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._pool = ThreadPoolExecutor(max_workers=max_workers)
+
+    def process_request(self, request, client_address):
+        self._pool.submit(self.process_request_thread, request, client_address)
+
+    def process_request_thread(self, request, client_address):
+        try:
+            self.finish_request(request, client_address)
+        except Exception:
+            self.handle_error(request, client_address)
+        finally:
+            self.shutdown_request(request)
+
+    def server_close(self):
+        super().server_close()
+        self._pool.shutdown(wait=False)
 
 
 def _decode_protobuf_traces(body: bytes) -> Optional[dict]:
@@ -257,8 +277,9 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
     plugin_type = "opentelemetry"
 
     # Memory eviction thresholds to prevent unbounded growth / OOM
-    MAX_TRACES = 10000
-    MAX_SESSION_CACHE = 1000
+    MAX_TRACES = int(os.environ.get("OPENCITE_MAX_TRACES", "10000"))
+    MAX_SESSION_CACHE = int(os.environ.get("OPENCITE_MAX_SESSION_CACHE", "1000"))
+    MAX_RECEIVER_RESTARTS = int(os.environ.get("OPENCITE_MAX_RECEIVER_RESTARTS", "5"))
 
     @classmethod
     def plugin_metadata(cls):
@@ -312,14 +333,17 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         """Start the OTLP trace receiver."""
         if self._embedded_receiver:
             self._status = "running"
+            self._receiver_healthy = True
             logger.info(f"Started OpenTelemetry plugin {self.instance_id} (embedded receiver — no standalone server)")
         else:
             self.start_receiver()
             self._status = "running"
+            self._receiver_healthy = True
             logger.info(f"Started OpenTelemetry plugin {self.instance_id}")
 
     def stop(self):
         """Stop the OTLP trace receiver."""
+        self._receiver_healthy = False
         if self._embedded_receiver:
             self._status = "stopped"
             logger.info(f"Stopped OpenTelemetry plugin {self.instance_id} (embedded receiver)")
@@ -465,6 +489,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
         # Lock for thread-safe operations
         self._lock = threading.Lock()
+        self._receiver_healthy = False
 
         # Periodic save throttling (once per 60 seconds)
         self._last_save_time = 0
@@ -668,25 +693,37 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
         def run_server():
             try:
-                self.server = ThreadingHTTPServer((self.host, self.port), OTLPRequestHandler)
+                self.server = PooledHTTPServer((self.host, self.port), OTLPRequestHandler)
                 self.server.plugin = self  # Pass plugin reference to handler
                 logger.info(f"OTLP receiver started on {self.host}:{self.port}")
+                self._receiver_healthy = True
                 server_ready.set()  # Signal that server is ready
             except OSError as e:
                 server_error.append(e)
                 server_ready.set()  # Unblock the waiting thread immediately
                 return  # Bind failure — don't retry
 
+            restart_count = 0
             while True:
                 try:
                     self.server.serve_forever()
                     break  # Normal shutdown via shutdown() call
                 except Exception as e:
-                    logger.error(f"OTLP receiver crashed, restarting in 5s: {e}", exc_info=True)
+                    self._receiver_healthy = False
+                    restart_count += 1
+                    if restart_count > self.MAX_RECEIVER_RESTARTS:
+                        logger.error(f"OTLP receiver exceeded max restarts ({self.MAX_RECEIVER_RESTARTS}), giving up")
+                        break
+                    logger.error(f"OTLP receiver crashed (restart {restart_count}/{self.MAX_RECEIVER_RESTARTS}), restarting in 5s: {e}", exc_info=True)
+                    try:
+                        self.server.server_close()
+                    except Exception:
+                        pass
                     time.sleep(5)
                     try:
-                        self.server = ThreadingHTTPServer((self.host, self.port), OTLPRequestHandler)
+                        self.server = PooledHTTPServer((self.host, self.port), OTLPRequestHandler)
                         self.server.plugin = self
+                        self._receiver_healthy = True
                         logger.info("OTLP receiver restarted successfully")
                     except Exception as bind_err:
                         logger.error(f"OTLP receiver restart bind failed: {bind_err}")
