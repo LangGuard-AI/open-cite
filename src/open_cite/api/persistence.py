@@ -14,6 +14,8 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy.exc import IntegrityError
+
 from open_cite.db import (
     get_session,
     init_db,
@@ -313,22 +315,40 @@ class PersistenceManager:
                     target_id=target_id,
                     relationship_type=relationship_type,
                 )
+                .with_for_update()
                 .first()
             )
             if existing:
                 existing.weight = existing.weight + 1
                 existing.last_seen = now
             else:
-                session.add(Lineage(
-                    source_id=source_id,
-                    source_type=source_type,
-                    target_id=target_id,
-                    target_type=target_type,
-                    relationship_type=relationship_type,
-                    weight=weight,
-                    first_seen=now,
-                    last_seen=now,
-                ))
+                try:
+                    session.add(Lineage(
+                        source_id=source_id,
+                        source_type=source_type,
+                        target_id=target_id,
+                        target_type=target_type,
+                        relationship_type=relationship_type,
+                        weight=weight,
+                        first_seen=now,
+                        last_seen=now,
+                    ))
+                    session.flush()
+                except IntegrityError:
+                    session.rollback()
+                    existing = (
+                        session.query(Lineage)
+                        .filter_by(
+                            source_id=source_id,
+                            target_id=target_id,
+                            relationship_type=relationship_type,
+                        )
+                        .with_for_update()
+                        .first()
+                    )
+                    if existing:
+                        existing.weight = existing.weight + 1
+                        existing.last_seen = now
             session.commit()
         except Exception:
             session.rollback()
