@@ -747,7 +747,7 @@ def register_api_routes(app: Flask):
             with state_lock:
                 if discovering_assets:
                     if asset_cache:
-                        return jsonify(asset_cache)
+                        return jsonify(_apply_asset_filters(asset_cache))
                     else:
                         return jsonify({
                             "assets": _empty_assets(),
@@ -758,14 +758,13 @@ def register_api_routes(app: Flask):
 
                 if asset_cache and asset_cache_time:
                     if datetime.utcnow() - asset_cache_time < timedelta(seconds=30):
-                        return jsonify(asset_cache)
+                        return jsonify(_apply_asset_filters(asset_cache))
 
                 discovering_assets = True
 
             try:
                 assets = _collect_assets(asset_type)
                 _reclassify_downstream(assets)
-                totals = {k: len(v) for k, v in assets.items()}
 
                 try:
                     lineage = client.list_lineage()
@@ -775,8 +774,8 @@ def register_api_routes(app: Flask):
 
                 result = {
                     "assets": assets,
-                    "totals": totals,
                     "lineage": lineage,
+                    "totals": {k: len(v) for k, v in assets.items()},
                     "timestamp": datetime.utcnow().isoformat()
                 }
                 with state_lock:
@@ -784,7 +783,7 @@ def register_api_routes(app: Flask):
                     asset_cache_time = datetime.utcnow()
                     discovering_assets = False
 
-                return jsonify(result)
+                return jsonify(_apply_asset_filters(result))
             except Exception:
                 with state_lock:
                     discovering_assets = False
@@ -793,6 +792,16 @@ def register_api_routes(app: Flask):
         except Exception as e:
             logger.exception("Request failed")
             return jsonify({"error": "Internal server error"}), 500
+
+    def _apply_asset_filters(result):
+        """Return a copy of a cached asset result with query-param filters applied."""
+        import copy
+        filtered = copy.deepcopy(result)
+        assets = filtered.get("assets", {})
+        for key in assets:
+            assets[key] = _filter_by_integration_id(assets[key])
+        filtered["totals"] = {k: len(v) for k, v in assets.items()}
+        return filtered
 
     def _filter_by_integration_id(items):
         """Filter a list of assets by ?integration_id= query param if provided."""
