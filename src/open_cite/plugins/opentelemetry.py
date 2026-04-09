@@ -1228,7 +1228,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                     if traces_list and len(traces_list) > 100:
                         del traces_list[:-100]
 
-                logger.info(f"Ingested traces. Total traces: {len(self.traces)}")
+                logger.info(f"Ingested traces for integration_id '{integration_id}'. Total traces: {len(self.traces)}")
 
             # Notify after releasing the lock to avoid holding it during push
             self.notify_data_changed()
@@ -2046,7 +2046,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                     self._agent_id_for(to_agent, integration_id), "agent",
                     "delegates_to")
                 logger.info(
-                    f"Correlated handoff: agent '{from_agent}' -> agent '{to_agent}' via explicit attribute"
+                    f"Correlated handoff: agent '{from_agent}' -> agent '{to_agent}' via explicit attribute (integration_id: {integration_id})"
                 )
                 continue
 
