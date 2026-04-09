@@ -1593,13 +1593,19 @@ def register_api_routes(app: Flask):
     # Test Data Generation
     # =========================================================================
 
-    # Module-level status tracker for test data generation
-    _test_data_status: Dict[str, Any] = {
-        "status": "idle",
-        "started_at": None,
-        "completed_at": None,
-        "error": None,
-    }
+    # Per-integration status tracker for test data generation
+    _test_data_statuses: Dict[str, Dict[str, Any]] = {}
+
+    def _get_test_data_status(integration_id: str) -> Dict[str, Any]:
+        if integration_id not in _test_data_statuses:
+            _test_data_statuses[integration_id] = {
+                "status": "idle",
+                "started_at": None,
+                "completed_at": None,
+                "error": None,
+                "integration_id": integration_id,
+            }
+        return _test_data_statuses[integration_id]
 
     @app.route('/api/v1/generate-test-data', methods=['POST'])
     def api_generate_test_data():
@@ -1609,9 +1615,6 @@ def register_api_routes(app: Flask):
         send traces to.  Returns 202 immediately; poll
         ``/api/v1/generate-test-data/status`` for progress.
         """
-        if _test_data_status["status"] == "running":
-            return jsonify({"error": "Test data generation is already running"}), 409
-
         data = request.json or {}
         api_key = data.get("api_key", "").strip()
         if not api_key:
@@ -1625,6 +1628,18 @@ def register_api_routes(app: Flask):
         # Extract an auth token for the OpenCITE endpoint from headers
         langguard_api_key = headers.get("Authorization", "").replace("Bearer ", "") or "unused"
         tenant_id = data.get("tenant_id")  # optional
+
+        # Resolve integration_id: explicit header > body field > fallback
+        integration_id = (
+            request.headers.get("X-Integration-Id")
+            or data.get("integration_id")
+            or tenant_id
+            or "_default"
+        )
+
+        status = _get_test_data_status(integration_id)
+        if status["status"] == "running":
+            return jsonify({"error": "Test data generation is already running for this integration"}), 409
 
         from open_cite.generate_test_data import PipelineConfig, run_pipeline
         import asyncio
@@ -1642,31 +1657,36 @@ def register_api_routes(app: Flask):
             export_headers=export_headers,
         )
 
-        _test_data_status["status"] = "running"
-        _test_data_status["started_at"] = datetime.utcnow().isoformat() + "Z"
-        _test_data_status["completed_at"] = None
-        _test_data_status["error"] = None
+        status["status"] = "running"
+        status["started_at"] = datetime.utcnow().isoformat() + "Z"
+        status["completed_at"] = None
+        status["error"] = None
 
         def _run():
             try:
                 asyncio.run(run_pipeline(cfg))
-                _test_data_status["status"] = "completed"
-                _test_data_status["completed_at"] = datetime.utcnow().isoformat() + "Z"
+                status["status"] = "completed"
+                status["completed_at"] = datetime.utcnow().isoformat() + "Z"
             except Exception as exc:
                 logger.exception("Test data generation failed")
-                _test_data_status["status"] = "error"
-                _test_data_status["error"] = str(exc)
-                _test_data_status["completed_at"] = datetime.utcnow().isoformat() + "Z"
+                status["status"] = "error"
+                status["error"] = str(exc)
+                status["completed_at"] = datetime.utcnow().isoformat() + "Z"
 
-        thread = Thread(target=_run, daemon=True, name="test-data-gen")
+        thread = Thread(target=_run, daemon=True, name=f"test-data-gen-{integration_id}")
         thread.start()
 
-        return jsonify({"status": "accepted", "message": "Test data generation started"}), 202
+        return jsonify({"status": "accepted", "message": "Test data generation started", "integration_id": integration_id}), 202
 
     @app.route('/api/v1/generate-test-data/status', methods=['GET'])
     def api_generate_test_data_status():
-        """Return current status of test data generation."""
-        return jsonify(_test_data_status)
+        """Return current status of test data generation for an integration."""
+        integration_id = (
+            request.headers.get("X-Integration-Id")
+            or request.args.get("integration_id")
+            or "_default"
+        )
+        return jsonify(_get_test_data_status(integration_id))
 
     # =========================================================================
     # Lineage Graph (visual HTML – used by GUI iframe)

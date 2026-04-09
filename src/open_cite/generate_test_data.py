@@ -38,12 +38,21 @@ import json
 import logging
 import os
 import sys
+import threading
 import urllib.error
 import urllib.request
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+# Set once at module level — idempotent, same value for all pipelines.
+os.environ.setdefault("OTEL_SEMCONV_STABILITY_OPT_IN", "gen_ai_latest_experimental")
+
+# Serializes tracing processor setup/teardown across concurrent pipelines.
+# The Agents SDK's global trace processor list can only hold one pipeline's
+# processor at a time, so we serialize the swap.
+_TRACING_LOCK = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -208,10 +217,15 @@ def _strip_reasoning_blocks(response) -> None:
         msg.content = "\n".join(texts) if texts else ""
 
 
-def _configure_openai_client(cfg: PipelineConfig) -> None:
-    """Register the AsyncOpenAI client as the default for the Agents SDK."""
+def _build_run_config(cfg: PipelineConfig) -> "RunConfig":
+    """Build a per-pipeline RunConfig with its own OpenAI client.
+
+    Returns a RunConfig that carries an isolated AsyncOpenAI client via
+    MultiProvider — no process-wide globals are touched.
+    """
     from openai import AsyncOpenAI
-    from agents import set_default_openai_client, set_default_openai_api
+    from agents import RunConfig
+    from agents.models.multi_provider import MultiProvider
 
     client = AsyncOpenAI(
         api_key=cfg.openai_api_key,
@@ -229,23 +243,31 @@ def _configure_openai_client(cfg: PipelineConfig) -> None:
 
     client.chat.completions.create = _create_without_reasoning  # type: ignore[assignment]
 
-    set_default_openai_client(client, use_for_tracing=False)
-    set_default_openai_api("chat_completions")
+    return RunConfig(
+        model_provider=MultiProvider(
+            openai_client=client,
+            openai_use_responses=False,
+        ),
+    )
 
 
 def _configure_tracing(cfg: PipelineConfig) -> "TracerProvider":
     """Set up OpenTelemetry tracing with GenAI semantic conventions.
 
-    Spans are exported to the LangGuard endpoint via OTLP/HTTP. The
-    OpenAIAgentsInstrumentor bridges the Agents SDK's internal tracing
-    into OTel spans with standard gen_ai.* attributes.
+    Creates a per-pipeline TracerProvider and installs an
+    OpenTelemetryTracingProcessor into the Agents SDK's global processor
+    list.  The swap is serialized via ``_TRACING_LOCK`` so concurrent
+    pipelines do not clobber each other's processor.
 
     Returns the TracerProvider so callers can flush/shutdown after the pipeline.
     """
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-    from opentelemetry.instrumentation.openai_agents import OpenAIAgentsInstrumentor
+    from opentelemetry.trace import get_tracer
+    from opentelemetry.instrumentation.openai_agents import __version__ as _oai_version
+    from opentelemetry.instrumentation.openai_agents._hooks import OpenTelemetryTracingProcessor
+    from agents import set_trace_processors
 
     # Remove openinference instrumentation if present (uses non-standard attributes)
     try:
@@ -271,13 +293,17 @@ def _configure_tracing(cfg: PipelineConfig) -> "TracerProvider":
     tracer_provider = TracerProvider(shutdown_on_exit=False)
     tracer_provider.add_span_processor(SimpleSpanProcessor(otlp_exporter))
 
-    os.environ["OTEL_SEMCONV_STABILITY_OPT_IN"] = "gen_ai_latest_experimental"
-    OpenAIAgentsInstrumentor().uninstrument()
-    OpenAIAgentsInstrumentor().instrument(
-        tracer_provider=tracer_provider,
-        capture_message_content=True,
-        base_url=cfg.openai_base_url,
+    # Build the Agents SDK tracing processor directly (bypasses the global
+    # OpenAIAgentsInstrumentor which cannot be scoped per-pipeline).
+    tracer = get_tracer(
+        "opentelemetry.instrumentation.openai_agents",
+        _oai_version,
+        tracer_provider,
     )
+    otel_processor = OpenTelemetryTracingProcessor(tracer)
+
+    with _TRACING_LOCK:
+        set_trace_processors([otel_processor])
 
     return tracer_provider
 
@@ -452,7 +478,7 @@ def _build_triage_agent(model, specialists, tools):
 # Stage: Run basic agent tests (no guardrails)
 # ---------------------------------------------------------------------------
 
-async def _run_agent_tests(agent, results: PipelineResults) -> None:
+async def _run_agent_tests(agent, results: PipelineResults, run_config) -> None:
     """Run the three basic agent routing tests — deal screening, portfolio, IR."""
     from agents import Runner
 
@@ -476,7 +502,7 @@ async def _run_agent_tests(agent, results: PipelineResults) -> None:
         logging.info("TEST: %s", label)
         logging.info("=" * 60)
         try:
-            result = await Runner.run(agent, query)
+            result = await Runner.run(agent, query, run_config=run_config)
             output = result.final_output[:500]
             logging.info("Response: %s...", output)
             results.agent_test_outputs.append({"label": label, "query": query, "output": output})
@@ -489,7 +515,7 @@ async def _run_agent_tests(agent, results: PipelineResults) -> None:
 # Stage: Run a traced workflow
 # ---------------------------------------------------------------------------
 
-async def _run_traced_query(agent, results: PipelineResults) -> None:
+async def _run_traced_query(agent, results: PipelineResults, run_config) -> None:
     """Execute a query wrapped in a trace context for OTel export."""
     from agents import Runner, trace
 
@@ -498,6 +524,7 @@ async def _run_traced_query(agent, results: PipelineResults) -> None:
             result = await Runner.run(
                 agent,
                 "Find me SaaS companies in the deal pipeline with over $20M ARR",
+                run_config=run_config,
             )
             output = result.final_output[:300]
             logging.info("Traced response: %s...", output)
@@ -513,7 +540,7 @@ async def _run_traced_query(agent, results: PipelineResults) -> None:
 # ---------------------------------------------------------------------------
 
 async def _run_builtin_guardrail_tests(
-    model: str, specialists, tools, results: PipelineResults
+    model: str, specialists, tools, results: PipelineResults, run_config=None
 ) -> None:
     """Test the Agents SDK's built-in InputGuardrail mechanism.
 
@@ -542,7 +569,7 @@ async def _run_builtin_guardrail_tests(
     )
 
     async def pe_guardrail(ctx, agent, input_data):
-        result = await Runner.run(guardrail_agent, input_data, context=ctx.context)
+        result = await Runner.run(guardrail_agent, input_data, context=ctx.context, run_config=run_config)
         final_output = result.final_output_as(PEQueryCheck)
         return GuardrailFunctionOutput(
             output_info=final_output,
@@ -569,7 +596,7 @@ async def _run_builtin_guardrail_tests(
     for label, query in test_cases:
         logging.info("Test: %s", label)
         try:
-            result = await Runner.run(guarded_agent, query)
+            result = await Runner.run(guarded_agent, query, run_config=run_config)
             output = result.final_output[:150]
             logging.info("  PASSED: %s...", output)
             results.builtin_guardrail_results.append(
@@ -630,7 +657,7 @@ def _run_guardrails_openai_tests(cfg: PipelineConfig, results: PipelineResults) 
 # ---------------------------------------------------------------------------
 
 async def _run_governed_agent_tests(
-    cfg: PipelineConfig, specialists, tools, results: PipelineResults
+    cfg: PipelineConfig, specialists, tools, results: PipelineResults, run_config=None
 ) -> None:
     """Run the fully governed agent with centralized guardrails.
 
@@ -665,7 +692,7 @@ async def _run_governed_agent_tests(
         logging.info("=" * 60)
         try:
             with trace("Governed PE Concierge"):
-                result = await Runner.run(pe_concierge_governed, query)
+                result = await Runner.run(pe_concierge_governed, query, run_config=run_config)
                 output = result.final_output[:150]
                 logging.info("  PASSED: %s...", output)
                 results.governed_agent_results.append(
@@ -783,77 +810,80 @@ async def run_pipeline(cfg: PipelineConfig) -> PipelineResults:
     """
     results = PipelineResults()
 
-    # 1. Configure client and tracing
+    # 1. Configure client (per-pipeline, no globals) and tracing
     logging.info("Configuring OpenAI client (model=%s)...", cfg.model_name)
-    _configure_openai_client(cfg)
+    run_config = _build_run_config(cfg)
     tracer_provider = _configure_tracing(cfg)
 
-    # 2. Test endpoints
-    _test_endpoints(cfg)
-
-    # 3. Build agents
-    tools = _define_tools()
-    specialists = _build_specialist_agents(cfg.model_name)
-    triage = _build_triage_agent(cfg.model_name, specialists, tools)
-
-    # 4. Basic agent tests
     try:
-        logging.info("Running basic agent routing tests...")
-        await _run_agent_tests(triage, results)
-    except Exception as exc:
-        logging.warning("Stage 4 (agent tests) failed: %s", exc)
+        # 2. Test endpoints
+        _test_endpoints(cfg)
 
-    # 5. Traced workflow
-    try:
-        logging.info("Running traced workflow...")
-        await _run_traced_query(triage, results)
-    except Exception as exc:
-        logging.warning("Stage 5 (traced workflow) failed: %s", exc)
+        # 3. Build agents
+        tools = _define_tools()
+        specialists = _build_specialist_agents(cfg.model_name)
+        triage = _build_triage_agent(cfg.model_name, specialists, tools)
 
-    # 6–9. OpenAI-only stages (guardrails require OpenAI API)
-    if cfg.openai_base_url:
-        logging.info("Skipping guardrail stages (non-OpenAI provider)")
-    else:
-        # 6. Built-in guardrails
+        # 4. Basic agent tests
         try:
-            logging.info("Testing built-in guardrails...")
-            await _run_builtin_guardrail_tests(cfg.model_name, specialists, tools, results)
+            logging.info("Running basic agent routing tests...")
+            await _run_agent_tests(triage, results, run_config)
         except Exception as exc:
-            logging.warning("Stage 6 (built-in guardrails) failed: %s", exc)
+            logging.warning("Stage 4 (agent tests) failed: %s", exc)
 
-        # 7. Centralized guardrails
+        # 5. Traced workflow
         try:
-            logging.info("Testing centralized guardrails (GuardrailsOpenAI)...")
-            _run_guardrails_openai_tests(cfg, results)
+            logging.info("Running traced workflow...")
+            await _run_traced_query(triage, results, run_config)
         except Exception as exc:
-            logging.warning("Stage 7 (GuardrailsOpenAI) failed: %s", exc)
+            logging.warning("Stage 5 (traced workflow) failed: %s", exc)
 
-        # 8. Governed agent
-        try:
-            logging.info("Testing governed agent (GuardrailAgent)...")
-            await _run_governed_agent_tests(cfg, specialists, tools, results)
-        except Exception as exc:
-            logging.warning("Stage 8 (governed agent) failed: %s", exc)
+        # 6–9. OpenAI-only stages (guardrails require OpenAI API)
+        if cfg.openai_base_url:
+            logging.info("Skipping guardrail stages (non-OpenAI provider)")
+        else:
+            # 6. Built-in guardrails
+            try:
+                logging.info("Testing built-in guardrails...")
+                await _run_builtin_guardrail_tests(cfg.model_name, specialists, tools, results, run_config)
+            except Exception as exc:
+                logging.warning("Stage 6 (built-in guardrails) failed: %s", exc)
 
-        # 9. Evaluation
-        try:
-            logging.info("Running guardrail evaluation...")
-            await _run_eval(cfg, results)
-        except Exception as exc:
-            logging.warning("Stage 9 (evaluation) failed: %s", exc)
+            # 7. Centralized guardrails
+            try:
+                logging.info("Testing centralized guardrails (GuardrailsOpenAI)...")
+                _run_guardrails_openai_tests(cfg, results)
+            except Exception as exc:
+                logging.warning("Stage 7 (GuardrailsOpenAI) failed: %s", exc)
 
-    # Let any pending async callbacks / microtasks drain so instrumentor
-    # span-end hooks fire before we shut down the exporter.
-    await asyncio.sleep(1)
+            # 8. Governed agent
+            try:
+                logging.info("Testing governed agent (GuardrailAgent)...")
+                await _run_governed_agent_tests(cfg, specialists, tools, results, run_config)
+            except Exception as exc:
+                logging.warning("Stage 8 (governed agent) failed: %s", exc)
 
-    # Detach instrumentor so no new spans are created after flush
-    from opentelemetry.instrumentation.openai_agents import OpenAIAgentsInstrumentor
-    OpenAIAgentsInstrumentor().uninstrument()
+            # 9. Evaluation
+            try:
+                logging.info("Running guardrail evaluation...")
+                await _run_eval(cfg, results)
+            except Exception as exc:
+                logging.warning("Stage 9 (evaluation) failed: %s", exc)
 
-    # Flush all pending spans to ensure they reach LangGuard
-    logging.info("Flushing trace exporter...")
-    tracer_provider.force_flush(timeout_millis=10_000)
-    tracer_provider.shutdown()
+        # Let any pending async callbacks / microtasks drain so instrumentor
+        # span-end hooks fire before we shut down the exporter.
+        await asyncio.sleep(1)
+
+    finally:
+        # Remove our tracing processor and shut down the exporter.
+        # Done in a finally block so cleanup happens even if stages fail.
+        from agents import set_trace_processors
+        with _TRACING_LOCK:
+            set_trace_processors([])
+
+        logging.info("Flushing trace exporter...")
+        tracer_provider.force_flush(timeout_millis=10_000)
+        tracer_provider.shutdown()
 
     logging.info("Pipeline complete.")
     return results

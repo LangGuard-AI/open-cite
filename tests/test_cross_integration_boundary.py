@@ -570,3 +570,152 @@ class TestSymmetricBoundary:
         resp = seeded_client.get(f"{endpoint}?integration_id=nonexistent-integration")
         data = resp.get_json()
         assert len(data[key]) == 0, f"{endpoint} returned {len(data[key])} items for bogus integration"
+
+
+# ---------------------------------------------------------------------------
+# /api/v1/generate-test-data — per-integration status isolation
+# ---------------------------------------------------------------------------
+
+class TestGenerateTestDataIsolation:
+
+    def test_status_defaults_to_idle(self, seeded_client):
+        """Querying status for a fresh integration returns idle."""
+        resp = seeded_client.get(
+            f"/api/v1/generate-test-data/status?integration_id={INTEGRATION_A}"
+        )
+        data = resp.get_json()
+        assert data["status"] == "idle"
+        assert data["integration_id"] == INTEGRATION_A
+
+    def test_status_isolated_between_integrations(self, seeded_client):
+        """Status for integration A should not reflect integration B's state."""
+        resp_a = seeded_client.get(
+            f"/api/v1/generate-test-data/status?integration_id={INTEGRATION_A}"
+        )
+        resp_b = seeded_client.get(
+            f"/api/v1/generate-test-data/status?integration_id={INTEGRATION_B}"
+        )
+        data_a = resp_a.get_json()
+        data_b = resp_b.get_json()
+        assert data_a["integration_id"] == INTEGRATION_A
+        assert data_b["integration_id"] == INTEGRATION_B
+
+    def test_status_header_takes_precedence(self, seeded_client):
+        """X-Integration-Id header should take precedence over query param."""
+        resp = seeded_client.get(
+            f"/api/v1/generate-test-data/status?integration_id={INTEGRATION_B}",
+            headers={"X-Integration-Id": INTEGRATION_A},
+        )
+        data = resp.get_json()
+        assert data["integration_id"] == INTEGRATION_A
+
+    def test_post_requires_api_key(self, seeded_client):
+        """POST without api_key should return 400 regardless of integration."""
+        resp = seeded_client.post(
+            "/api/v1/generate-test-data",
+            json={"integration_id": INTEGRATION_A},
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
+        assert "api_key" in resp.get_json()["error"]
+
+    def test_post_returns_integration_id(self, seeded_client):
+        """POST should echo back the resolved integration_id.
+
+        We pass a dummy api_key which will cause the pipeline to fail,
+        but the 202 acceptance response is returned before the pipeline
+        runs, so we can verify the integration_id in the response.
+        """
+        resp = seeded_client.post(
+            "/api/v1/generate-test-data",
+            json={
+                "api_key": "sk-test-dummy-key",
+                "integration_id": INTEGRATION_A,
+            },
+            content_type="application/json",
+        )
+        # 202 accepted or 409 if a previous test left it running — both are valid
+        assert resp.status_code in (202, 409)
+        data = resp.get_json()
+        if resp.status_code == 202:
+            assert data["integration_id"] == INTEGRATION_A
+
+    def test_post_header_integration_id_takes_precedence(self, seeded_client):
+        """X-Integration-Id header on POST should override body fields."""
+        resp = seeded_client.post(
+            "/api/v1/generate-test-data",
+            json={
+                "api_key": "sk-test-dummy-key",
+                "integration_id": INTEGRATION_B,
+            },
+            headers={"X-Integration-Id": INTEGRATION_A},
+            content_type="application/json",
+        )
+        assert resp.status_code in (202, 409)
+        data = resp.get_json()
+        if resp.status_code == 202:
+            assert data["integration_id"] == INTEGRATION_A
+
+    def test_concurrent_generation_allowed_for_different_integrations(self, seeded_client):
+        """Two different integrations should be able to start generation independently."""
+        # Start generation for a unique integration (won't conflict with others)
+        int_x = "integration-concurrent-x"
+        int_y = "integration-concurrent-y"
+
+        resp_x = seeded_client.post(
+            "/api/v1/generate-test-data",
+            json={"api_key": "sk-test-x", "integration_id": int_x},
+            content_type="application/json",
+        )
+        assert resp_x.status_code == 202
+
+        resp_y = seeded_client.post(
+            "/api/v1/generate-test-data",
+            json={"api_key": "sk-test-y", "integration_id": int_y},
+            content_type="application/json",
+        )
+        # Both should be accepted — not blocked by the other
+        assert resp_y.status_code == 202
+
+    def test_duplicate_generation_blocked_for_same_integration(self, seeded_client):
+        """Starting generation twice for the same integration should return 409."""
+        int_z = "integration-duplicate-z"
+
+        resp1 = seeded_client.post(
+            "/api/v1/generate-test-data",
+            json={"api_key": "sk-test-z1", "integration_id": int_z},
+            content_type="application/json",
+        )
+        assert resp1.status_code == 202
+
+        resp2 = seeded_client.post(
+            "/api/v1/generate-test-data",
+            json={"api_key": "sk-test-z2", "integration_id": int_z},
+            content_type="application/json",
+        )
+        assert resp2.status_code == 409
+
+    def test_no_integration_id_uses_default(self, seeded_client):
+        """Requests without any integration context should use the _default key."""
+        resp = seeded_client.get("/api/v1/generate-test-data/status")
+        data = resp.get_json()
+        assert data["integration_id"] == "_default"
+
+    def test_status_does_not_leak_other_integration(self, seeded_client):
+        """After starting generation for one integration, another should still be idle."""
+        int_started = "integration-started-leak-test"
+        int_other = "integration-other-leak-test"
+
+        seeded_client.post(
+            "/api/v1/generate-test-data",
+            json={"api_key": "sk-test-leak", "integration_id": int_started},
+            content_type="application/json",
+        )
+
+        resp = seeded_client.get(
+            f"/api/v1/generate-test-data/status?integration_id={int_other}"
+        )
+        data = resp.get_json()
+        assert data["status"] == "idle", (
+            f"Integration {int_other} should be idle but got {data['status']}"
+        )
