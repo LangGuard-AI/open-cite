@@ -61,7 +61,6 @@ discovery_status: Dict[str, Any] = {
     "progress": []
 }
 state_lock = Lock()
-discovering_assets = False
 asset_cache = None
 asset_cache_time = None
 _last_save_time: float = 0.0
@@ -758,7 +757,7 @@ def register_api_routes(app: Flask):
     @app.route('/api/v1/assets', methods=['GET'])
     def api_get_assets():
         """Get discovered assets."""
-        global discovering_assets, asset_cache, asset_cache_time
+        global asset_cache, asset_cache_time
 
         if not client:
             return jsonify({"error": "No client initialized. Please configure plugins first."}), 400
@@ -767,26 +766,21 @@ def register_api_routes(app: Flask):
             asset_type = request.args.get('type', 'all')
 
             with state_lock:
-                if discovering_assets:
-                    if asset_cache:
-                        return jsonify(_apply_asset_filters(asset_cache))
-                    else:
-                        return jsonify({
-                            "assets": _empty_assets(),
-                            "totals": {},
-                            "timestamp": datetime.utcnow().isoformat(),
-                            "discovering": True
-                        })
-
                 if asset_cache and asset_cache_time:
                     if datetime.utcnow() - asset_cache_time < timedelta(seconds=30):
                         return jsonify(_apply_asset_filters(asset_cache))
 
-                discovering_assets = True
+            assets = _collect_assets(asset_type)
+            _reclassify_downstream(assets)
 
-            try:
-                assets = _collect_assets(asset_type)
-                _reclassify_downstream(assets)
+            result = {
+                "assets": assets,
+                "totals": {k: len(v) for k, v in assets.items()},
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            with state_lock:
+                asset_cache = result
+                asset_cache_time = datetime.utcnow()
 
                 try:
                     lineage = client.list_lineage()
