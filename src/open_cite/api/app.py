@@ -345,7 +345,7 @@ def create_app(config: Optional[OpenCiteConfig] = None) -> Flask:
     return app
 
 
-def export_to_json(include_plugins: List[str]) -> Dict[str, Any]:
+def export_to_json(include_plugins: List[str], integration_id: Optional[str] = None) -> Dict[str, Any]:
     """Export all discovered data to JSON format according to Open-CITE schema.
 
     Reads from the DB (via the client) for persisted asset types, and falls
@@ -355,20 +355,33 @@ def export_to_json(include_plugins: List[str]) -> Dict[str, Any]:
     Args:
         include_plugins: List of plugin type names to include
                          (e.g. ``["opentelemetry", "databricks"]``).
+        integration_id: Optional integration ID to filter exported data.
 
     Returns:
         JSON-serializable dictionary with all discovered data.
     """
     from open_cite.schema import OpenCiteExporter
 
+    def _iid_filter(items):
+        """Filter items by integration_id if one was provided."""
+        if not integration_id:
+            return items
+        return [
+            i for i in items
+            if integration_id in (
+                (i.get("metadata", {}) or {}).get("integration_ids") or
+                i.get("integration_ids") or []
+            )
+        ]
+
     # Core asset types — read from DB via client
-    tools = client.list_tools()
-    models = client.list_models()
-    agents = client.list_agents()
-    downstream = client.list_downstream_systems()
-    mcp_servers = client.list_mcp_servers()
-    mcp_tools = client.list_mcp_tools()
-    mcp_resources = client.list_mcp_resources()
+    tools = _iid_filter(client.list_tools())
+    models = _iid_filter(client.list_models())
+    agents = _iid_filter(client.list_agents())
+    downstream = _iid_filter(client.list_downstream_systems())
+    mcp_servers = _iid_filter(client.list_mcp_servers())
+    mcp_tools = _iid_filter(client.list_mcp_tools())
+    mcp_resources = _iid_filter(client.list_mcp_resources())
 
     # Reclassify downstream → data_assets
     temp = {"downstream_systems": downstream, "data_assets": []}
@@ -859,7 +872,7 @@ def register_api_routes(app: Flask):
             return jsonify({"error": "No client initialized"}), 400
         try:
             server_id = request.args.get('server_id')
-            tools = client.list_mcp_tools(server_id=server_id)
+            tools = _filter_by_integration_id(client.list_mcp_tools(server_id=server_id))
             return jsonify({"tools": tools, "count": len(tools)})
         except Exception as e:
             logger.exception("Request failed")
@@ -938,7 +951,9 @@ def register_api_routes(app: Flask):
         try:
             data = request.json or {}
             include_plugins = data.get('plugins', [])
-            return jsonify(export_to_json(include_plugins))
+            integration_id = data.get('integration_id') or request.args.get('integration_id')
+            result = export_to_json(include_plugins, integration_id=integration_id)
+            return jsonify(result)
         except Exception as e:
             logger.exception("Request failed")
             return jsonify({"error": "Internal server error"}), 500
@@ -1105,6 +1120,30 @@ def register_api_routes(app: Flask):
 
         try:
             data = persistence.export_all()
+            integration_id = request.args.get('integration_id')
+            if integration_id:
+                # Filter each asset list by integration_id
+                for key in list(data.keys()):
+                    if key in ('exported_at',):
+                        continue
+                    value = data[key]
+                    if isinstance(value, dict):
+                        # Dict-keyed assets (tools, models): filter values
+                        data[key] = {
+                            k: v for k, v in value.items()
+                            if integration_id in (
+                                (v.get("metadata", {}) or {}).get("integration_ids") or
+                                v.get("integration_ids") or []
+                            )
+                        }
+                    elif isinstance(value, list):
+                        data[key] = [
+                            item for item in value
+                            if integration_id in (
+                                (item.get("metadata", {}) or {}).get("integration_ids") or
+                                item.get("integration_ids") or []
+                            )
+                        ]
             return jsonify(data)
         except Exception as e:
             logger.exception("Request failed")

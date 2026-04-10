@@ -96,6 +96,33 @@ def _otlp_payload(
     }
 
 
+def _otlp_mcp_tool_payload(service_name: str, mcp_server: str, mcp_tool: str, model: str):
+    """Build an OTLP payload with MCP server and tool attributes."""
+    trace_id = uuid.uuid4().hex[:32]
+    span_id = uuid.uuid4().hex[:16]
+    return {
+        "resourceSpans": [{
+            "resource": {
+                "attributes": [
+                    {"key": "service.name", "value": {"stringValue": service_name}},
+                ]
+            },
+            "scopeSpans": [{"spans": [{
+                "traceId": trace_id,
+                "spanId": span_id,
+                "name": f"mcp.{mcp_tool}",
+                "attributes": [
+                    {"key": "mcp.server.name", "value": {"stringValue": mcp_server}},
+                    {"key": "mcp.tool.name", "value": {"stringValue": mcp_tool}},
+                    {"key": "gen_ai.request.model", "value": {"stringValue": model}},
+                    {"key": "gen_ai.system", "value": {"stringValue": "openai"}},
+                ],
+                "startTimeUnixNano": "1700000000000000000",
+            }]}],
+        }]
+    }
+
+
 def _otlp_agent_with_tool(service_name, model, tool_name, *, downstream_url=None):
     """OTLP payload with an agent span (parent) and a tool span (child)."""
     trace_id = uuid.uuid4().hex[:32]
@@ -169,6 +196,15 @@ def seeded_client():
             content_type="application/json",
             headers={"X-Integration-Id": INTEGRATION_A},
         )
+        # MCP tool for integration A
+        client.post(
+            "/v1/traces",
+            data=json.dumps(_otlp_mcp_tool_payload(
+                "alpha-agent", "alpha-mcp-server", "alpha-mcp-tool", "gpt-4o",
+            )),
+            content_type="application/json",
+            headers={"X-Integration-Id": INTEGRATION_A},
+        )
 
         # --- Integration B data ---
         # Agent "beta-agent" using claude-3-opus and tool "run-code"
@@ -185,6 +221,15 @@ def seeded_client():
         client.post(
             "/v1/traces",
             data=json.dumps(_otlp_payload("beta-agent", "chat", "claude-3-haiku")),
+            content_type="application/json",
+            headers={"X-Integration-Id": INTEGRATION_B},
+        )
+        # MCP tool for integration B
+        client.post(
+            "/v1/traces",
+            data=json.dumps(_otlp_mcp_tool_payload(
+                "beta-agent", "beta-mcp-server", "beta-mcp-tool", "claude-3-opus",
+            )),
             content_type="application/json",
             headers={"X-Integration-Id": INTEGRATION_B},
         )
@@ -501,6 +546,32 @@ class TestMcpToolsEndpoint:
         resp = seeded_client.get("/api/v1/mcp/tools")
         assert resp.status_code == 200
 
+    def test_unfiltered_returns_both_integrations_mcp_tools(self, seeded_client):
+        resp = seeded_client.get("/api/v1/mcp/tools")
+        data = resp.get_json()
+        names = {t.get("name", "") for t in data["tools"]}
+        assert "alpha-mcp-tool" in names, f"Expected alpha-mcp-tool in {names}"
+        assert "beta-mcp-tool" in names, f"Expected beta-mcp-tool in {names}"
+
+    def test_filtered_integration_a_only_returns_alpha_mcp_tool(self, seeded_client):
+        resp = seeded_client.get(f"/api/v1/mcp/tools?integration_id={INTEGRATION_A}")
+        data = resp.get_json()
+        names = {t.get("name", "") for t in data["tools"]}
+        assert "alpha-mcp-tool" in names, f"Expected alpha-mcp-tool in filtered results"
+        assert "beta-mcp-tool" not in names, f"beta-mcp-tool should not appear for integration A"
+
+    def test_filtered_integration_b_only_returns_beta_mcp_tool(self, seeded_client):
+        resp = seeded_client.get(f"/api/v1/mcp/tools?integration_id={INTEGRATION_B}")
+        data = resp.get_json()
+        names = {t.get("name", "") for t in data["tools"]}
+        assert "beta-mcp-tool" in names, f"Expected beta-mcp-tool in filtered results"
+        assert "alpha-mcp-tool" not in names, f"alpha-mcp-tool should not appear for integration B"
+
+    def test_bogus_integration_returns_empty(self, seeded_client):
+        resp = seeded_client.get("/api/v1/mcp/tools?integration_id=nonexistent")
+        data = resp.get_json()
+        assert len(data["tools"]) == 0
+
 
 # ---------------------------------------------------------------------------
 # /api/v1/status and /api/v1/stats — should not leak per-integration data
@@ -535,6 +606,58 @@ class TestExportEndpoint:
         data = resp.get_json()
         # Export returns data — just verify it doesn't crash
         assert isinstance(data, dict)
+
+    def test_export_filtered_integration_a_excludes_b(self, seeded_client):
+        """Export with integration_id should only contain that integration's assets."""
+        resp = seeded_client.post(
+            "/api/v1/export",
+            json={"plugins": ["opentelemetry"], "integration_id": INTEGRATION_A},
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        raw = json.dumps(data)
+        # Integration B's unique assets should not appear
+        assert "run-code" not in raw, "Export leaks integration B tool 'run-code'"
+        assert "claude-3-opus" not in raw, "Export leaks integration B model 'claude-3-opus'"
+        assert "beta-agent" not in raw, "Export leaks integration B agent 'beta-agent'"
+
+    def test_export_filtered_integration_b_excludes_a(self, seeded_client):
+        resp = seeded_client.post(
+            "/api/v1/export",
+            json={"plugins": ["opentelemetry"], "integration_id": INTEGRATION_B},
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        raw = json.dumps(data)
+        assert "search-web" not in raw, "Export leaks integration A tool 'search-web'"
+        assert "gpt-4o" not in raw, "Export leaks integration A model 'gpt-4o'"
+        assert "alpha-agent" not in raw, "Export leaks integration A agent 'alpha-agent'"
+
+
+# ---------------------------------------------------------------------------
+# /api/v1/persistence/export — check for cross-integration leakage
+# ---------------------------------------------------------------------------
+
+class TestPersistenceExportEndpoint:
+
+    def test_persistence_export_filtered_excludes_other_integration(self, seeded_client):
+        """Persistence export with integration_id should not leak other integration's data."""
+        resp = seeded_client.get(f"/api/v1/persistence/export?integration_id={INTEGRATION_A}")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        raw = json.dumps(data)
+        assert INTEGRATION_B not in raw, (
+            "Persistence export leaks integration B id in data"
+        )
+
+    def test_persistence_export_filtered_b_excludes_a(self, seeded_client):
+        resp = seeded_client.get(f"/api/v1/persistence/export?integration_id={INTEGRATION_B}")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        raw = json.dumps(data)
+        assert INTEGRATION_A not in raw, (
+            "Persistence export leaks integration A id in data"
+        )
 
 
 # ---------------------------------------------------------------------------

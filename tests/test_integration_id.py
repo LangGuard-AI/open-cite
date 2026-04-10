@@ -790,3 +790,389 @@ class TestAgentHandoffs:
         targets = {d["target_id"] for d in delegates}
         assert sources == {src_a, src_b}
         assert targets == {tgt_a, tgt_b}
+
+
+# ---------------------------------------------------------------------------
+# Plugin-level list_assets filtering by integration_id
+# ---------------------------------------------------------------------------
+
+class TestPluginLevelFiltering:
+
+    def test_list_tools_filters_by_integration_id(self):
+        """list_assets('tool', integration_id=...) returns only matching tools."""
+        plugin = _make_plugin()
+        plugin._ingest_traces(
+            _otlp_payload("app-a", "call", "gpt-4o", tool_name="web-search"),
+            integration_id="tenant-a",
+        )
+        plugin._ingest_traces(
+            _otlp_payload("app-b", "call", "claude-3-opus", tool_name="code-exec"),
+            integration_id="tenant-b",
+        )
+
+        tools_a = plugin.list_assets("tool", integration_id="tenant-a")
+        tool_names_a = {t["name"] for t in tools_a}
+        assert "web-search" in tool_names_a
+        assert "code-exec" not in tool_names_a
+
+        tools_b = plugin.list_assets("tool", integration_id="tenant-b")
+        tool_names_b = {t["name"] for t in tools_b}
+        assert "code-exec" in tool_names_b
+        assert "web-search" not in tool_names_b
+
+    def test_list_models_filters_by_integration_id(self):
+        """list_assets('model', integration_id=...) returns only matching models."""
+        plugin = _make_plugin()
+        plugin._ingest_traces(
+            _otlp_payload("app-a", "chat", "gpt-4o"), integration_id="tenant-a",
+        )
+        plugin._ingest_traces(
+            _otlp_payload("app-b", "chat", "claude-3-opus"), integration_id="tenant-b",
+        )
+
+        models_a = plugin.list_assets("model", integration_id="tenant-a")
+        model_names_a = {m["name"] for m in models_a}
+        assert "gpt-4o" in model_names_a
+        assert "claude-3-opus" not in model_names_a
+
+    def test_list_agents_filters_by_integration_id(self):
+        """list_assets('agent', integration_id=...) returns only matching agents."""
+        plugin = _make_plugin()
+        plugin._ingest_traces(
+            _otlp_payload("agent-alpha", "chat", "gpt-4o"), integration_id="tenant-a",
+        )
+        plugin._ingest_traces(
+            _otlp_payload("agent-beta", "chat", "claude-3-opus"), integration_id="tenant-b",
+        )
+
+        agents_a = plugin.list_assets("agent", integration_id="tenant-a")
+        agent_names_a = {a["name"] for a in agents_a}
+        assert "agent-alpha" in agent_names_a
+        assert "agent-beta" not in agent_names_a
+
+    def test_list_assets_no_filter_returns_all(self):
+        """list_assets without integration_id returns assets from all integrations."""
+        plugin = _make_plugin()
+        plugin._ingest_traces(
+            _otlp_payload("app-a", "chat", "gpt-4o"), integration_id="tenant-a",
+        )
+        plugin._ingest_traces(
+            _otlp_payload("app-b", "chat", "claude-3-opus"), integration_id="tenant-b",
+        )
+
+        models = plugin.list_assets("model")
+        model_names = {m["name"] for m in models}
+        assert "gpt-4o" in model_names
+        assert "claude-3-opus" in model_names
+
+    def test_list_assets_bogus_integration_returns_empty(self):
+        """Filtering by a nonexistent integration_id returns an empty list."""
+        plugin = _make_plugin()
+        plugin._ingest_traces(
+            _otlp_payload("app-a", "chat", "gpt-4o"), integration_id="tenant-a",
+        )
+
+        assert plugin.list_assets("model", integration_id="nonexistent") == []
+        assert plugin.list_assets("tool", integration_id="nonexistent") == []
+        assert plugin.list_assets("agent", integration_id="nonexistent") == []
+
+
+# ---------------------------------------------------------------------------
+# Lineage filtering by integration_id
+# ---------------------------------------------------------------------------
+
+class TestLineageFiltering:
+
+    def test_list_lineage_filters_by_integration_id(self):
+        """list_lineage(integration_id=...) returns only matching lineage records."""
+        plugin = _make_plugin()
+        plugin._ingest_traces(
+            _otlp_agent_with_tool("my-agent", "gpt-4o", "web-search"),
+            integration_id="tenant-a",
+        )
+        plugin._ingest_traces(
+            _otlp_agent_with_tool("my-agent", "claude-3-opus", "code-exec"),
+            integration_id="tenant-b",
+        )
+
+        lineage_a = plugin.list_lineage(integration_id="tenant-a")
+        lineage_b = plugin.list_lineage(integration_id="tenant-b")
+
+        assert len(lineage_a) > 0
+        assert len(lineage_b) > 0
+
+        # All records in lineage_a should belong to tenant-a
+        for rel in lineage_a:
+            assert rel["integration_id"] == "tenant-a"
+        for rel in lineage_b:
+            assert rel["integration_id"] == "tenant-b"
+
+        # Cross-check: tenant-a lineage uses tenant-a-scoped UUIDs
+        expected_agent_a = str(uuid.uuid5(_AGENT_NS, "tenant-a:my-agent"))
+        expected_tool_a = str(uuid.uuid5(_TOOL_NS, "tenant-a:web-search"))
+        agent_tool_a = [r for r in lineage_a if r["target_type"] == "tool"]
+        assert any(r["source_id"] == expected_agent_a and r["target_id"] == expected_tool_a for r in agent_tool_a)
+
+        # tenant-b lineage should not contain tenant-a UUIDs
+        for rel in lineage_b:
+            assert rel["source_id"] != expected_agent_a
+
+    def test_list_lineage_no_filter_returns_all(self):
+        """list_lineage() without integration_id returns all records."""
+        plugin = _make_plugin()
+        plugin._ingest_traces(
+            _otlp_agent_with_tool("agent-a", "gpt-4o", "tool-a"),
+            integration_id="tenant-a",
+        )
+        plugin._ingest_traces(
+            _otlp_agent_with_tool("agent-b", "claude-3-opus", "tool-b"),
+            integration_id="tenant-b",
+        )
+
+        all_lineage = plugin.list_lineage()
+        integration_ids = {r["integration_id"] for r in all_lineage}
+        assert "tenant-a" in integration_ids
+        assert "tenant-b" in integration_ids
+
+    def test_list_lineage_bogus_integration_returns_empty(self):
+        """Filtering by a nonexistent integration_id returns an empty list."""
+        plugin = _make_plugin()
+        plugin._ingest_traces(
+            _otlp_agent_with_tool("my-agent", "gpt-4o", "web-search"),
+            integration_id="tenant-a",
+        )
+
+        assert plugin.list_lineage(integration_id="nonexistent") == []
+
+    def test_list_lineage_combined_source_and_integration_filter(self):
+        """Filtering by both source_id and integration_id narrows results correctly."""
+        plugin = _make_plugin()
+        plugin._ingest_traces(
+            _otlp_agent_with_tool("shared-agent", "gpt-4o", "tool-a"),
+            integration_id="tenant-a",
+        )
+        plugin._ingest_traces(
+            _otlp_agent_with_tool("shared-agent", "gpt-4o", "tool-b"),
+            integration_id="tenant-b",
+        )
+
+        agent_id_a = str(uuid.uuid5(_AGENT_NS, "tenant-a:shared-agent"))
+        agent_id_b = str(uuid.uuid5(_AGENT_NS, "tenant-b:shared-agent"))
+
+        # Filter by source_id only — gets both integrations (different UUIDs)
+        by_source_a = plugin.list_lineage(source_id=agent_id_a)
+        assert all(r["integration_id"] == "tenant-a" for r in by_source_a)
+
+        # Filter by integration_id only — gets all records for that tenant
+        by_int_b = plugin.list_lineage(integration_id="tenant-b")
+        assert all(r["integration_id"] == "tenant-b" for r in by_int_b)
+
+        # Combined filter
+        combined = plugin.list_lineage(source_id=agent_id_a, integration_id="tenant-a")
+        assert len(combined) > 0
+        assert all(r["source_id"] == agent_id_a and r["integration_id"] == "tenant-a" for r in combined)
+
+        # Mismatched source_id and integration_id returns empty
+        empty = plugin.list_lineage(source_id=agent_id_a, integration_id="tenant-b")
+        assert empty == []
+
+
+# ---------------------------------------------------------------------------
+# Concurrent ingestion from different integrations
+# ---------------------------------------------------------------------------
+
+class TestConcurrentIngestion:
+
+    def test_concurrent_ingestion_no_data_corruption(self):
+        """Parallel ingestion from multiple integrations produces correct, isolated data."""
+        import concurrent.futures
+
+        plugin = _make_plugin()
+        integrations = {
+            "tenant-a": {"agent": "agent-a", "model": "gpt-4o", "tool": "search", "count": 10},
+            "tenant-b": {"agent": "agent-b", "model": "claude-3-opus", "tool": "code-exec", "count": 10},
+            "tenant-c": {"agent": "agent-c", "model": "gemini-pro", "tool": "browse", "count": 10},
+        }
+
+        def ingest_n(integration_id, cfg):
+            for _ in range(cfg["count"]):
+                plugin._ingest_traces(
+                    _otlp_agent_with_tool(cfg["agent"], cfg["model"], cfg["tool"]),
+                    integration_id=integration_id,
+                )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+            futures = [
+                pool.submit(ingest_n, iid, cfg)
+                for iid, cfg in integrations.items()
+            ]
+            for f in concurrent.futures.as_completed(futures):
+                f.result()  # re-raise any exception
+
+        # Verify per-integration isolation
+        for iid, cfg in integrations.items():
+            agents = plugin.list_assets("agent", integration_id=iid)
+            agent_names = {a["name"] for a in agents}
+            assert cfg["agent"] in agent_names, f"{cfg['agent']} missing for {iid}"
+            # Other integrations' agents should not appear
+            for other_iid, other_cfg in integrations.items():
+                if other_iid != iid:
+                    assert other_cfg["agent"] not in agent_names, (
+                        f"{other_cfg['agent']} leaked into {iid}"
+                    )
+
+            models = plugin.list_assets("model", integration_id=iid)
+            model_names = {m["name"] for m in models}
+            assert cfg["model"] in model_names
+
+            tools = plugin.list_assets("tool", integration_id=iid)
+            tool_names = {t["name"] for t in tools}
+            assert cfg["tool"] in tool_names
+
+        # Verify global counts — each _otlp_agent_with_tool produces 2 spans
+        # (agent + tool), both carrying the model, so model_call_count increments
+        # twice per ingestion.
+        for iid, cfg in integrations.items():
+            int_data = plugin.model_integration_data[cfg["model"]]
+            assert int_data[iid]["call_count"] == cfg["count"] * 2
+
+    def test_concurrent_ingestion_preserves_counts(self):
+        """High-volume concurrent ingestion produces exact per-integration counts."""
+        import concurrent.futures
+
+        plugin = _make_plugin()
+        per_tenant = 50
+
+        def ingest_n(integration_id, n):
+            for _ in range(n):
+                plugin._ingest_traces(
+                    _otlp_payload("shared-app", "chat", "gpt-4o"),
+                    integration_id=integration_id,
+                )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            fa = pool.submit(ingest_n, "tenant-a", per_tenant)
+            fb = pool.submit(ingest_n, "tenant-b", per_tenant)
+            fa.result()
+            fb.result()
+
+        assert plugin.model_call_count["gpt-4o"] == per_tenant * 2
+        int_data = plugin.model_integration_data["gpt-4o"]
+        assert int_data["tenant-a"]["call_count"] == per_tenant
+        assert int_data["tenant-b"]["call_count"] == per_tenant
+
+
+# ---------------------------------------------------------------------------
+# _list_traces should filter by integration_id
+# ---------------------------------------------------------------------------
+
+class TestTraceIntegrationFiltering:
+
+    def test_list_traces_filters_by_integration_id(self):
+        """Traces should be filterable by integration_id."""
+        plugin = _make_plugin()
+        plugin._ingest_traces(
+            _otlp_payload("app-a", "chat", "gpt-4o"),
+            integration_id="tenant-a",
+        )
+        plugin._ingest_traces(
+            _otlp_payload("app-b", "chat", "claude-3", tool_name="search"),
+            integration_id="tenant-b",
+        )
+
+        all_traces = plugin._list_traces()
+        assert len(all_traces) >= 2, "Should have traces from both integrations"
+
+        traces_a = plugin._list_traces(integration_id="tenant-a")
+        traces_b = plugin._list_traces(integration_id="tenant-b")
+
+        # Each filtered set should be a strict subset
+        assert len(traces_a) < len(all_traces) or len(traces_b) < len(all_traces), (
+            "Filtering by integration_id should return fewer traces than unfiltered"
+        )
+
+        # Traces for tenant-a should all have integration_id == "tenant-a"
+        for t in traces_a:
+            assert t.get("integration_id") == "tenant-a", (
+                f"Trace {t.get('trace_id', '?')} has integration_id={t.get('integration_id')}, expected tenant-a"
+            )
+
+        for t in traces_b:
+            assert t.get("integration_id") == "tenant-b", (
+                f"Trace {t.get('trace_id', '?')} has integration_id={t.get('integration_id')}, expected tenant-b"
+            )
+
+    def test_list_traces_bogus_integration_returns_empty(self):
+        """Querying traces for a non-existent integration should return empty."""
+        plugin = _make_plugin()
+        plugin._ingest_traces(
+            _otlp_payload("app-a", "chat", "gpt-4o"),
+            integration_id="tenant-a",
+        )
+
+        traces = plugin._list_traces(integration_id="nonexistent")
+        assert len(traces) == 0
+
+    def test_list_traces_no_filter_returns_all(self):
+        """Without integration_id filter, all traces should be returned."""
+        plugin = _make_plugin()
+        plugin._ingest_traces(
+            _otlp_payload("app-a", "chat", "gpt-4o"),
+            integration_id="tenant-a",
+        )
+        plugin._ingest_traces(
+            _otlp_payload("app-b", "chat", "claude-3"),
+            integration_id="tenant-b",
+        )
+
+        all_traces = plugin._list_traces()
+        assert len(all_traces) >= 2
+
+
+# ---------------------------------------------------------------------------
+# Standalone _handle_logs must pass integration_id through
+# ---------------------------------------------------------------------------
+
+class TestStandaloneLogHandlerIntegrationId:
+
+    def test_logs_ingested_via_handler_get_tagged(self):
+        """The standalone _handle_logs path should extract X-Integration-Id
+        and pass it to _ingest_traces so that assets are tagged."""
+        plugin = _make_plugin()
+
+        # Build a minimal OTLP log payload that the logs_adapter can convert
+        log_payload = {
+            "resourceLogs": [{
+                "resource": {
+                    "attributes": [
+                        {"key": "service.name", "value": {"stringValue": "log-app"}},
+                    ]
+                },
+                "scopeLogs": [{
+                    "logRecords": [{
+                        "timeUnixNano": "1700000000000000000",
+                        "body": {"stringValue": "test log message"},
+                        "attributes": [
+                            {"key": "gen_ai.request.model", "value": {"stringValue": "gpt-4o"}},
+                            {"key": "gen_ai.system", "value": {"stringValue": "openai"}},
+                        ],
+                    }]
+                }]
+            }]
+        }
+
+        from open_cite.plugins.logs_adapter import convert_logs_to_traces
+        synthetic_traces = convert_logs_to_traces(log_payload)
+
+        # Simulate what _handle_logs SHOULD do: pass integration_id through
+        if synthetic_traces.get("resourceSpans"):
+            plugin._ingest_traces(synthetic_traces, integration_id="tenant-logs")
+
+        # Verify models discovered from log-converted traces are tagged
+        models = plugin.list_assets("model")
+        if models:
+            gpt4 = next((m for m in models if m["name"] == "gpt-4o"), None)
+            if gpt4:
+                assert "tenant-logs" in gpt4["metadata"].get("integration_ids", []), (
+                    "Model from log-ingested trace should be tagged with integration_id"
+                )

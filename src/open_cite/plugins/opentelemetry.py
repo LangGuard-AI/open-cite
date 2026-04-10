@@ -232,7 +232,8 @@ class OTLPRequestHandler(BaseHTTPRequestHandler):
                 synthetic_traces = convert_logs_to_traces(data)
 
                 if synthetic_traces.get("resourceSpans"):
-                    plugin._ingest_traces(synthetic_traces)
+                    integration_id = inbound_headers.get("x-integration-id") or inbound_headers.get("X-Integration-Id")
+                    plugin._ingest_traces(synthetic_traces, integration_id=integration_id)
                     plugin._deliver_to_webhooks(synthetic_traces, inbound_headers=inbound_headers)
 
                 num_log_records = sum(
@@ -1031,7 +1032,8 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                                             self._agent_add_model(_auto_agent, _model, integration_id)
                                             self._add_lineage(
                                                 self._agent_id_for(_auto_agent, integration_id), "agent",
-                                                self._model_id_for(_model, integration_id), "model", "uses")
+                                                self._model_id_for(_model, integration_id), "model", "uses",
+                                                integration_id=integration_id)
 
                                 # Direct agent -> tool lineage (same span)
                                 if _agent_for_span:
@@ -1040,7 +1042,8 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                                             self._agent_add_tool(_agent_for_span, _et, integration_id)
                                             self._add_lineage(
                                                 self._agent_id_for(_agent_for_span, integration_id), "agent",
-                                                self._tool_id_for(_et, integration_id), "tool", "uses")
+                                                self._tool_id_for(_et, integration_id), "tool", "uses",
+                                                integration_id=integration_id)
 
                             for et in event_tools:
                                 span_tools.setdefault(span_id, et)
@@ -1096,7 +1099,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                         _ = self.agent_integration_data[_svc][integration_id]
                     span_agents[_sid] = _svc
                     self._agent_add_model(_svc, _model, integration_id)
-                    self._add_lineage(self._agent_id_for(_svc, integration_id), "agent", self._model_id_for(_model, integration_id), "model", "uses")
+                    self._add_lineage(self._agent_id_for(_svc, integration_id), "agent", self._model_id_for(_model, integration_id), "model", "uses", integration_id=integration_id)
                     # Clean up if it was previously registered as a tool
                     self.discovered_tools.pop(_svc, None)
 
@@ -1143,11 +1146,13 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                             if _tname != _aname:
                                 self._agent_add_tool(_aname, _tname, integration_id)
                                 self._add_lineage(
-                                    _aid, "agent", self._tool_id_for(_tname, integration_id), "tool", "uses")
+                                    _aid, "agent", self._tool_id_for(_tname, integration_id), "tool", "uses",
+                                    integration_id=integration_id)
                         for _mname in _trace_models_cb.get(_tid, ()):
                             self._agent_add_model(_aname, _mname, integration_id)
                             self._add_lineage(
-                                _aid, "agent", self._model_id_for(_mname, integration_id), "model", "uses")
+                                _aid, "agent", self._model_id_for(_mname, integration_id), "model", "uses",
+                                integration_id=integration_id)
 
                 # ----------------------------------------------------------
                 # Memory eviction: keep in-memory caches bounded
@@ -1684,15 +1689,22 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 "tool_source_id": metadata.get("tool_source_id"),
                 "metadata": metadata,
             })
+        integration_id = kwargs.get("integration_id")
+        if integration_id:
+            tools = [t for t in tools if integration_id in t.get("metadata", {}).get("integration_ids", [])]
         return tools
 
     def _list_traces(self, **kwargs) -> List[Dict[str, Any]]:
-        """List all traces."""
+        """List all traces, optionally filtered by trace_id or integration_id."""
         trace_id = kwargs.get("trace_id")
         if trace_id:
             trace = self.traces.get(trace_id)
             return [trace] if trace else []
-        return list(self.traces.values())
+        traces = list(self.traces.values())
+        integration_id = kwargs.get("integration_id")
+        if integration_id:
+            traces = [t for t in traces if t.get("integration_id") == integration_id]
+        return traces
 
     def _list_models(self, **kwargs) -> List[Dict[str, Any]]:
         """List all discovered models.
@@ -1748,6 +1760,9 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 "metadata": self.model_metadata.get(model_name, {}),
             })
 
+        integration_id = kwargs.get("integration_id")
+        if integration_id:
+            models = [m for m in models if integration_id in m.get("metadata", {}).get("integration_ids", [])]
         return models
 
     def _list_agents(self, **kwargs) -> List[Dict[str, Any]]:
@@ -1783,6 +1798,9 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 "agent_source_id": metadata.get("agent_source_id"),
                 "metadata": metadata,
             })
+        integration_id = kwargs.get("integration_id")
+        if integration_id:
+            agents = [a for a in agents if integration_id in a.get("metadata", {}).get("integration_ids", [])]
         return agents
 
     def _list_downstream_systems(self, **kwargs) -> List[Dict[str, Any]]:
@@ -1801,15 +1819,22 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             })
         return systems
 
-    def list_lineage(self, source_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list_lineage(self, source_id: Optional[str] = None,
+                     integration_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """List lineage relationships."""
         with self._lock:
+            results = list(self.lineage.values())
             if source_id:
-                return [
-                    rel for rel in self.lineage.values()
+                results = [
+                    rel for rel in results
                     if rel["source_id"] == source_id or rel["target_id"] == source_id
                 ]
-            return list(self.lineage.values())
+            if integration_id is not None:
+                results = [
+                    rel for rel in results
+                    if rel.get("integration_id", "") == integration_id
+                ]
+            return results
 
     def _detect_agent(
         self,
@@ -1871,11 +1896,11 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
         if tool_name:
             self._agent_add_tool(agent_name, tool_name, integration_id)
-            self._add_lineage(self._agent_id_for(agent_name, integration_id), "agent", self._tool_id_for(tool_name, integration_id), "tool", "uses")
+            self._add_lineage(self._agent_id_for(agent_name, integration_id), "agent", self._tool_id_for(tool_name, integration_id), "tool", "uses", integration_id=integration_id)
 
         if model_name:
             self._agent_add_model(agent_name, model_name, integration_id)
-            self._add_lineage(self._agent_id_for(agent_name, integration_id), "agent", self._model_id_for(model_name, integration_id), "model", "uses")
+            self._add_lineage(self._agent_id_for(agent_name, integration_id), "agent", self._model_id_for(model_name, integration_id), "model", "uses", integration_id=integration_id)
 
         # Perform agent identification
         identification = self.identifier.identify("opentelemetry", merged)
@@ -1949,7 +1974,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 agent_name = span_agents[tool_span_id]
                 if agent_name != tool_name:
                     self._agent_add_tool(agent_name, tool_name, integration_id)
-                    self._add_lineage(self._agent_id_for(agent_name, integration_id), "agent", self._tool_id_for(tool_name, integration_id), "tool", "uses")
+                    self._add_lineage(self._agent_id_for(agent_name, integration_id), "agent", self._tool_id_for(tool_name, integration_id), "tool", "uses", integration_id=integration_id)
                     logger.info(
                         f"Correlated agent '{agent_name}' -> tool '{tool_name}' via same span"
                     )
@@ -1965,7 +1990,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                     agent_name = span_agents[parent]
                     if agent_name != tool_name:
                         self._agent_add_tool(agent_name, tool_name, integration_id)
-                        self._add_lineage(self._agent_id_for(agent_name, integration_id), "agent", self._tool_id_for(tool_name, integration_id), "tool", "uses")
+                        self._add_lineage(self._agent_id_for(agent_name, integration_id), "agent", self._tool_id_for(tool_name, integration_id), "tool", "uses", integration_id=integration_id)
                         logger.info(
                             f"Correlated agent '{agent_name}' -> tool '{tool_name}' via span hierarchy"
                         )
@@ -1995,7 +2020,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             if model_span_id in span_agents:
                 agent_name = span_agents[model_span_id]
                 self._agent_add_model(agent_name, model_name, integration_id)
-                self._add_lineage(self._agent_id_for(agent_name, integration_id), "agent", self._model_id_for(model_name, integration_id), "model", "uses")
+                self._add_lineage(self._agent_id_for(agent_name, integration_id), "agent", self._model_id_for(model_name, integration_id), "model", "uses", integration_id=integration_id)
                 continue
 
             # Walk up the parent chain from this model span to find an agent
@@ -2007,7 +2032,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 if parent in span_agents:
                     agent_name = span_agents[parent]
                     self._agent_add_model(agent_name, model_name, integration_id)
-                    self._add_lineage(self._agent_id_for(agent_name, integration_id), "agent", self._model_id_for(model_name, integration_id), "model", "uses")
+                    self._add_lineage(self._agent_id_for(agent_name, integration_id), "agent", self._model_id_for(model_name, integration_id), "model", "uses", integration_id=integration_id)
                     logger.info(
                         f"Correlated agent '{agent_name}' -> model '{model_name}' via span hierarchy"
                     )
@@ -2044,7 +2069,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 self._add_lineage(
                     self._agent_id_for(from_agent, integration_id), "agent",
                     self._agent_id_for(to_agent, integration_id), "agent",
-                    "delegates_to")
+                    "delegates_to", integration_id=integration_id)
                 logger.info(
                     f"Correlated handoff: agent '{from_agent}' -> agent '{to_agent}' via explicit attribute (integration_id: {integration_id})"
                 )
@@ -2074,7 +2099,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 self._add_lineage(
                     self._agent_id_for(from_agent, integration_id), "agent",
                     self._agent_id_for(aname, integration_id), "agent",
-                    "delegates_to")
+                    "delegates_to", integration_id=integration_id)
                 logger.info(
                     f"Correlated handoff: agent '{from_agent}' -> agent '{aname}' via span hierarchy"
                 )
@@ -2167,7 +2192,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         )
         if tool_name:
             system["tools_connecting"].add(tool_name)
-            self._add_lineage(self._tool_id_for(tool_name, integration_id), "tool", system_id, "downstream", "connects_to")
+            self._add_lineage(self._tool_id_for(tool_name, integration_id), "tool", system_id, "downstream", "connects_to", integration_id=integration_id)
 
     def _extract_token_usage(self, attributes: List[Dict[str, Any]]):
         """Extract token usage statistics from span attributes."""
@@ -2249,7 +2274,8 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
     def _add_lineage(self, source_id: str, source_type: str,
                      target_id: str, target_type: str,
-                     relationship_type: str):
+                     relationship_type: str,
+                     integration_id: Optional[str] = None):
         """Add or update a lineage relationship."""
         key = f"{source_id}:{target_id}:{relationship_type}"
         now = datetime.utcnow().isoformat()
@@ -2264,6 +2290,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 "target_id": target_id,
                 "target_type": target_type,
                 "relationship_type": relationship_type,
+                "integration_id": integration_id or "",
                 "weight": 1,
                 "first_seen": now,
                 "last_seen": now,
@@ -2360,15 +2387,10 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 trace_id=trace_id,
                 span_id=span_id,
                 attributes=attr_dict,
+                integration_id=integration_id,
             )
 
             server_id = self._generate_mcp_server_id(mcp_server)
-
-            # Tag MCP server with integration_id for per-tenant asset scoping
-            if integration_id and server_id in self.mcp_servers:
-                ids = self.mcp_servers[server_id].setdefault("metadata", {}).setdefault("integration_ids", [])
-                if integration_id not in ids:
-                    ids.append(integration_id)
 
             # Register tool if present
             if mcp_tool:
@@ -2383,6 +2405,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                     trace_id=trace_id,
                     span_id=span_id,
                     status=status,
+                    integration_id=integration_id,
                 )
 
             # Register resource if present
@@ -2397,6 +2420,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                     span_id=span_id,
                     resource_type=resource_type,
                     mime_type=mime_type,
+                    integration_id=integration_id,
                 )
 
             logger.info(
@@ -2419,6 +2443,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         trace_id: str,
         span_id: str,
         attributes: Dict[str, Any],
+        integration_id: Optional[str] = None,
     ):
         """Register an MCP server discovered from a trace."""
         server_id = self._generate_mcp_server_id(server_name)
@@ -2462,6 +2487,12 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         if "mcp.server.endpoint" in attributes:
             server["endpoint"] = attributes["mcp.server.endpoint"]
 
+        # Tag with integration_id for per-tenant asset scoping
+        if integration_id:
+            ids = server["metadata"].setdefault("integration_ids", [])
+            if integration_id not in ids:
+                ids.append(integration_id)
+
     def _register_mcp_tool(
         self,
         server_id: str,
@@ -2470,6 +2501,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         span_id: str,
         tool_schema: Optional[Dict[str, Any]] = None,
         status: str = "success",
+        integration_id: Optional[str] = None,
     ):
         """Register an MCP tool discovered from a trace."""
         tool_id = f"{server_id}-{tool_name}"
@@ -2487,6 +2519,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                     "error_count": 0,
                 },
                 "traces": [],
+                "metadata": {},
             }
 
             if tool_schema:
@@ -2512,6 +2545,12 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             "status": status,
         })
 
+        # Tag with integration_id for per-tenant asset scoping
+        if integration_id:
+            ids = tool.setdefault("metadata", {}).setdefault("integration_ids", [])
+            if integration_id not in ids:
+                ids.append(integration_id)
+
         self.mcp_usage_stats[server_id]["tool_calls"] += 1
 
     def _register_mcp_resource(
@@ -2522,6 +2561,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         span_id: str,
         resource_type: Optional[str] = None,
         mime_type: Optional[str] = None,
+        integration_id: Optional[str] = None,
     ):
         """Register an MCP resource discovered from a trace."""
         resource_id = f"{server_id}-{abs(hash(resource_uri)) % 10000}"
@@ -2537,6 +2577,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                     "access_count": 0,
                 },
                 "traces": [],
+                "metadata": {},
             }
 
             if resource_type:
@@ -2557,6 +2598,12 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         })
 
         self.mcp_usage_stats[server_id]["resource_accesses"] += 1
+
+        # Tag with integration_id for per-tenant asset scoping
+        if integration_id:
+            ids = resource.setdefault("metadata", {}).setdefault("integration_ids", [])
+            if integration_id not in ids:
+                ids.append(integration_id)
 
     def _list_mcp_servers(self, **kwargs) -> List[Dict[str, Any]]:
         """List all discovered MCP servers."""
