@@ -682,7 +682,11 @@ def register_api_routes(app: Flask):
 
     @app.route('/api/v1/plugins/configure', methods=['POST'])
     def api_configure_plugins():
-        """Configure and start plugins."""
+        """Configure and start plugins.
+
+        Adds or reconfigures the requested plugins on the existing client
+        without destroying previously registered plugins or their data.
+        """
         global client, discovery_status
 
         data = request.json
@@ -690,25 +694,30 @@ def register_api_routes(app: Flask):
 
         try:
             with state_lock:
-                client = OpenCiteClient()
+                if not client:
+                    client = OpenCiteClient()
+                if persistence and not client.persistence:
+                    client.persistence = persistence
                 discovery_status["error"] = None
-                discovery_status["plugins_enabled"] = []
                 discovery_status["progress"] = []
                 discovery_status["current_status"] = "Initializing Open-CITE client..."
                 discovery_status["progress"].append({
                     "step": "init",
-                    "message": "Open-CITE client created",
+                    "message": "Open-CITE client ready",
                     "status": "success"
                 })
 
+            newly_enabled = []
             for plugin_config in selected_plugins:
                 plugin_name = plugin_config.get('name')
                 config = plugin_config.get('config', {})
 
                 try:
                     _configure_plugin(plugin_name, config)
+                    newly_enabled.append(plugin_name)
                     with state_lock:
-                        discovery_status["plugins_enabled"].append(plugin_name)
+                        if plugin_name not in discovery_status["plugins_enabled"]:
+                            discovery_status["plugins_enabled"].append(plugin_name)
                 except Exception as e:
                     logger.exception(f"Failed to configure {plugin_name}")
                     with state_lock:
