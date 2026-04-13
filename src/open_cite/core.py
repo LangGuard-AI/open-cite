@@ -41,10 +41,17 @@ _DEFAULT_BLOCKED_CIDRS = [
 
 
 def _parse_blocked_networks():
-    """Build the set of blocked IP networks from env + defaults."""
+    """Build the set of blocked IP networks from env + defaults.
+
+    When OPENCITE_WEBHOOK_BLOCKED_CIDRS is set it **replaces** the defaults,
+    allowing callers to remove loopback protection for sidecar deployments
+    where webhooks must target localhost.
+    """
     raw = os.environ.get("OPENCITE_WEBHOOK_BLOCKED_CIDRS", "")
-    cidrs = [c.strip() for c in raw.split(",") if c.strip()] if raw else []
-    cidrs.extend(_DEFAULT_BLOCKED_CIDRS)
+    if raw:
+        cidrs = [c.strip() for c in raw.split(",") if c.strip()]
+    else:
+        cidrs = list(_DEFAULT_BLOCKED_CIDRS)
     nets = []
     for cidr in cidrs:
         try:
@@ -557,7 +564,14 @@ class BaseDiscoveryPlugin(ABC):
                 self._webhook_executor.submit(self._send_webhook, url, chunk, inbound_headers)
 
     def _send_webhook(self, url: str, otlp_payload: dict, inbound_headers: Optional[Dict[str, str]] = None):
-        """POST an OTLP JSON payload to a webhook URL with retries."""
+        """POST an OTLP payload to a webhook URL with retries.
+
+        If the per-webhook mandatory headers include
+        ``Content-Type: application/x-protobuf``, the JSON payload is
+        serialized to OTLP protobuf before sending.  This is required by
+        endpoints like the Databricks native OTLP receiver which only
+        accepts protobuf.
+        """
         # Re-validate at delivery time to guard against DNS rebinding
         ssrf_err = validate_webhook_url(url)
         if ssrf_err:
@@ -565,18 +579,37 @@ class BaseDiscoveryPlugin(ABC):
             return
 
         # Build outbound headers: start with per-webhook mandatory headers,
-        # overlay inbound headers (preserves Authorization from original request),
-        # then ensure Content-Type is set for JSON
+        # then overlay inbound headers (preserves Authorization, tenant-id
+        # from original request).  Mandatory Content-Type is NOT overwritten
+        # by the default application/json fallback so protobuf webhooks work.
         mandatory = self._webhook_urls.get(url, {})
         headers = dict(mandatory)
-        if inbound_headers:
+        use_protobuf = any(
+            k.lower() == "content-type" and "protobuf" in v.lower()
+            for k, v in mandatory.items()
+        )
+        if inbound_headers and not use_protobuf:
+            # Only overlay inbound headers for JSON webhooks.  Protobuf
+            # webhooks (e.g. Databricks OTLP) must not have their
+            # Authorization or Content-Type clobbered by inbound headers.
             headers.update(inbound_headers)
-        headers["Content-Type"] = "application/json"
+        if not use_protobuf:
+            headers["Content-Type"] = "application/json"
 
-        # HMAC-sign the payload so the receiving webapp can verify authenticity.
-        # We serialize once and send raw bytes so the signature matches exactly.
-        body_bytes = json.dumps(otlp_payload, separators=(",", ":")).encode("utf-8")
-        if _WEBHOOK_SECRET:
+        # Serialize body
+        if use_protobuf:
+            body_bytes = self._serialize_otlp_protobuf(otlp_payload)
+            if body_bytes is None:
+                logger.warning(
+                    "Webhook %s: protobuf serialization failed, skipping delivery (plugin=%s)",
+                    url, self.instance_id,
+                )
+                return
+        else:
+            body_bytes = json.dumps(otlp_payload, separators=(",", ":")).encode("utf-8")
+
+        # HMAC-sign JSON payloads so the receiving webapp can verify authenticity.
+        if not use_protobuf and _WEBHOOK_SECRET:
             sig = hmac.new(
                 _WEBHOOK_SECRET.encode("utf-8"),
                 body_bytes,
@@ -603,12 +636,18 @@ class BaseDiscoveryPlugin(ABC):
                         self.instance_id,
                     )
                     return
+                resp_body = ""
+                try:
+                    resp_body = resp.text[:500]
+                except Exception:
+                    pass
                 logger.warning(
-                    "Webhook %s returned %d (attempt %d/3, plugin=%s)",
+                    "Webhook %s returned %d (attempt %d/3, plugin=%s): %s",
                     masked_url,
                     resp.status_code,
                     attempt + 1,
                     self.instance_id,
+                    resp_body,
                 )
             except Exception as e:
                 logger.warning(
@@ -620,3 +659,59 @@ class BaseDiscoveryPlugin(ABC):
                 )
             if attempt < len(backoffs):
                 time.sleep(backoffs[attempt])
+
+    @staticmethod
+    def _serialize_otlp_protobuf(otlp_json: dict) -> Optional[bytes]:
+        """Serialize an OTLP JSON traces payload to protobuf wire format.
+
+        OTLP JSON uses hex-encoded strings for trace_id / span_id / parent_span_id,
+        but protobuf ``ParseDict`` expects base64 for ``bytes`` fields.  This method
+        converts hex IDs → base64 before parsing, then serializes to wire format.
+
+        Returns ``None`` if the protobuf libraries are unavailable or
+        serialization fails.
+        """
+        try:
+            import base64 as _b64
+            from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+                ExportTraceServiceRequest,
+            )
+            from google.protobuf.json_format import ParseDict
+
+            def _hex_to_b64(hex_str: str) -> str:
+                """Convert a hex-encoded ID to base64 for protobuf ParseDict."""
+                try:
+                    return _b64.b64encode(bytes.fromhex(hex_str)).decode("ascii")
+                except (ValueError, TypeError):
+                    return hex_str
+
+            # Deep-copy and convert hex IDs to base64 in all spans
+            converted = {"resourceSpans": []}
+            for rs in otlp_json.get("resourceSpans", []):
+                new_rs = {k: v for k, v in rs.items() if k != "scopeSpans"}
+                new_scope_spans = []
+                for ss in rs.get("scopeSpans", []):
+                    new_ss = {k: v for k, v in ss.items() if k != "spans"}
+                    new_spans = []
+                    for span in ss.get("spans", []):
+                        new_span = dict(span)
+                        if "traceId" in new_span and isinstance(new_span["traceId"], str):
+                            new_span["traceId"] = _hex_to_b64(new_span["traceId"])
+                        if "spanId" in new_span and isinstance(new_span["spanId"], str):
+                            new_span["spanId"] = _hex_to_b64(new_span["spanId"])
+                        if "parentSpanId" in new_span and isinstance(new_span["parentSpanId"], str):
+                            new_span["parentSpanId"] = _hex_to_b64(new_span["parentSpanId"])
+                        new_spans.append(new_span)
+                    new_ss["spans"] = new_spans
+                    new_scope_spans.append(new_ss)
+                new_rs["scopeSpans"] = new_scope_spans
+                converted["resourceSpans"].append(new_rs)
+
+            msg = ParseDict(converted, ExportTraceServiceRequest())
+            return msg.SerializeToString()
+        except ImportError:
+            logger.warning("Protobuf serialization unavailable: opentelemetry-proto not installed")
+            return None
+        except Exception as exc:
+            logger.warning("Protobuf serialization error: %s", exc)
+            return None
