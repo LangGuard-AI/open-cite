@@ -135,6 +135,7 @@ def _push_assets_update(source_plugin=None):
             "mcp_tools": [],
             "mcp_resources": [],
             "data_assets": [],
+            "identities": [],
         }
 
         c = api_app.client
@@ -145,6 +146,10 @@ def _push_assets_update(source_plugin=None):
         assets["mcp_servers"] = c.list_mcp_servers()
         assets["mcp_tools"] = c.list_mcp_tools()
         assets["mcp_resources"] = c.list_mcp_resources()
+        try:
+            assets["identities"] = c.list_identities()
+        except Exception as e:
+            logger.warning(f"Could not list identities for push: {e}")
 
         # Use cached values for expensive Databricks/GCP calls
         if api_app.asset_cache:
@@ -154,9 +159,16 @@ def _push_assets_update(source_plugin=None):
         _reclassify_downstream(assets)
         totals = {k: len(v) for k, v in assets.items()}
 
+        try:
+            lineage_list = c.list_lineage()
+        except Exception as e:
+            logger.warning(f"Could not list lineage for push: {e}")
+            lineage_list = []
+
         result = {
             "assets": assets,
             "totals": totals,
+            "lineage": lineage_list,
             "timestamp": datetime.utcnow().isoformat()
         }
 

@@ -157,7 +157,7 @@
         "discovery_source": {
           "type": "string",
           "description": "How this tool was discovered (plugin/subsystem)",
-          "examples": ["opentelemetry", "databricks", "databricks/mlflow", "databricks/genie", "databricks/ai-gateway", "azure_ai_foundry", "google_cloud_api", "aws_bedrock_api", "aws_sagemaker_api", "cloudtrail", "cloudwatch_logs", "trace_analysis", "manual"]
+          "examples": ["opentelemetry", "databricks", "databricks/mlflow", "databricks/genie", "databricks/ai-gateway", "azure_ai_foundry", "litellm", "google_cloud_api", "aws_bedrock_api", "aws_sagemaker_api", "cloudtrail", "cloudwatch_logs", "trace_analysis", "manual"]
         },
         "models_used": {
           "type": "array",
@@ -305,7 +305,7 @@
         "discovery_source": {
           "type": "string",
           "description": "How this model was discovered (plugin/subsystem)",
-          "examples": ["opentelemetry", "databricks", "databricks/mlflow", "databricks/genie", "databricks/ai-gateway", "azure_ai_foundry", "google_cloud_api", "aws_bedrock_api", "aws_sagemaker_api", "manual"]
+          "examples": ["opentelemetry", "databricks", "databricks/mlflow", "databricks/genie", "databricks/ai-gateway", "azure_ai_foundry", "litellm", "google_cloud_api", "aws_bedrock_api", "aws_sagemaker_api", "manual"]
         },
         "usage": {
           "type": "object",
@@ -413,7 +413,7 @@
         "type": {
           "type": "string",
           "description": "Type of data asset",
-          "examples": ["catalog", "schema", "table", "view", "volume", "function", "model", "endpoint", "deployment", "foundry_resource", "openai_resource", "project", "agent", "tool", "trace", "model_package", "training_job", "custom_model", "provisioned_throughput", "invocation", "generative_model"]
+          "examples": ["agent", "catalog", "deployment", "downstream_system", "endpoint", "foundry_resource", "function", "identity", "invocation", "model", "model_package", "openai_resource", "project", "provisioned_throughput", "schema", "table", "trace", "training_job", "volume"]
         },
         "full_name": {
           "type": "string",
@@ -423,7 +423,7 @@
         "discovery_source": {
           "type": "string",
           "description": "Source of discovery",
-          "examples": ["databricks", "azure_ai_foundry", "google_cloud_api", "aws_bedrock_api", "aws_sagemaker_api", "manual"]
+          "examples": ["databricks", "azure_ai_foundry", "litellm", "google_cloud_api", "aws_bedrock_api", "aws_sagemaker_api", "manual"]
         },
         "hierarchy": {
           "type": "object",
@@ -767,7 +767,7 @@
         },
         "discovery_source": {
           "type": "string",
-          "enum": ["config_file", "environment", "network", "trace", "manual"],
+          "enum": ["config_file", "environment", "network", "trace", "litellm", "manual"],
           "description": "How this server was discovered"
         },
         "transport": {
@@ -888,7 +888,7 @@
         },
         "discovery_source": {
           "type": "string",
-          "enum": ["introspection", "trace", "config", "manual"],
+          "enum": ["introspection", "trace", "config", "litellm", "manual"],
           "description": "How this tool was discovered"
         },
         "description": {
@@ -976,7 +976,7 @@
         },
         "discovery_source": {
           "type": "string",
-          "enum": ["introspection", "trace", "config", "manual"],
+          "enum": ["introspection", "trace", "config", "litellm", "manual"],
           "description": "How this resource was discovered"
         },
         "type": {

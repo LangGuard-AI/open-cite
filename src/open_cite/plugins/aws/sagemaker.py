@@ -286,7 +286,7 @@ class AWSSageMakerPlugin(AWSClientMixin, BaseDiscoveryPlugin):
                     model_info = {
                         "id": model["ModelArn"],
                         "name": model_name,
-                        "type": "sagemaker_model",
+                        "type": "model",
                         "discovery_source": "aws_sagemaker_api",
                         "creation_time": model.get("CreationTime").isoformat()
                             if model.get("CreationTime") else None,
