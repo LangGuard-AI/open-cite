@@ -748,9 +748,16 @@ def register_api_routes(app: Flask):
                 _reclassify_downstream(assets)
                 totals = {k: len(v) for k, v in assets.items()}
 
+                try:
+                    lineage = client.list_lineage()
+                except Exception as e:
+                    logger.warning(f"Could not list lineage: {e}")
+                    lineage = []
+
                 result = {
                     "assets": assets,
                     "totals": totals,
+                    "lineage": lineage,
                     "timestamp": datetime.utcnow().isoformat()
                 }
                 with state_lock:
@@ -2232,6 +2239,7 @@ def _empty_assets() -> Dict[str, List]:
         "mcp_tools": [],
         "mcp_resources": [],
         "data_assets": [],
+        "identities": [],
     }
 
 
@@ -2510,6 +2518,11 @@ def _collect_assets(asset_type: str) -> Dict[str, List]:
         assets["mcp_tools"] = client.list_mcp_tools()
     if asset_type in ['all', 'mcp_resources']:
         assets["mcp_resources"] = client.list_mcp_resources()
+    if asset_type in ['all', 'identities']:
+        try:
+            assets["identities"] = client.list_identities()
+        except Exception as e:
+            logger.warning(f"Could not list identities: {e}")
 
     if "databricks" in discovery_status["plugins_enabled"]:
         if asset_type in ['all', 'data_assets']:

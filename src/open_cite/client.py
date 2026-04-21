@@ -366,6 +366,15 @@ class OpenCiteClient:
         """
         return self.list_assets("downstream_system")
 
+    def list_identities(self) -> List[Dict[str, Any]]:
+        """
+        List all discovered identities (teams, users, service accounts) from all plugins.
+
+        Returns:
+            Aggregated list of identities
+        """
+        return self.list_assets("identity")
+
     def list_lineage(self, source_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         List all lineage relationships.

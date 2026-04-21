@@ -220,7 +220,7 @@ class AWSBedrockPlugin(AWSClientMixin, BaseDiscoveryPlugin):
                     "id": model["modelId"],
                     "name": model.get("modelName", model["modelId"]),
                     "provider": model.get("providerName", "unknown"),
-                    "type": "foundation_model",
+                    "type": "model",
                     "discovery_source": "aws_bedrock_api",
                     "modalities": {
                         "input": model.get("inputModalities", []),
@@ -265,7 +265,7 @@ class AWSBedrockPlugin(AWSClientMixin, BaseDiscoveryPlugin):
                     "name": model.get("modelName"),
                     "base_model": model.get("baseModelArn"),
                     "base_model_name": model.get("baseModelName"),
-                    "type": "custom_model",
+                    "type": "model",
                     "discovery_source": "aws_bedrock_api",
                     "customization_type": model.get("customizationType"),
                     "creation_time": model.get("creationTime").isoformat()

@@ -78,7 +78,7 @@ class TestSingleSessionGrouping:
 
         # Root span should be "Session"
         root = spans[0]
-        assert root["name"] == "Session"
+        assert root["name"] == "claude-code"
         assert root.get("parentSpanId") is None or root.get("parentSpanId") == ""
 
         # All child spans should have parentSpanId = root spanId

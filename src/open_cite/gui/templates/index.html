@@ -1249,6 +1249,7 @@
         let pluginTypes = {};
         let instances = [];
         let assets = {};
+        let lineage = [];
         let currentTab = 'all';
         let refreshInterval = null;
         let selectedPluginType = null;
@@ -1598,6 +1599,7 @@
             socket.on('assets_update', function (data) {
                 if (data && data.assets) {
                     assets = data.assets;
+                    lineage = data.lineage || [];
                     renderStats(data.totals);
                     renderAssets();
                     refreshLineageGraph();
@@ -1659,6 +1661,7 @@
 
                 if (data.assets) {
                     assets = data.assets;
+                    lineage = data.lineage || [];
                     renderStats(data.totals);
                     renderAssets();
                     refreshLineageGraph();
@@ -2394,7 +2397,9 @@
             const typeLabel = type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
             document.getElementById('drawerTitle').innerHTML =
                 `${emoji} ${_escHtml(asset.name || 'Unknown')} <span class="badge ${badgeCls}" style="font-size:0.7em;vertical-align:middle;">${typeLabel}</span>`;
-            document.getElementById('drawerBody').innerHTML = renderAssetDetail(asset, type);
+            const accessHtml = renderAccessSection(asset, type);
+            document.getElementById('drawerBody').innerHTML =
+                renderAssetDetail(asset, type) + accessHtml;
             document.getElementById('drawerOverlay').classList.add('open');
             document.getElementById('detailDrawer').classList.add('open');
         }
@@ -2494,6 +2499,119 @@
             return html || '<p style="color:var(--text-muted);">No details available</p>';
         }
 
+        // Look up an asset by its id across all asset types. Returns
+        // {asset, type} or null. Used by renderAccessSection to resolve
+        // lineage source/target ids into human-friendly labels.
+        function _lookupAssetById(id) {
+            if (!id) return null;
+            const groups = [
+                ['tool', assets.tools],
+                ['model', assets.models],
+                ['agent', assets.agents],
+                ['downstream', assets.downstream_systems],
+                ['data_asset', assets.data_assets],
+                ['mcp_server', assets.mcp_servers],
+                ['mcp_tool', assets.mcp_tools],
+                ['identity', assets.identities],
+            ];
+            for (const [type, list] of groups) {
+                if (!Array.isArray(list)) continue;
+                const found = list.find(a => a.id === id);
+                if (found) return { asset: found, type };
+            }
+            return null;
+        }
+
+        // Render an "Access" / "Permissions" section for the given asset
+        // by querying the in-memory lineage for `has_access_to` and
+        // `member_of` edges incident on this asset.
+        function renderAccessSection(asset, type) {
+            if (!asset || !Array.isArray(lineage) || lineage.length === 0) return '';
+            const id = asset.id;
+            if (!id) return '';
+
+            const incoming = lineage.filter(
+                l => l.target_id === id && l.relationship_type === 'has_access_to'
+            );
+            const outgoingAccess = lineage.filter(
+                l => l.source_id === id && l.relationship_type === 'has_access_to'
+            );
+            const memberOf = lineage.filter(
+                l => l.source_id === id && l.relationship_type === 'member_of'
+            );
+            const members = lineage.filter(
+                l => l.target_id === id && l.relationship_type === 'member_of'
+            );
+
+            const renderRefList = (edges, otherSide /* 'source' | 'target' */) => {
+                return edges.map(edge => {
+                    const otherId = otherSide === 'source' ? edge.source_id : edge.target_id;
+                    const otherType = otherSide === 'source' ? edge.source_type : edge.target_type;
+                    const ref = _lookupAssetById(otherId);
+                    const label = ref ? (ref.asset.name || ref.asset.display_name || otherId) : otherId;
+                    const typeLabel = (ref ? ref.type : otherType || '').replace(/_/g, ' ');
+                    const idTitle = _escHtml(otherId);
+                    return `<span class="detail-chip" title="${idTitle}">${_escHtml(String(label))}${typeLabel ? ` <span style="opacity:0.6;font-size:0.85em;">(${_escHtml(typeLabel)})</span>` : ''}</span>`;
+                }).join('');
+            };
+
+            const sections = [];
+
+            // For MCP server / MCP tool: who has access?
+            if ((type === 'mcp_server' || type === 'mcp_tool') && incoming.length) {
+                sections.push(
+                    `<div class="detail-section">
+                        <div class="detail-section-title">Permitted Identities (${incoming.length})</div>
+                        <div class="detail-row">
+                            <span class="detail-label">Has Access</span>
+                            <span class="detail-value"><div class="detail-chips">${renderRefList(incoming, 'source')}</div></span>
+                        </div>
+                    </div>`
+                );
+            }
+
+            // For identity: what does this identity have access to?
+            if (type === 'identity' && outgoingAccess.length) {
+                sections.push(
+                    `<div class="detail-section">
+                        <div class="detail-section-title">Authorized Resources (${outgoingAccess.length})</div>
+                        <div class="detail-row">
+                            <span class="detail-label">Has Access To</span>
+                            <span class="detail-value"><div class="detail-chips">${renderRefList(outgoingAccess, 'target')}</div></span>
+                        </div>
+                    </div>`
+                );
+            }
+
+            // For identity (user): which teams am I a member of?
+            if (type === 'identity' && memberOf.length) {
+                sections.push(
+                    `<div class="detail-section">
+                        <div class="detail-section-title">Memberships (${memberOf.length})</div>
+                        <div class="detail-row">
+                            <span class="detail-label">Member Of</span>
+                            <span class="detail-value"><div class="detail-chips">${renderRefList(memberOf, 'target')}</div></span>
+                        </div>
+                    </div>`
+                );
+            }
+
+            // For identity (team): who are my members?
+            if (type === 'identity' && members.length) {
+                sections.push(
+                    `<div class="detail-section">
+                        <div class="detail-section-title">Members (${members.length})</div>
+                        <div class="detail-row">
+                            <span class="detail-label">Member Identities</span>
+                            <span class="detail-value"><div class="detail-chips">${renderRefList(members, 'source')}</div></span>
+                        </div>
+                    </div>`
+                );
+            }
+
+            return sections.join('');
+        }
+
         // Asset lookup helper
         function _lookupAsset(type, name) {
             const map = {
@@ -2504,6 +2622,7 @@
                 data_asset: assets.data_assets,
                 mcp_server: assets.mcp_servers,
                 mcp_tool: assets.mcp_tools,
+                identity: assets.identities,
             };
             const list = map[type];
             if (!list) return null;
@@ -2556,6 +2675,8 @@
             let type = null;
             for (const badge of card.querySelectorAll('.badge')) {
                 const t = badge.textContent.trim().toLowerCase();
+                if (t === 'mcp tool') { type = 'mcp_tool'; break; }
+                if (t === 'mcp server') { type = 'mcp_server'; break; }
                 if (t === 'tool') {
                     // In MCP tab, "Tool" badge means mcp_tool
                     type = currentTab === 'mcp' ? 'mcp_tool' : 'tool'; break;
@@ -2564,7 +2685,7 @@
                 if (t === 'agent') { type = 'agent'; break; }
                 if (t === 'downstream') { type = 'downstream'; break; }
                 if (t === 'data asset') { type = 'data_asset'; break; }
-                if (t === 'server' || t === 'mcp server') { type = 'mcp_server'; break; }
+                if (t === 'server') { type = 'mcp_server'; break; }
             }
             // Fallback: infer from the active tab
             if (!type) {
