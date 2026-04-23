@@ -773,8 +773,15 @@ def register_api_routes(app: Flask):
             assets = _collect_assets(asset_type)
             _reclassify_downstream(assets)
 
+            try:
+                lineage = client.list_lineage()
+            except Exception as e:
+                logger.warning(f"Could not list lineage: {e}")
+                lineage = []
+
             result = {
                 "assets": assets,
+                "lineage": lineage,
                 "totals": {k: len(v) for k, v in assets.items()},
                 "timestamp": datetime.utcnow().isoformat()
             }
@@ -782,28 +789,7 @@ def register_api_routes(app: Flask):
                 asset_cache = result
                 asset_cache_time = datetime.utcnow()
 
-                try:
-                    lineage = client.list_lineage()
-                except Exception as e:
-                    logger.warning(f"Could not list lineage: {e}")
-                    lineage = []
-
-                result = {
-                    "assets": assets,
-                    "lineage": lineage,
-                    "totals": {k: len(v) for k, v in assets.items()},
-                    "timestamp": datetime.utcnow().isoformat()
-                }
-                with state_lock:
-                    asset_cache = result
-                    asset_cache_time = datetime.utcnow()
-                    discovering_assets = False
-
-                return jsonify(_apply_asset_filters(result))
-            except Exception:
-                with state_lock:
-                    discovering_assets = False
-                raise
+            return jsonify(_apply_asset_filters(result))
 
         except Exception as e:
             logger.exception("Request failed")
