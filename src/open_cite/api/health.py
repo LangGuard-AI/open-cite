@@ -67,11 +67,7 @@ def readyz():
             # Check OTLP receiver if OpenTelemetry plugin is registered
             if client and "opentelemetry" in client.plugins:
                 otel_plugin = client.plugins["opentelemetry"]
-                is_running = (
-                    otel_plugin.server_thread is not None
-                    and otel_plugin.server_thread.is_alive()
-                )
-                checks["otlp_receiver_running"] = is_running
+                checks["otlp_receiver_running"] = getattr(otel_plugin, '_receiver_healthy', False)
             else:
                 # If OpenTelemetry is not enabled, consider this check passed
                 checks["otlp_receiver_running"] = True

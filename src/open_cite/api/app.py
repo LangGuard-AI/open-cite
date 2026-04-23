@@ -17,6 +17,7 @@ import logging
 import socket
 import time
 import uuid
+from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Any, Optional
 from flask import Flask, request, jsonify
@@ -60,7 +61,6 @@ discovery_status: Dict[str, Any] = {
     "progress": []
 }
 state_lock = Lock()
-discovering_assets = False
 asset_cache = None
 asset_cache_time = None
 _last_save_time: float = 0.0
@@ -70,6 +70,15 @@ _last_data_modified: Optional[str] = None  # ISO-8601 timestamp of most recent d
 # Tracks fingerprints of persisted items so we only write new/changed data.
 # Keys are like "tool:Bash", "agent:claude", "lineage:src->tgt:rel", etc.
 _persisted_fingerprints: Dict[str, Any] = {}
+_fingerprints_lock = Lock()
+# Eviction threshold to prevent unbounded fingerprint growth
+MAX_FINGERPRINTS = 50000
+
+# Fixed namespace UUIDs for deterministic ID generation.
+# Must match the constants in plugins/opentelemetry.py.
+_AGENT_NS = uuid.UUID("a3c1f8d2-7b4e-4f6a-9c0d-5e8b1a2f3d4c")
+_TOOL_NS = uuid.UUID("b4d2e6f8-1a3c-4f7e-9c0d-5e8b1a2f3d4c")
+_MODEL_NS = uuid.UUID("c5e3f7a9-2b4d-4e8f-0a1c-3d5e7f9b1c2d")
 
 # Last seen x-forwarded-access-token from the Databricks App proxy.
 # Used to deduplicate so we only recreate clients when the token changes.
@@ -228,6 +237,8 @@ def init_opencite_state(app: Flask, config: Optional[OpenCiteConfig] = None):
             config=otel_config,
         )
         client.register_plugin(_default_otel_plugin)
+        if persistence:
+            _default_otel_plugin.on_data_changed = _maybe_save_state
         _default_otel_plugin.start()
         logger.info("Embedded OTLP receiver active on main web port")
 
@@ -267,6 +278,13 @@ def create_app(config: Optional[OpenCiteConfig] = None) -> Flask:
     oc_logger.propagate = False
 
     app = Flask(__name__)
+
+    @app.teardown_appcontext
+    def _shutdown_session(exception=None):
+        from open_cite.db import engine as _db_engine
+        if _db_engine._session_factory is not None:
+            _db_engine._session_factory.remove()
+
     app.config['SECRET_KEY'] = os.environ.get('OPENCITE_SECRET_KEY') or os.urandom(24)
     app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
     app.config['SESSION_COOKIE_HTTPONLY'] = True
@@ -326,7 +344,7 @@ def create_app(config: Optional[OpenCiteConfig] = None) -> Flask:
     return app
 
 
-def export_to_json(include_plugins: List[str]) -> Dict[str, Any]:
+def export_to_json(include_plugins: List[str], integration_id: Optional[str] = None) -> Dict[str, Any]:
     """Export all discovered data to JSON format according to Open-CITE schema.
 
     Reads from the DB (via the client) for persisted asset types, and falls
@@ -336,20 +354,33 @@ def export_to_json(include_plugins: List[str]) -> Dict[str, Any]:
     Args:
         include_plugins: List of plugin type names to include
                          (e.g. ``["opentelemetry", "databricks"]``).
+        integration_id: Optional integration ID to filter exported data.
 
     Returns:
         JSON-serializable dictionary with all discovered data.
     """
     from open_cite.schema import OpenCiteExporter
 
+    def _iid_filter(items):
+        """Filter items by integration_id if one was provided."""
+        if not integration_id:
+            return items
+        return [
+            i for i in items
+            if integration_id in (
+                (i.get("metadata", {}) or {}).get("integration_ids") or
+                i.get("integration_ids") or []
+            )
+        ]
+
     # Core asset types — read from DB via client
-    tools = client.list_tools()
-    models = client.list_models()
-    agents = client.list_agents()
-    downstream = client.list_downstream_systems()
-    mcp_servers = client.list_mcp_servers()
-    mcp_tools = client.list_mcp_tools()
-    mcp_resources = client.list_mcp_resources()
+    tools = _iid_filter(client.list_tools())
+    models = _iid_filter(client.list_models())
+    agents = _iid_filter(client.list_agents())
+    downstream = _iid_filter(client.list_downstream_systems())
+    mcp_servers = _iid_filter(client.list_mcp_servers())
+    mcp_tools = _iid_filter(client.list_mcp_tools())
+    mcp_resources = _iid_filter(client.list_mcp_resources())
 
     # Reclassify downstream → data_assets
     temp = {"downstream_systems": downstream, "data_assets": []}
@@ -650,7 +681,11 @@ def register_api_routes(app: Flask):
 
     @app.route('/api/v1/plugins/configure', methods=['POST'])
     def api_configure_plugins():
-        """Configure and start plugins."""
+        """Configure and start plugins.
+
+        Adds or reconfigures the requested plugins on the existing client
+        without destroying previously registered plugins or their data.
+        """
         global client, discovery_status
 
         data = request.json
@@ -658,25 +693,30 @@ def register_api_routes(app: Flask):
 
         try:
             with state_lock:
-                client = OpenCiteClient()
+                if not client:
+                    client = OpenCiteClient()
+                if persistence and not client.persistence:
+                    client.persistence = persistence
                 discovery_status["error"] = None
-                discovery_status["plugins_enabled"] = []
                 discovery_status["progress"] = []
                 discovery_status["current_status"] = "Initializing Open-CITE client..."
                 discovery_status["progress"].append({
                     "step": "init",
-                    "message": "Open-CITE client created",
+                    "message": "Open-CITE client ready",
                     "status": "success"
                 })
 
+            newly_enabled = []
             for plugin_config in selected_plugins:
                 plugin_name = plugin_config.get('name')
                 config = plugin_config.get('config', {})
 
                 try:
                     _configure_plugin(plugin_name, config)
+                    newly_enabled.append(plugin_name)
                     with state_lock:
-                        discovery_status["plugins_enabled"].append(plugin_name)
+                        if plugin_name not in discovery_status["plugins_enabled"]:
+                            discovery_status["plugins_enabled"].append(plugin_name)
                 except Exception as e:
                     logger.exception(f"Failed to configure {plugin_name}")
                     with state_lock:
@@ -717,7 +757,7 @@ def register_api_routes(app: Flask):
     @app.route('/api/v1/assets', methods=['GET'])
     def api_get_assets():
         """Get discovered assets."""
-        global discovering_assets, asset_cache, asset_cache_time
+        global asset_cache, asset_cache_time
 
         if not client:
             return jsonify({"error": "No client initialized. Please configure plugins first."}), 400
@@ -726,54 +766,44 @@ def register_api_routes(app: Flask):
             asset_type = request.args.get('type', 'all')
 
             with state_lock:
-                if discovering_assets:
-                    if asset_cache:
-                        return jsonify(asset_cache)
-                    else:
-                        return jsonify({
-                            "assets": _empty_assets(),
-                            "totals": {},
-                            "timestamp": datetime.utcnow().isoformat(),
-                            "discovering": True
-                        })
-
                 if asset_cache and asset_cache_time:
                     if datetime.utcnow() - asset_cache_time < timedelta(seconds=30):
-                        return jsonify(asset_cache)
+                        return jsonify(_apply_asset_filters(asset_cache))
 
-                discovering_assets = True
+            assets = _collect_assets(asset_type)
+            _reclassify_downstream(assets)
 
             try:
-                assets = _collect_assets(asset_type)
-                _reclassify_downstream(assets)
-                totals = {k: len(v) for k, v in assets.items()}
+                lineage = client.list_lineage()
+            except Exception as e:
+                logger.warning(f"Could not list lineage: {e}")
+                lineage = []
 
-                try:
-                    lineage = client.list_lineage()
-                except Exception as e:
-                    logger.warning(f"Could not list lineage: {e}")
-                    lineage = []
+            result = {
+                "assets": assets,
+                "lineage": lineage,
+                "totals": {k: len(v) for k, v in assets.items()},
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            with state_lock:
+                asset_cache = result
+                asset_cache_time = datetime.utcnow()
 
-                result = {
-                    "assets": assets,
-                    "totals": totals,
-                    "lineage": lineage,
-                    "timestamp": datetime.utcnow().isoformat()
-                }
-                with state_lock:
-                    asset_cache = result
-                    asset_cache_time = datetime.utcnow()
-                    discovering_assets = False
-
-                return jsonify(result)
-            except Exception:
-                with state_lock:
-                    discovering_assets = False
-                raise
+            return jsonify(_apply_asset_filters(result))
 
         except Exception as e:
             logger.exception("Request failed")
             return jsonify({"error": "Internal server error"}), 500
+
+    def _apply_asset_filters(result):
+        """Return a copy of a cached asset result with query-param filters applied."""
+        import copy
+        filtered = copy.deepcopy(result)
+        assets = filtered.get("assets", {})
+        for key in assets:
+            assets[key] = _filter_by_integration_id(assets[key])
+        filtered["totals"] = {k: len(v) for k, v in assets.items()}
+        return filtered
 
     def _filter_by_integration_id(items):
         """Filter a list of assets by ?integration_id= query param if provided."""
@@ -831,7 +861,7 @@ def register_api_routes(app: Flask):
             return jsonify({"error": "No client initialized"}), 400
         try:
             server_id = request.args.get('server_id')
-            tools = client.list_mcp_tools(server_id=server_id)
+            tools = _filter_by_integration_id(client.list_mcp_tools(server_id=server_id))
             return jsonify({"tools": tools, "count": len(tools)})
         except Exception as e:
             logger.exception("Request failed")
@@ -910,7 +940,9 @@ def register_api_routes(app: Flask):
         try:
             data = request.json or {}
             include_plugins = data.get('plugins', [])
-            return jsonify(export_to_json(include_plugins))
+            integration_id = data.get('integration_id') or request.args.get('integration_id')
+            result = export_to_json(include_plugins, integration_id=integration_id)
+            return jsonify(result)
         except Exception as e:
             logger.exception("Request failed")
             return jsonify({"error": "Internal server error"}), 500
@@ -1077,6 +1109,30 @@ def register_api_routes(app: Flask):
 
         try:
             data = persistence.export_all()
+            integration_id = request.args.get('integration_id')
+            if integration_id:
+                # Filter each asset list by integration_id
+                for key in list(data.keys()):
+                    if key in ('exported_at',):
+                        continue
+                    value = data[key]
+                    if isinstance(value, dict):
+                        # Dict-keyed assets (tools, models): filter values
+                        data[key] = {
+                            k: v for k, v in value.items()
+                            if integration_id in (
+                                (v.get("metadata", {}) or {}).get("integration_ids") or
+                                v.get("integration_ids") or []
+                            )
+                        }
+                    elif isinstance(value, list):
+                        data[key] = [
+                            item for item in value
+                            if integration_id in (
+                                (item.get("metadata", {}) or {}).get("integration_ids") or
+                                item.get("integration_ids") or []
+                            )
+                        ]
             return jsonify(data)
         except Exception as e:
             logger.exception("Request failed")
@@ -1565,13 +1621,19 @@ def register_api_routes(app: Flask):
     # Test Data Generation
     # =========================================================================
 
-    # Module-level status tracker for test data generation
-    _test_data_status: Dict[str, Any] = {
-        "status": "idle",
-        "started_at": None,
-        "completed_at": None,
-        "error": None,
-    }
+    # Per-integration status tracker for test data generation
+    _test_data_statuses: Dict[str, Dict[str, Any]] = {}
+
+    def _get_test_data_status(integration_id: str) -> Dict[str, Any]:
+        if integration_id not in _test_data_statuses:
+            _test_data_statuses[integration_id] = {
+                "status": "idle",
+                "started_at": None,
+                "completed_at": None,
+                "error": None,
+                "integration_id": integration_id,
+            }
+        return _test_data_statuses[integration_id]
 
     @app.route('/api/v1/generate-test-data', methods=['POST'])
     def api_generate_test_data():
@@ -1581,9 +1643,6 @@ def register_api_routes(app: Flask):
         send traces to.  Returns 202 immediately; poll
         ``/api/v1/generate-test-data/status`` for progress.
         """
-        if _test_data_status["status"] == "running":
-            return jsonify({"error": "Test data generation is already running"}), 409
-
         data = request.json or {}
         api_key = data.get("api_key", "").strip()
         if not api_key:
@@ -1597,6 +1656,18 @@ def register_api_routes(app: Flask):
         # Extract an auth token for the OpenCITE endpoint from headers
         langguard_api_key = headers.get("Authorization", "").replace("Bearer ", "") or "unused"
         tenant_id = data.get("tenant_id")  # optional
+
+        # Resolve integration_id: explicit header > body field > fallback
+        integration_id = (
+            request.headers.get("X-Integration-Id")
+            or data.get("integration_id")
+            or tenant_id
+            or "_default"
+        )
+
+        status = _get_test_data_status(integration_id)
+        if status["status"] == "running":
+            return jsonify({"error": "Test data generation is already running for this integration"}), 409
 
         from open_cite.generate_test_data import PipelineConfig, run_pipeline
         import asyncio
@@ -1614,31 +1685,36 @@ def register_api_routes(app: Flask):
             export_headers=export_headers,
         )
 
-        _test_data_status["status"] = "running"
-        _test_data_status["started_at"] = datetime.utcnow().isoformat() + "Z"
-        _test_data_status["completed_at"] = None
-        _test_data_status["error"] = None
+        status["status"] = "running"
+        status["started_at"] = datetime.utcnow().isoformat() + "Z"
+        status["completed_at"] = None
+        status["error"] = None
 
         def _run():
             try:
                 asyncio.run(run_pipeline(cfg))
-                _test_data_status["status"] = "completed"
-                _test_data_status["completed_at"] = datetime.utcnow().isoformat() + "Z"
+                status["status"] = "completed"
+                status["completed_at"] = datetime.utcnow().isoformat() + "Z"
             except Exception as exc:
                 logger.exception("Test data generation failed")
-                _test_data_status["status"] = "error"
-                _test_data_status["error"] = str(exc)
-                _test_data_status["completed_at"] = datetime.utcnow().isoformat() + "Z"
+                status["status"] = "error"
+                status["error"] = str(exc)
+                status["completed_at"] = datetime.utcnow().isoformat() + "Z"
 
-        thread = Thread(target=_run, daemon=True, name="test-data-gen")
+        thread = Thread(target=_run, daemon=True, name=f"test-data-gen-{integration_id}")
         thread.start()
 
-        return jsonify({"status": "accepted", "message": "Test data generation started"}), 202
+        return jsonify({"status": "accepted", "message": "Test data generation started", "integration_id": integration_id}), 202
 
     @app.route('/api/v1/generate-test-data/status', methods=['GET'])
     def api_generate_test_data_status():
-        """Return current status of test data generation."""
-        return jsonify(_test_data_status)
+        """Return current status of test data generation for an integration."""
+        integration_id = (
+            request.headers.get("X-Integration-Id")
+            or request.args.get("integration_id")
+            or "_default"
+        )
+        return jsonify(_get_test_data_status(integration_id))
 
     # =========================================================================
     # Lineage Graph (visual HTML – used by GUI iframe)
@@ -2285,60 +2361,132 @@ def _save_current_state():
         plugin_instance_id = getattr(plugin, 'instance_id', None)
 
         # --- Tools ---
-        discovered_tools = getattr(plugin, 'discovered_tools', {})
+        # Snapshot dicts to avoid RuntimeError from concurrent mutation
+        discovered_tools = dict(getattr(plugin, 'discovered_tools', {}))
+        tool_int_data = dict(getattr(plugin, 'tool_integration_data', {}))
         for tool_name, tool_data in discovered_tools.items():
-            if plugin_instance_id and plugin_instance_id != "opentelemetry":
-                metadata = tool_data.setdefault("metadata", {})
-                ids = metadata.setdefault("integration_ids", [])
-                if plugin_instance_id not in ids:
-                    ids.append(plugin_instance_id)
-            models = sorted(tool_data.get('models', set()))
-            trace_count = len(tool_data.get('traces', []))
-            metadata = tool_data.get('metadata', {})
-            source_name = metadata.get('tool_source_name', '')
-            source_id = metadata.get('tool_source_id', '')
-            fp = ("tool", tool_name, tuple(models), trace_count,
-                  source_name, source_id)
-            if _persisted_fingerprints.get(f"tool:{tool_name}") == fp:
-                continue
-            try:
-                persistence.save_tool(tool_name, models, trace_count, metadata)
-                _persisted_fingerprints[f"tool:{tool_name}"] = fp
-                count += 1
-                changed_types.add("tool")
-            except Exception as e:
-                logger.warning(f"Failed to save tool {tool_name}: {e}")
+            base_metadata = tool_data.get('metadata', {})
+            source_name = base_metadata.get('tool_source_name', '')
+            source_id = base_metadata.get('tool_source_id', '')
+
+            # Per-integration rows: save one DB row per integration context
+            int_entries = tool_int_data.get(tool_name, {})
+            if not int_entries:
+                # Non-OTLP plugin or no per-integration data: tag and save globally
+                if plugin_instance_id and plugin_instance_id != "opentelemetry":
+                    metadata = tool_data.setdefault("metadata", {})
+                    ids = metadata.setdefault("integration_ids", [])
+                    if plugin_instance_id not in ids:
+                        ids.append(plugin_instance_id)
+                    tool_id = str(uuid.uuid5(_TOOL_NS, f"{plugin_instance_id}:{tool_name}"))
+                else:
+                    tool_id = str(uuid.uuid5(_TOOL_NS, tool_name))
+                models = sorted(tool_data.get('models', set()))
+                trace_count = len(tool_data.get('traces', []))
+                metadata = tool_data.get('metadata', {})
+                fp = ("tool", tool_id, tuple(models), trace_count,
+                      source_name, source_id)
+                if _persisted_fingerprints.get(f"tool:{tool_id}") != fp:
+                    try:
+                        persistence.save_tool(tool_id, tool_name, models,
+                                              trace_count, metadata)
+                        _persisted_fingerprints[f"tool:{tool_id}"] = fp
+                        count += 1
+                        changed_types.add("tool")
+                    except Exception as e:
+                        logger.warning(f"Failed to save tool {tool_name}: {e}")
+            else:
+                for int_key, int_entry in int_entries.items():
+                    if int_key:
+                        tool_id = str(uuid.uuid5(_TOOL_NS, f"{int_key}:{tool_name}"))
+                        tool_meta = {k: v for k, v in base_metadata.items()
+                                     if k != "integration_ids"}
+                        tool_meta["integration_ids"] = [int_key]
+                    else:
+                        tool_id = str(uuid.uuid5(_TOOL_NS, tool_name))
+                        tool_meta = {k: v for k, v in base_metadata.items()
+                                     if k != "integration_ids"}
+                    tool_meta["tool_source_name"] = source_name
+                    tool_meta["tool_source_id"] = source_id
+                    int_models = sorted(int_entry.get("models", set()))
+                    int_trace_count = int_entry.get("trace_count", 0)
+                    fp = ("tool", tool_id, tuple(int_models), int_trace_count,
+                          source_name, source_id)
+                    if _persisted_fingerprints.get(f"tool:{tool_id}") != fp:
+                        try:
+                            persistence.save_tool(tool_id, tool_name,
+                                                  int_models, int_trace_count,
+                                                  tool_meta)
+                            _persisted_fingerprints[f"tool:{tool_id}"] = fp
+                            count += 1
+                            changed_types.add("tool")
+                        except Exception as e:
+                            logger.warning(f"Failed to save tool {tool_name}: {e}")
 
         # --- Agents ---
-        discovered_agents = getattr(plugin, 'discovered_agents', {})
+        discovered_agents = dict(getattr(plugin, 'discovered_agents', {}))
+        agent_int_data = dict(getattr(plugin, 'agent_integration_data', {}))
         for agent_name, agent_data in discovered_agents.items():
-            if plugin_instance_id and plugin_instance_id != "opentelemetry":
-                metadata = agent_data.setdefault("metadata", {})
-                ids = metadata.setdefault("integration_ids", [])
-                if plugin_instance_id not in ids:
-                    ids.append(plugin_instance_id)
-            tools_used = sorted(agent_data.get("tools_used", set()))
-            models_used = sorted(agent_data.get("models_used", set()))
-            fp = ("agent", agent_name, tuple(tools_used), tuple(models_used))
-            if _persisted_fingerprints.get(f"agent:{agent_name}") == fp:
-                continue
-            try:
-                persistence.save_agent(
-                    agent_id=agent_name,
-                    name=agent_name,
-                    tools_used=tools_used,
-                    models_used=models_used,
-                    first_seen=agent_data.get("first_seen"),
-                    metadata=agent_data.get("metadata", {}),
-                )
-                _persisted_fingerprints[f"agent:{agent_name}"] = fp
-                count += 1
-                changed_types.add("agent")
-            except Exception as e:
-                logger.warning(f"Failed to save agent {agent_name}: {e}")
+            base_metadata = agent_data.get("metadata", {})
+
+            int_entries = agent_int_data.get(agent_name, {})
+            if not int_entries:
+                # Non-OTLP plugin or no per-integration data
+                if plugin_instance_id and plugin_instance_id != "opentelemetry":
+                    metadata = agent_data.setdefault("metadata", {})
+                    ids = metadata.setdefault("integration_ids", [])
+                    if plugin_instance_id not in ids:
+                        ids.append(plugin_instance_id)
+                    agent_id = str(uuid.uuid5(_AGENT_NS, f"{plugin_instance_id}:{agent_name}"))
+                else:
+                    agent_id = str(uuid.uuid5(_AGENT_NS, agent_name))
+                tools_used = sorted(agent_data.get("tools_used", set()))
+                models_used = sorted(agent_data.get("models_used", set()))
+                agent_meta = agent_data.get("metadata", {})
+                fp = ("agent", agent_id, agent_name, tuple(tools_used), tuple(models_used))
+                if _persisted_fingerprints.get(f"agent:{agent_id}") != fp:
+                    try:
+                        persistence.save_agent(
+                            agent_id=agent_id, name=agent_name,
+                            tools_used=tools_used, models_used=models_used,
+                            first_seen=agent_data.get("first_seen"),
+                            metadata=agent_meta,
+                        )
+                        _persisted_fingerprints[f"agent:{agent_id}"] = fp
+                        count += 1
+                        changed_types.add("agent")
+                    except Exception as e:
+                        logger.warning(f"Failed to save agent {agent_name}: {e}")
+            else:
+                for int_key, int_entry in int_entries.items():
+                    if int_key:
+                        agent_id = str(uuid.uuid5(_AGENT_NS, f"{int_key}:{agent_name}"))
+                        agent_meta = {k: v for k, v in base_metadata.items()
+                                      if k != "integration_ids"}
+                        agent_meta["integration_ids"] = [int_key]
+                    else:
+                        agent_id = str(uuid.uuid5(_AGENT_NS, agent_name))
+                        agent_meta = {k: v for k, v in base_metadata.items()
+                                      if k != "integration_ids"}
+                    int_tools = sorted(int_entry.get("tools_used", set()))
+                    int_models = sorted(int_entry.get("models_used", set()))
+                    fp = ("agent", agent_id, agent_name, tuple(int_tools), tuple(int_models))
+                    if _persisted_fingerprints.get(f"agent:{agent_id}") != fp:
+                        try:
+                            persistence.save_agent(
+                                agent_id=agent_id, name=agent_name,
+                                tools_used=int_tools, models_used=int_models,
+                                first_seen=agent_data.get("first_seen"),
+                                metadata=agent_meta,
+                            )
+                            _persisted_fingerprints[f"agent:{agent_id}"] = fp
+                            count += 1
+                            changed_types.add("agent")
+                        except Exception as e:
+                            logger.warning(f"Failed to save agent {agent_name}: {e}")
 
         # --- Downstream systems ---
-        discovered_downstream = getattr(plugin, 'discovered_downstream', {})
+        discovered_downstream = dict(getattr(plugin, 'discovered_downstream', {}))
         for sys_id, sys_data in discovered_downstream.items():
             if plugin_instance_id and plugin_instance_id != "opentelemetry":
                 metadata = sys_data.setdefault("metadata", {})
@@ -2366,7 +2514,7 @@ def _save_current_state():
                 logger.warning(f"Failed to save downstream {sys_id}: {e}")
 
         # --- Lineage ---
-        lineage = getattr(plugin, 'lineage', {})
+        lineage = dict(getattr(plugin, 'lineage', {}))
         for rel_key, rel in lineage.items():
             weight = rel.get("weight", 1)
             fp = ("lin", rel["source_id"], rel["target_id"],
@@ -2400,30 +2548,74 @@ def _save_current_state():
         for ad in discovered_agents.values():
             model_names.update(ad.get('models_used', set()))
 
+        model_int_data = dict(getattr(plugin, 'model_integration_data', {}))
+
+        # Build reverse index: model -> {int_key -> set of tools} from
+        # tool_integration_data so each per-integration model row gets
+        # only the tools seen in that integration.
+        _model_tools_by_int: Dict[str, Dict[str, set]] = defaultdict(lambda: defaultdict(set))
+        for _tn, _ti in tool_int_data.items():
+            for _ik, _ie in dict(_ti).items():
+                for _mn in set(_ie.get("models", set())):
+                    _model_tools_by_int[_mn][_ik].add(_tn)
+
         for model_name in model_names:
             provider = model_providers.get(model_name) or (
                 model_name.split("/")[0] if "/" in model_name else "unknown"
             )
-            tools_using = sorted(
-                t for t, td in discovered_tools.items()
-                if model_name in td.get('models', set())
-            )
-            # Prefer model_call_count (counts all spans) over tool-trace count
-            model_call_count = getattr(plugin, 'model_call_count', {})
-            usage_count = model_call_count.get(model_name, 0) or sum(
-                len([tr for tr in td.get('traces', []) if tr.get('model') == model_name])
-                for td in discovered_tools.values()
-            )
-            fp = ("model", model_name, provider, tuple(tools_using), usage_count)
-            if _persisted_fingerprints.get(f"model:{model_name}") == fp:
-                continue
-            try:
-                persistence.save_model(model_name, provider, tools_using, usage_count)
-                _persisted_fingerprints[f"model:{model_name}"] = fp
-                count += 1
-                changed_types.add("model")
-            except Exception as e:
-                logger.warning(f"Failed to save model {model_name}: {e}")
+            int_entries = model_int_data.get(model_name, {})
+
+            if not int_entries:
+                # Non-OTLP plugin or no per-integration data
+                tools_using = sorted(
+                    t for t, td in discovered_tools.items()
+                    if model_name in td.get('models', set())
+                )
+                model_call_count = getattr(plugin, 'model_call_count', {})
+                usage_count = model_call_count.get(model_name, 0) or sum(
+                    len([tr for tr in td.get('traces', []) if tr.get('model') == model_name])
+                    for td in discovered_tools.values()
+                )
+                model_meta = dict(getattr(plugin, 'model_metadata', {}).get(model_name, {}))
+                if plugin_instance_id and plugin_instance_id != "opentelemetry":
+                    ids = model_meta.setdefault("integration_ids", [])
+                    if plugin_instance_id not in ids:
+                        ids.append(plugin_instance_id)
+                    model_id = str(uuid.uuid5(_MODEL_NS, f"{plugin_instance_id}:{model_name}"))
+                else:
+                    model_id = str(uuid.uuid5(_MODEL_NS, model_name))
+                fp = ("model", model_id, provider, tuple(tools_using), usage_count)
+                if _persisted_fingerprints.get(f"model:{model_id}") != fp:
+                    try:
+                        persistence.save_model(model_id, model_name, provider,
+                                               tools_using, usage_count,
+                                               metadata=model_meta)
+                        _persisted_fingerprints[f"model:{model_id}"] = fp
+                        count += 1
+                        changed_types.add("model")
+                    except Exception as e:
+                        logger.warning(f"Failed to save model {model_name}: {e}")
+            else:
+                for int_key, int_entry in int_entries.items():
+                    if int_key:
+                        model_id = str(uuid.uuid5(_MODEL_NS, f"{int_key}:{model_name}"))
+                        model_meta = {"integration_ids": [int_key]}
+                    else:
+                        model_id = str(uuid.uuid5(_MODEL_NS, model_name))
+                        model_meta = {}
+                    int_usage = int_entry.get("call_count", 0)
+                    int_tools = sorted(_model_tools_by_int.get(model_name, {}).get(int_key, set()))
+                    fp = ("model", model_id, provider, tuple(int_tools), int_usage)
+                    if _persisted_fingerprints.get(f"model:{model_id}") != fp:
+                        try:
+                            persistence.save_model(model_id, model_name, provider,
+                                                   int_tools, int_usage,
+                                                   metadata=model_meta)
+                            _persisted_fingerprints[f"model:{model_id}"] = fp
+                            count += 1
+                            changed_types.add("model")
+                        except Exception as e:
+                            logger.warning(f"Failed to save model {model_name}: {e}")
 
         # --- MCP entities ---
         mcp_servers = getattr(plugin, 'mcp_servers', {})
@@ -2495,6 +2687,16 @@ def _save_current_state():
     # Refresh the in-memory cache for any asset types that changed
     if changed_types or lineage_changed:
         client.refresh_cache(changed_types, include_lineage=lineage_changed)
+
+    # Evict oldest fingerprints to prevent unbounded memory growth (keep 80%)
+    with _fingerprints_lock:
+        if len(_persisted_fingerprints) > MAX_FINGERPRINTS:
+            keep = int(MAX_FINGERPRINTS * 0.8)
+            evict_count = len(_persisted_fingerprints) - keep
+            keys = list(_persisted_fingerprints)[:evict_count]
+            for k in keys:
+                del _persisted_fingerprints[k]
+            logger.debug("Evicted %d persisted fingerprints (kept %d)", evict_count, keep)
 
 
 def _collect_assets(asset_type: str) -> Dict[str, List]:

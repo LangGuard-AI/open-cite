@@ -76,7 +76,7 @@ class TestSingleSessionGrouping:
         # 1 root + 6 child spans
         assert len(spans) == 7
 
-        # Root span should be "Session"
+        # Root span should be named after service.name from the fixture
         root = spans[0]
         assert root["name"] == "claude-code"
         assert root.get("parentSpanId") is None or root.get("parentSpanId") == ""

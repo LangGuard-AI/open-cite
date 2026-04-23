@@ -254,6 +254,8 @@ def get_engine():
             poolclass=QueuePool,
             pool_pre_ping=True,
             pool_size=5,
+            pool_recycle=300,
+            pool_timeout=10,
         )
         logger.info("[db] SQLAlchemy engine created (PostgreSQL): %s", url.split("@")[-1] if "@" in url else url)
 
@@ -288,25 +290,35 @@ def _drop_table(engine, table_name: str):
 def _run_migrations(engine):
     """One-time schema migrations for tables whose columns have changed."""
     from sqlalchemy import inspect as sa_inspect
-    try:
-        insp = sa_inspect(engine)
 
-        # Lineage: synthetic `id` PK → composite PK (source_id, target_id, relationship_type)
-        if insp.has_table("lineage"):
-            columns = {c["name"] for c in insp.get_columns("lineage")}
-            if "id" in columns:
-                logger.info("[db] Migrating lineage table: dropping old schema with 'id' column")
-                _drop_table(engine, "lineage")
-
+    migrations = [
+        # (table, check, description)
+        # Lineage: synthetic `id` PK → composite PK
+        ("lineage", lambda cols: "id" in cols,
+         "dropping old schema with 'id' column"),
         # Agents: removed `confidence` column
-        if insp.has_table("agents"):
-            columns = {c["name"] for c in insp.get_columns("agents")}
-            if "confidence" in columns:
-                logger.info("[db] Migrating agents table: dropping old schema with 'confidence' column")
-                _drop_table(engine, "agents")
+        ("agents", lambda cols: "confidence" in cols,
+         "dropping old schema with 'confidence' column"),
+        # Tools: name-as-PK → id-as-PK (per-integration segregation)
+        ("tools", lambda cols: "id" not in cols,
+         "recreating with 'id' primary key"),
+        # Models: name-as-PK → id-as-PK (per-integration segregation)
+        ("models", lambda cols: "id" not in cols,
+         "recreating with 'id' primary key"),
+    ]
 
-    except Exception as exc:
-        logger.warning("[db] Migration check failed (non-fatal): %s", exc)
+    for table_name, needs_migration, description in migrations:
+        try:
+            insp = sa_inspect(engine)
+            if not insp.has_table(table_name):
+                continue
+            columns = {c["name"] for c in insp.get_columns(table_name)}
+            if needs_migration(columns):
+                logger.info("[db] Migrating %s table: %s", table_name, description)
+                _drop_table(engine, table_name)
+        except Exception as exc:
+            logger.warning("[db] Migration check failed for %s (non-fatal): %s",
+                           table_name, exc)
 
 
 def init_db():
