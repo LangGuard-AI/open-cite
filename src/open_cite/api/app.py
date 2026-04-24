@@ -1343,34 +1343,78 @@ def register_api_routes(app: Flask):
             "config": {...},  // Optional, merged with existing
             "auto_start": true  // Optional
         }
+
+        When ``config`` is provided and the plugin is live, the instance is
+        stopped, unregistered, and recreated from the merged config so that
+        credentials/settings baked in at construction time are refreshed.
         """
         try:
             data = request.json
+            new_config = data.get('config')
 
             # Get existing instance
             if client and instance_id in client.plugins:
                 plugin = client.plugins[instance_id]
 
-                # Update display_name if provided
-                if 'display_name' in data:
-                    plugin.display_name = data['display_name']
-
-                # Update plugin store
+                # Resolve persisted state for merging
+                saved = None
                 if plugin_store:
                     saved = next(
                         (s for s in plugin_store.load_all() if s['instance_id'] == instance_id),
                         None
                     )
-                    if saved:
+
+                plugin_type = saved['plugin_type'] if saved else plugin.plugin_type
+                merged_display = data.get('display_name', saved['display_name'] if saved else plugin.display_name)
+                merged_config = {**(saved['config'] if saved else {}), **(new_config or {})}
+                merged_auto_start = data.get('auto_start', saved['auto_start'] if saved else False)
+
+                if new_config:
+                    # Config changed — plugins bake credentials at construction
+                    # time, so we must recreate the live instance.
+                    was_running = plugin.status == 'running'
+                    _stop_plugin_instance(plugin)
+                    client.unregister_plugin(instance_id)
+
+                    try:
+                        new_plugin = _create_plugin_instance(
+                            plugin_type, instance_id, merged_display, merged_config,
+                        )
+                        client.register_plugin(new_plugin)
+                    except Exception:
+                        # Roll back: re-register the old plugin so the instance isn't lost
+                        client.register_plugin(plugin)
+                        if was_running:
+                            _start_plugin_instance(plugin)
+                        raise
+
+                    if was_running:
+                        _start_plugin_instance(new_plugin)
+
+                    # Persist after successful recreation
+                    if plugin_store and saved:
                         plugin_store.save(
                             instance_id=instance_id,
-                            plugin_type=saved['plugin_type'],
-                            display_name=data.get('display_name', saved['display_name']),
-                            config={**saved['config'], **data.get('config', {})},
-                            auto_start=data.get('auto_start', saved['auto_start']),
+                            plugin_type=plugin_type,
+                            display_name=merged_display,
+                            config=merged_config,
+                            auto_start=merged_auto_start,
                         )
 
-                return jsonify({"success": True, "instance": plugin.to_dict()})
+                    return jsonify({"success": True, "instance": new_plugin.to_dict()})
+                else:
+                    # No config change — just update display_name/auto_start
+                    if 'display_name' in data:
+                        plugin.display_name = data['display_name']
+                    if plugin_store and saved:
+                        plugin_store.save(
+                            instance_id=instance_id,
+                            plugin_type=plugin_type,
+                            display_name=merged_display,
+                            config=merged_config,
+                            auto_start=merged_auto_start,
+                        )
+                    return jsonify({"success": True, "instance": plugin.to_dict()})
 
             elif plugin_store:
                 saved = next(
@@ -1382,7 +1426,7 @@ def register_api_routes(app: Flask):
                         instance_id=instance_id,
                         plugin_type=saved['plugin_type'],
                         display_name=data.get('display_name', saved['display_name']),
-                        config={**saved['config'], **data.get('config', {})},
+                        config={**saved['config'], **(new_config or {})},
                         auto_start=data.get('auto_start', saved['auto_start']),
                     )
                     updated = next(
@@ -1559,7 +1603,8 @@ def register_api_routes(app: Flask):
                 return jsonify({"error": f"Instance '{instance_id}' not found"}), 404
 
             result = plugin.verify_connection()
-            return jsonify({"success": True, "verification": result})
+            succeeded = result.get("success", True) if isinstance(result, dict) else True
+            return jsonify({"success": succeeded, "verification": result})
 
         except Exception as e:
             logger.exception("Request failed")
