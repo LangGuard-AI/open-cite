@@ -213,6 +213,68 @@ resources:
 
 Adjust based on trace volume and number of plugins.
 
+## Databricks Apps
+
+Open-CITE can run as a managed [Databricks App](https://docs.databricks.com/en/dev-tools/databricks-apps/index.html). The repo includes `databricks_app.py` (entry point) and `app.yaml` (manifest).
+
+### Deploy
+
+```bash
+# Sync local code to your Databricks workspace
+databricks sync . /Workspace/Users/<your-email>/open-cite
+
+# Deploy the app from the workspace path
+databricks apps deploy open-cite \
+  --source-code-path /Workspace/Users/<your-email>/open-cite
+```
+
+### app.yaml
+
+The manifest declares a SQL warehouse resource and injects its ID automatically:
+
+```yaml
+command:
+  - "bash"
+  - "-c"
+  - "pip install --no-cache-dir -e . && python databricks_app.py"
+resources:
+  - name: "sql-warehouse"
+    sql_warehouse: {}
+env:
+  - name: "DATABRICKS_WAREHOUSE_ID"
+    valueFrom: "sql-warehouse"
+  - name: "OPENCITE_ENABLE_DATABRICKS"
+    value: "true"
+  - name: "OPENCITE_PERSISTENCE_ENABLED"
+    value: "true"
+  - name: "OPENCITE_DATABRICKS_CATALOG"
+    value: "ai-data"
+  - name: "OPENCITE_DATABRICKS_SCHEMA"
+    value: "default"
+  - name: "OPENCITE_AI_GATEWAY_USAGE_TABLE"
+    value: "workspace.default.gateway_usage"
+```
+
+Edit `OPENCITE_DATABRICKS_CATALOG`, `OPENCITE_DATABRICKS_SCHEMA`, and `OPENCITE_AI_GATEWAY_USAGE_TABLE` to match your workspace before deploying.
+
+### Key differences from Docker/K8s
+
+| Aspect | Docker / Kubernetes | Databricks Apps |
+|--------|-------------------|-----------------|
+| Entry point | Gunicorn (`open_cite.api.app`) | `databricks_app.py` (Flask dev server) |
+| Port | 8080 (API) + 4318 (OTLP) | `DATABRICKS_APP_PORT` (set by runtime) |
+| Auth | `DATABRICKS_TOKEN` env var | Automatic workspace credentials |
+| SQL Warehouse | `DATABRICKS_WAREHOUSE_ID` env var | Provisioned via `resources` in `app.yaml` |
+
+### Local testing
+
+```bash
+export DATABRICKS_HOST=https://your-workspace.cloud.databricks.com
+export DATABRICKS_TOKEN=dapi...
+export DATABRICKS_WAREHOUSE_ID=your_warehouse_id
+python databricks_app.py
+```
+
 ## Environment Variables
 
 | Variable | Default | Description |

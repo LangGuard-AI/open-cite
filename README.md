@@ -39,12 +39,83 @@ opencite api
 # Access at http://0.0.0.0:8080
 ```
 
+## Deploying to Databricks
+
+Open-CITE can run as a [Databricks App](https://docs.databricks.com/en/dev-tools/databricks-apps/index.html), giving you a managed deployment inside your Databricks workspace with automatic authentication to workspace resources.
+
+### Prerequisites
+
+- [Databricks CLI](https://docs.databricks.com/en/dev-tools/cli/index.html) installed and configured (`databricks auth login`)
+- A Databricks workspace with Apps enabled
+
+### Deploy
+
+```bash
+# Sync local code to your Databricks workspace
+databricks sync . /Workspace/Users/<your-email>/open-cite
+
+# Deploy the app
+databricks apps deploy open-cite \
+  --source-code-path /Workspace/Users/<your-email>/open-cite
+```
+
+### Configuration
+
+The `app.yaml` manifest controls how the app runs. The default configuration:
+
+```yaml
+command:
+  - "bash"
+  - "-c"
+  - "pip install --no-cache-dir -e . && python databricks_app.py"
+resources:
+  - name: "sql-warehouse"
+    sql_warehouse: {}
+env:
+  - name: "OPENCITE_ENABLE_OTEL"
+    value: "true"
+  - name: "OPENCITE_ENABLE_DATABRICKS"
+    value: "true"
+  - name: "OPENCITE_PERSISTENCE_ENABLED"
+    value: "true"
+  - name: "DATABRICKS_WAREHOUSE_ID"
+    valueFrom: "sql-warehouse"
+  - name: "OPENCITE_DATABRICKS_CATALOG"
+    value: "ai-data"
+  - name: "OPENCITE_DATABRICKS_SCHEMA"
+    value: "default"
+  - name: "OPENCITE_AI_GATEWAY_USAGE_TABLE"
+    value: "workspace.default.gateway_usage"
+```
+
+Edit `app.yaml` to match your environment before deploying — at minimum set `OPENCITE_DATABRICKS_CATALOG` and `OPENCITE_AI_GATEWAY_USAGE_TABLE` to values that exist in your workspace.
+
+### How it works
+
+- **`databricks_app.py`** is the entry point — it starts the Open-CITE GUI on the port provided by the Databricks Apps runtime (`DATABRICKS_APP_PORT`)
+- The `sql_warehouse` resource is automatically provisioned and its ID injected via `DATABRICKS_WAREHOUSE_ID`
+- Authentication to Databricks APIs is handled automatically — no PAT token needed when running inside the workspace
+- The Databricks discovery plugin will discover models, endpoints, serving endpoints, agents, AI Gateway routes, Unity Catalog assets, and Genie spaces
+
+### Local testing
+
+Copy `app.yaml` to `app.yaml.local`, adjust values for your workspace, then run:
+
+```bash
+export DATABRICKS_HOST=https://your-workspace.cloud.databricks.com
+export DATABRICKS_TOKEN=dapi...
+export DATABRICKS_WAREHOUSE_ID=your_warehouse_id
+python databricks_app.py
+```
+
+For full deployment options (Docker, Kubernetes), see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
 ## Documentation
 
 Full documentation is available in the [docs/](docs/) folder:
 
 - **[docs/README.md](docs/README.md)** -- Full usage guide, Python API examples, and project structure
-- **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** -- Docker and Kubernetes deployment
+- **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** -- Docker, Kubernetes, and Databricks deployment
 - **[docs/REST_API.md](docs/REST_API.md)** -- REST API reference
 - **[docs/SENDING_TRACES.md](docs/SENDING_TRACES.md)** -- Configure Cloudflare AI Gateway, OpenRouter, and other sources to send traces
 - **[docs/PLUGINS.md](docs/PLUGINS.md)** -- Plugin authoring guide
