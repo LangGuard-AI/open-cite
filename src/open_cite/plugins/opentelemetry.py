@@ -2031,6 +2031,16 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         if not span_agents or not span_handoffs:
             return
 
+        # Pre-index agents by (trace_id, parent_span_id) for O(1) sibling
+        # lookups in the hierarchy-inference path below.
+        agents_by_trace_parent: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
+        for sid, aname in span_agents.items():
+            trace_id = span_traces.get(sid, "")
+            parent_id = span_parents.get(sid, "")
+            if trace_id and parent_id:
+                agents_by_trace_parent.setdefault(
+                    (trace_id, parent_id), []).append((sid, aname))
+
         for handoff_span_id, handoff_info in span_handoffs.items():
             from_agent = handoff_info["from"]
             to_agent = handoff_info["to"]
@@ -2046,7 +2056,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 )
                 continue
 
-            # ---- Slow path: infer target from span hierarchy ----
+            # ---- Hierarchy inference: find sibling agent spans ----
             source_agent_span = span_parents.get(handoff_span_id)
             if not source_agent_span:
                 continue
@@ -2058,13 +2068,10 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             if not handoff_trace:
                 continue
 
-            for sid, aname in span_agents.items():
+            siblings = agents_by_trace_parent.get(
+                (handoff_trace, workflow_parent), ())
+            for sid, aname in siblings:
                 if aname == from_agent:
-                    continue
-                if span_traces.get(sid) != handoff_trace:
-                    continue
-                # Target must be a true sibling (same workflow-root parent)
-                if span_parents.get(sid) != workflow_parent:
                     continue
 
                 self._add_lineage(
