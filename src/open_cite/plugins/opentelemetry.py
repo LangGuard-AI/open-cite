@@ -13,7 +13,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 from collections import defaultdict
 from http.server import BaseHTTPRequestHandler
 from http.server import HTTPServer
@@ -770,7 +770,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         attributes: List[Dict[str, Any]],
         resource: Dict[str, Any],
         integration_id: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any], Dict[str, Any]]:
         """Collect ``user.*`` attributes per ``session.id`` and inject cached values.
 
         When any span in a session carries user attributes (e.g.
@@ -778,6 +778,9 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         ``session.id``.  Subsequent spans in the same session that lack
         those attributes get them injected so they propagate to
         tool/agent metadata and stored traces.
+
+        Returns a tuple of (attributes, attr_dict, res_dict) so callers
+        can reuse the converted dicts without re-parsing.
         """
         attr_dict = self._attrs_to_dict(attributes)
         res_dict = self._attrs_to_dict(resource.get("attributes", []))
@@ -785,7 +788,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
         session_id = merged.get("session.id")
         if not session_id:
-            return attributes
+            return attributes, attr_dict, res_dict
 
         # Collect user.* attributes from this span into the session cache
         user_attrs = {k: v for k, v in merged.items() if k.startswith("user.")}
@@ -797,12 +800,12 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         # Inject any cached user attributes not already on this span
         cached = self._session_user_attrs.get(session_id)
         if not cached:
-            return attributes
+            return attributes, attr_dict, res_dict
 
         existing_keys = {a.get("key") for a in attributes}
         missing = {k: v for k, v in cached.items() if k not in existing_keys}
         if not missing:
-            return attributes
+            return attributes, attr_dict, res_dict
 
         injected = list(attributes)  # shallow copy
         for key, value in missing.items():
@@ -814,8 +817,10 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 injected.append({"key": key, "value": {"doubleValue": value}})
             else:
                 injected.append({"key": key, "value": {"stringValue": str(value)}})
+            # Keep attr_dict in sync with injected attributes
+            attr_dict[key] = value
 
-        return injected
+        return injected, attr_dict, res_dict
 
     def _ingest_traces(self, otlp_data: Dict[str, Any], integration_id: Optional[str] = None):
         """
@@ -867,8 +872,10 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                                     pass
 
                             # Enrich with session-level user attributes
-                            attributes = self._enrich_session_user_attrs(
+                            # and get pre-converted dicts to avoid repeated conversion
+                            attributes, attr_dict, res_dict = self._enrich_session_user_attrs(
                                 attributes, resource, integration_id=integration_id)
+                            merged = {**res_dict, **attr_dict}
 
                             if parent_span_id:
                                 span_parents[span_id] = parent_span_id
@@ -892,7 +899,8 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
                             # Detect OpenRouter usage (tools/models)
                             tool_name = self._detect_tool_usage(
-                                trace_id, span_id, span_name, attributes, resource,
+                                trace_id, span_id, span_name,
+                                merged_attrs=merged, attr_dict=attr_dict,
                                 span_time=span_times.get(span_id),
                                 integration_id=integration_id,
                             )
@@ -900,9 +908,6 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                                 span_tools[span_id] = tool_name
 
                             # Track model per span for agent-model correlation
-                            attr_dict = self._attrs_to_dict(attributes)
-                            res_dict = self._attrs_to_dict(resource.get("attributes", []))
-                            merged = {**res_dict, **attr_dict}
                             span_model = (
                                 merged.get("gen_ai.request.model")
                                 or merged.get("gen_ai.response.model")
@@ -924,7 +929,8 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
                             # Detect agents
                             agent_name = self._detect_agent(
-                                trace_id, span_id, span_name, attributes, resource,
+                                trace_id, span_id, span_name,
+                                merged_attrs=merged,
                                 span_time=span_times.get(span_id),
                                 integration_id=integration_id,
                             )
@@ -947,23 +953,26 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
                             # Detect downstream systems
                             self._detect_downstream_system(
-                                trace_id, span_id, span_name, attributes, resource,
+                                trace_id, span_id, span_name,
+                                merged_attrs=merged, res_dict=res_dict,
                                 integration_id=integration_id,
                             )
 
                             # Extract token usage
-                            self._extract_token_usage(attributes)
+                            self._extract_token_usage(attr_dict)
 
                             # Detect MCP tool/resource usage
                             self._detect_mcp_usage(
-                                trace_id, span_id, span_name, attributes, resource,
+                                trace_id, span_id, span_name,
+                                attr_dict=attr_dict,
                                 integration_id=integration_id,
                             )
 
                             # Detect tools from span events (e.g. Claude Code
                             # tool_result / tool_use events)
                             event_tools = self._detect_tools_from_events(
-                                trace_id, span_id, span_name, span, resource,
+                                trace_id, span_id, span_name, span,
+                                merged_attrs=merged, attr_dict=attr_dict,
                                 span_time=span_times.get(span_id),
                                 integration_id=integration_id,
                             )
@@ -977,14 +986,9 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                             if event_tools:
                                 _agent_for_span = span_agents.get(span_id)
                                 if not _agent_for_span:
-                                    _ev_res = self._attrs_to_dict(
-                                        resource.get("attributes", []))
-                                    _ev_spa = self._attrs_to_dict(
-                                        span.get("attributes", []))
-                                    _ev_m = {**_ev_res, **_ev_spa}
                                     _auto_agent = (
-                                        _ev_m.get("service.name")
-                                        or _ev_m.get("app.name")
+                                        merged.get("service.name")
+                                        or merged.get("app.name")
                                     )
                                     if _auto_agent:
                                         _ag = self.discovered_agents[_auto_agent]
@@ -995,16 +999,16 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                                             _ag["last_seen"] = _now
                                         _ag["metadata"].update({
                                             "last_seen": _ag["last_seen"],
-                                            "discovery_source": _ev_m.get("opencite.discovery_source", "opentelemetry"),
+                                            "discovery_source": merged.get("opencite.discovery_source", "opentelemetry"),
                                         })
                                         for _k in ("service.name",
                                                     "service.version",
                                                     "gen_ai.system",
                                                     "enduser.id",
                                                     "net.peer.ip"):
-                                            if _k in _ev_m:
-                                                _ag["metadata"][_k] = _ev_m[_k]
-                                        for _k, _v in _ev_m.items():
+                                            if _k in merged:
+                                                _ag["metadata"][_k] = merged[_k]
+                                        for _k, _v in merged.items():
                                             if _v is not None and _k.startswith(
                                                 ("user.", "ai_gateway.")
                                             ):
@@ -1248,8 +1252,8 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         trace_id: str,
         span_id: str,
         span_name: str,
-        attributes: List[Dict[str, Any]],
-        resource: Dict[str, Any],
+        merged_attrs: Dict[str, Any],
+        attr_dict: Dict[str, Any],
         span_time: Optional[str] = None,
         integration_id: Optional[str] = None,
     ) -> Optional[str]:
@@ -1264,36 +1268,6 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         Returns:
             The detected tool name, or None if no tool was detected.
         """
-        # Convert attributes list to dict for easier access
-        attr_dict = {}
-        for attr in attributes:
-            key = attr.get("key", "")
-            value = attr.get("value", {})
-            if "stringValue" in value:
-                attr_dict[key] = value["stringValue"]
-            elif "intValue" in value:
-                attr_dict[key] = value["intValue"]
-            elif "boolValue" in value:
-                attr_dict[key] = value["boolValue"]
-            elif "doubleValue" in value:
-                attr_dict[key] = value["doubleValue"]
-
-        # Extract resource attributes as well
-        resource_dict = {}
-        for attr in resource.get("attributes", []):
-            key = attr.get("key", "")
-            value = attr.get("value", {})
-            if "stringValue" in value:
-                resource_dict[key] = value["stringValue"]
-            elif "intValue" in value:
-                resource_dict[key] = value["intValue"]
-            elif "boolValue" in value:
-                resource_dict[key] = value["boolValue"]
-            elif "doubleValue" in value:
-                resource_dict[key] = value["doubleValue"]
-
-        # Merged attributes for identification and metadata
-        merged_attrs = {**resource_dict, **attr_dict}
 
         # Check for model in attributes (using GenAI semantic conventions)
         model_name = (
@@ -1522,7 +1496,8 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         span_id: str,
         span_name: str,
         span: Dict[str, Any],
-        resource: Dict[str, Any],
+        merged_attrs: Dict[str, Any],
+        attr_dict: Dict[str, Any],
         span_time: Optional[str] = None,
         integration_id: Optional[str] = None,
     ) -> List[str]:
@@ -1538,9 +1513,8 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         if not events:
             return []
 
-        res_dict = self._attrs_to_dict(resource.get("attributes", []))
-        span_attr_dict = self._attrs_to_dict(span.get("attributes", []))
-        merged_span = {**res_dict, **span_attr_dict}
+        merged_span = merged_attrs
+        span_attr_dict = attr_dict
 
         discovered: List[str] = []
         for event in events:
@@ -1841,8 +1815,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         trace_id: str,
         span_id: str,
         span_name: str,
-        attributes: List[Dict[str, Any]],
-        resource: Dict[str, Any],
+        merged_attrs: Dict[str, Any],
         span_time: Optional[str] = None,
         integration_id: Optional[str] = None,
     ) -> Optional[str]:
@@ -1855,9 +1828,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         Returns:
             The detected agent name, or None if no agent was detected.
         """
-        attr_dict = self._attrs_to_dict(attributes)
-        resource_dict = self._attrs_to_dict(resource.get("attributes", []))
-        merged = {**resource_dict, **attr_dict}
+        merged = merged_attrs
         now = span_time or datetime.utcnow().isoformat()
 
         # Only detect agents via explicit attributes
@@ -1976,7 +1947,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                     self._agent_add_tool(agent_name, tool_name, integration_id)
                     self._add_lineage(self._agent_id_for(agent_name, integration_id), "agent", self._tool_id_for(tool_name, integration_id), "tool", "uses", integration_id=integration_id)
                     logger.info(
-                        f"Correlated agent '{agent_name}' -> tool '{tool_name}' via same span"
+                        f"Correlated agent '{agent_name}' -> tool '{tool_name}' via same span (integration_id: {integration_id})"
                     )
                 continue
 
@@ -1992,7 +1963,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                         self._agent_add_tool(agent_name, tool_name, integration_id)
                         self._add_lineage(self._agent_id_for(agent_name, integration_id), "agent", self._tool_id_for(tool_name, integration_id), "tool", "uses", integration_id=integration_id)
                         logger.info(
-                            f"Correlated agent '{agent_name}' -> tool '{tool_name}' via span hierarchy"
+                            f"Correlated agent '{agent_name}' -> tool '{tool_name}' via span hierarchy (integration_id: {integration_id})"
                         )
                     break
                 current = parent
@@ -2034,7 +2005,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                     self._agent_add_model(agent_name, model_name, integration_id)
                     self._add_lineage(self._agent_id_for(agent_name, integration_id), "agent", self._model_id_for(model_name, integration_id), "model", "uses", integration_id=integration_id)
                     logger.info(
-                        f"Correlated agent '{agent_name}' -> model '{model_name}' via span hierarchy"
+                        f"Correlated agent '{agent_name}' -> model '{model_name}' via span hierarchy (integration_id: {integration_id})"
                     )
                     break
                 current = parent
@@ -2101,7 +2072,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                     self._agent_id_for(aname, integration_id), "agent",
                     "delegates_to", integration_id=integration_id)
                 logger.info(
-                    f"Correlated handoff: agent '{from_agent}' -> agent '{aname}' via span hierarchy"
+                    f"Correlated handoff: agent '{from_agent}' -> agent '{aname}' via span hierarchy (integration_id: {integration_id})"
                 )
 
     def _detect_downstream_system(
@@ -2109,17 +2080,16 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         trace_id: str,
         span_id: str,
         span_name: str,
-        attributes: List[Dict[str, Any]],
-        resource: Dict[str, Any],
+        merged_attrs: Dict[str, Any],
+        res_dict: Dict[str, Any],
         integration_id: Optional[str] = None,
     ):
         """
         Detect downstream systems (databases, external APIs, message queues, etc.)
         from OTEL span attributes.
         """
-        attr_dict = self._attrs_to_dict(attributes)
-        resource_dict = self._attrs_to_dict(resource.get("attributes", []))
-        merged = {**resource_dict, **attr_dict}
+        merged = merged_attrs
+        resource_dict = res_dict
         now = datetime.utcnow().isoformat()
 
         system_name = None
@@ -2136,7 +2106,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
         # HTTP/API calls (only CLIENT spans to external services)
         if not system_name:
-            span_kind = merged.get("span.kind") or attr_dict.get("span.kind")
+            span_kind = merged.get("span.kind")
             http_url = merged.get("http.url") or merged.get("url.full")
             server_addr = merged.get("server.address") or merged.get("net.peer.name")
 
@@ -2194,9 +2164,8 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
             system["tools_connecting"].add(tool_name)
             self._add_lineage(self._tool_id_for(tool_name, integration_id), "tool", system_id, "downstream", "connects_to", integration_id=integration_id)
 
-    def _extract_token_usage(self, attributes: List[Dict[str, Any]]):
+    def _extract_token_usage(self, attr_dict: Dict[str, Any]):
         """Extract token usage statistics from span attributes."""
-        attr_dict = self._attrs_to_dict(attributes)
 
         model_name = (
             attr_dict.get("gen_ai.request.model")
@@ -2339,8 +2308,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         trace_id: str,
         span_id: str,
         span_name: str,
-        attributes: List[Dict[str, Any]],
-        resource: Dict[str, Any],
+        attr_dict: Dict[str, Any],
         integration_id: Optional[str] = None,
     ):
         """
@@ -2351,17 +2319,6 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         - mcp_tool or mcp_resource span names
         - tools://... or resource://... URIs
         """
-        # Convert attributes list to dict
-        attr_dict = {}
-        for attr in attributes:
-            key = attr.get("key", "")
-            value = attr.get("value", {})
-            if "stringValue" in value:
-                attr_dict[key] = value["stringValue"]
-            elif "intValue" in value:
-                attr_dict[key] = value["intValue"]
-            elif "boolValue" in value:
-                attr_dict[key] = value["boolValue"]
 
         # Check for MCP-specific attributes
         mcp_server = attr_dict.get("mcp.server.name") or attr_dict.get("mcp.server")
