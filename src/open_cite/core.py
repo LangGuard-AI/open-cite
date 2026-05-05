@@ -24,6 +24,11 @@ import requests
 # ``x-opencite-signature: sha256=<hex>`` header.
 _WEBHOOK_SECRET: Optional[str] = os.getenv("OPENCITE_WEBHOOK_SECRET") or None
 
+# Webhook delivery tuning (env-configurable)
+_WEBHOOK_CONNECT_TIMEOUT = float(os.getenv("OPENCITE_WEBHOOK_CONNECT_TIMEOUT", "5"))
+_WEBHOOK_READ_TIMEOUT = float(os.getenv("OPENCITE_WEBHOOK_READ_TIMEOUT", "15"))
+_WEBHOOK_MAX_RETRIES = int(os.getenv("OPENCITE_WEBHOOK_MAX_RETRIES", "3"))
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -620,13 +625,13 @@ class BaseDiscoveryPlugin(ABC):
         # Mask token in debug output
         masked_url = url.split("?")[0] + ("?token=***" if "token=" in url else "")
         backoffs = [0.5, 1.0]
-        for attempt in range(3):
+        for attempt in range(_WEBHOOK_MAX_RETRIES):
             try:
                 resp = requests.post(
                     url,
                     data=body_bytes,
                     headers=headers,
-                    timeout=30,
+                    timeout=(_WEBHOOK_CONNECT_TIMEOUT, _WEBHOOK_READ_TIMEOUT),
                 )
                 if resp.status_code < 400:
                     logger.debug(
@@ -642,18 +647,20 @@ class BaseDiscoveryPlugin(ABC):
                 except Exception:
                     pass
                 logger.warning(
-                    "Webhook %s returned %d (attempt %d/3, plugin=%s): %s",
+                    "Webhook %s returned %d (attempt %d/%d, plugin=%s): %s",
                     masked_url,
                     resp.status_code,
                     attempt + 1,
+                    _WEBHOOK_MAX_RETRIES,
                     self.instance_id,
                     resp_body,
                 )
             except Exception as e:
                 logger.warning(
-                    "Webhook %s failed (attempt %d/3, plugin=%s): %s",
+                    "Webhook %s failed (attempt %d/%d, plugin=%s): %s",
                     masked_url,
                     attempt + 1,
+                    _WEBHOOK_MAX_RETRIES,
                     self.instance_id,
                     e,
                 )
