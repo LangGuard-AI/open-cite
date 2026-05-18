@@ -1284,23 +1284,45 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         #   3. service.name / app.name (but NOT when it equals the agent name)
         #   4. Span name as last resort
         is_tool_call = "gen_ai.tool.call.id" in attr_dict
+        # Keep this in sync with _detect_agent — LiteLLM prefixes
+        # extra_body.metadata.* with "metadata." and exposes the OpenAI
+        # `user` field as metadata.user_api_key_end_user_id.
         agent_name = (
             merged_attrs.get("gen_ai.agent.name")
             or merged_attrs.get("agent_name")
             or merged_attrs.get("agent.name")
+            or merged_attrs.get("metadata.agent_name")
+            or merged_attrs.get("metadata.user_api_key_alias")
+            or merged_attrs.get("metadata.user_api_key_end_user_id")
         )
 
-        # Explicit tool identity: gen_ai.tool.name, tool.name, or
-        # gen_ai.tool.call.id (marks a tool-call span).
+        # LiteLLM MCP tool calls: extract tool name from metadata.mcp_tool_call_metadata
+        litellm_mcp_tool_name = None
+        is_litellm_mcp_call = attr_dict.get("llm.request.type") == "call_mcp_tool"
+        if is_litellm_mcp_call:
+            raw_meta = attr_dict.get("metadata.mcp_tool_call_metadata", "")
+            if isinstance(raw_meta, str) and raw_meta:
+                try:
+                    mcp_meta = json.loads(raw_meta)
+                    litellm_mcp_tool_name = mcp_meta.get("name")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            elif isinstance(raw_meta, dict):
+                litellm_mcp_tool_name = raw_meta.get("name")
+
+        # Explicit tool identity: gen_ai.tool.name, tool.name,
+        # gen_ai.tool.call.id (marks a tool-call span), or LiteLLM MCP tool call.
         has_explicit_tool = bool(
             attr_dict.get("gen_ai.tool.name")
             or attr_dict.get("tool.name")
             or is_tool_call
+            or litellm_mcp_tool_name
         )
 
         tool_name = (
             attr_dict.get("gen_ai.tool.name")
             or attr_dict.get("tool.name")
+            or litellm_mcp_tool_name
         )
 
         # For tool-call spans, prefer the span name (e.g. "CodeExecution")
@@ -1831,11 +1853,19 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         merged = merged_attrs
         now = span_time or datetime.utcnow().isoformat()
 
-        # Only detect agents via explicit attributes
+        # Only detect agents via explicit attributes.
+        # LiteLLM's OTel exporter prefixes extra_body.metadata.* attributes
+        # with "metadata." and surfaces the OpenAI `user` field as
+        # `metadata.user_api_key_end_user_id`. Include those as fallbacks so
+        # agents calling through LiteLLM are attributable without modifying
+        # the agent's instrumentation.
         agent_name = (
             merged.get("gen_ai.agent.name")
             or merged.get("agent_name")
             or merged.get("agent.name")
+            or merged.get("metadata.agent_name")
+            or merged.get("metadata.user_api_key_alias")
+            or merged.get("metadata.user_api_key_end_user_id")
         )
 
         if not agent_name:
