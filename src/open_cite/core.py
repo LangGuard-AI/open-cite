@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import socket
+import threading
 import time
 import warnings
 from urllib.parse import urlparse
@@ -28,6 +29,14 @@ _WEBHOOK_SECRET: Optional[str] = os.getenv("OPENCITE_WEBHOOK_SECRET") or None
 _WEBHOOK_CONNECT_TIMEOUT = float(os.getenv("OPENCITE_WEBHOOK_CONNECT_TIMEOUT", "5"))
 _WEBHOOK_READ_TIMEOUT = float(os.getenv("OPENCITE_WEBHOOK_READ_TIMEOUT", "15"))
 _WEBHOOK_MAX_RETRIES = int(os.getenv("OPENCITE_WEBHOOK_MAX_RETRIES", "3"))
+
+# Debounce interval: accumulate resourceSpans for this many seconds before
+# flushing to webhooks.  Set to 0 to disable debouncing (immediate delivery).
+_WEBHOOK_FLUSH_INTERVAL = float(os.getenv("OPENCITE_WEBHOOK_FLUSH_INTERVAL", "5"))
+
+# How long to pause deliveries to a URL after receiving a 429 response.
+# The actual pause may be longer if the server sends a Retry-After header.
+_WEBHOOK_429_COOLDOWN = float(os.getenv("OPENCITE_WEBHOOK_429_COOLDOWN", "30"))
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +170,14 @@ class BaseDiscoveryPlugin(ABC):
         self._on_data_changed = None
         self._webhook_urls: Dict[str, Dict[str, str]] = {}
         self._webhook_executor: Optional[ThreadPoolExecutor] = None
+
+        # Debounce buffer: accumulates resourceSpans + headers between flushes
+        self._webhook_buffer: List[dict] = []  # list of {resourceSpans, inbound_headers}
+        self._webhook_buffer_lock = threading.Lock()
+        self._webhook_flush_timer: Optional[threading.Timer] = None
+
+        # Per-URL 429 cooldown tracking: {url: resume_timestamp}
+        self._webhook_cooldowns: Dict[str, float] = {}
 
     @classmethod
     def plugin_metadata(cls) -> Dict[str, Any]:
@@ -519,13 +536,15 @@ class BaseDiscoveryPlugin(ABC):
 
     def _deliver_to_webhooks(self, otlp_payload: dict, inbound_headers: Optional[Dict[str, str]] = None):
         """
-        Deliver an OTLP payload to all subscribed webhooks (fire-and-forget).
+        Deliver an OTLP payload to all subscribed webhooks.
+
+        When debouncing is enabled (``OPENCITE_WEBHOOK_FLUSH_INTERVAL > 0``),
+        payloads are buffered and flushed periodically to avoid overwhelming
+        downstream consumers during bursts.  When disabled, delivery is
+        immediate (fire-and-forget).
 
         Large payloads are automatically chunked into smaller batches to avoid
         413 (Payload Too Large) rejections.
-
-        Each delivery is submitted to a thread pool so it doesn't block
-        the discovery loop.
 
         Args:
             otlp_payload: OTLP JSON payload to forward
@@ -536,35 +555,98 @@ class BaseDiscoveryPlugin(ABC):
         if not self._webhook_urls:
             return
 
-        resource_spans = otlp_payload.get("resourceSpans", [])
-        span_count = sum(
-            len(ss.get("spans", []))
-            for rs in resource_spans
-            for ss in rs.get("scopeSpans", [])
-        )
-        logger.debug(
-            "Delivering OTLP payload to %d webhook(s): %d resourceSpans, %d spans (plugin=%s)",
-            len(self._webhook_urls),
-            len(resource_spans),
-            span_count,
-            self.instance_id,
-        )
+        if _WEBHOOK_FLUSH_INTERVAL <= 0:
+            # Immediate delivery (no debouncing)
+            self._flush_webhook_payloads([otlp_payload], inbound_headers)
+            return
+
+        # Buffer the payload for the next flush
+        with self._webhook_buffer_lock:
+            self._webhook_buffer.append({
+                "payload": otlp_payload,
+                "inbound_headers": inbound_headers,
+            })
+            # Schedule a flush timer if one isn't already pending
+            if self._webhook_flush_timer is None or not self._webhook_flush_timer.is_alive():
+                self._webhook_flush_timer = threading.Timer(
+                    _WEBHOOK_FLUSH_INTERVAL, self._flush_webhook_buffer)
+                self._webhook_flush_timer.daemon = True
+                self._webhook_flush_timer.start()
+
+    def _flush_webhook_buffer(self):
+        """Drain the debounce buffer and deliver accumulated payloads."""
+        with self._webhook_buffer_lock:
+            entries = list(self._webhook_buffer)
+            self._webhook_buffer.clear()
+            self._webhook_flush_timer = None
+
+        if not entries:
+            return
+
+        # Merge all buffered resourceSpans into a single list.
+        # Use the most recent inbound_headers (they typically carry the
+        # same auth/tenant context within a burst).
+        merged_resource_spans: list = []
+        last_headers = None
+        for entry in entries:
+            rs = entry["payload"].get("resourceSpans", [])
+            merged_resource_spans.extend(rs)
+            if entry["inbound_headers"]:
+                last_headers = entry["inbound_headers"]
+
+        if merged_resource_spans:
+            self._flush_webhook_payloads(
+                [{"resourceSpans": merged_resource_spans}], last_headers)
+
+    def _flush_webhook_payloads(
+        self,
+        payloads: List[dict],
+        inbound_headers: Optional[Dict[str, str]] = None,
+    ):
+        """Chunk and submit webhook deliveries to the thread pool."""
         if self._webhook_executor is None:
             self._webhook_executor = ThreadPoolExecutor(max_workers=6)
 
+        all_resource_spans: list = []
+        for p in payloads:
+            all_resource_spans.extend(p.get("resourceSpans", []))
+
+        span_count = sum(
+            len(ss.get("spans", []))
+            for rs in all_resource_spans
+            for ss in rs.get("scopeSpans", [])
+        )
+        logger.info(
+            "Delivering OTLP payload to %d webhook(s): %d resourceSpans, %d spans (plugin=%s)",
+            len(self._webhook_urls),
+            len(all_resource_spans),
+            span_count,
+            self.instance_id,
+        )
+
         # Chunk large payloads to avoid 413 errors
-        chunks = []
-        if len(resource_spans) <= self.WEBHOOK_CHUNK_SIZE:
-            chunks = [otlp_payload]
+        chunks: List[dict] = []
+        if len(all_resource_spans) <= self.WEBHOOK_CHUNK_SIZE:
+            chunks = [{"resourceSpans": all_resource_spans}]
         else:
-            for i in range(0, len(resource_spans), self.WEBHOOK_CHUNK_SIZE):
-                chunks.append({"resourceSpans": resource_spans[i:i + self.WEBHOOK_CHUNK_SIZE]})
-            logger.debug(
+            for i in range(0, len(all_resource_spans), self.WEBHOOK_CHUNK_SIZE):
+                chunks.append({"resourceSpans": all_resource_spans[i:i + self.WEBHOOK_CHUNK_SIZE]})
+            logger.info(
                 "Split payload into %d chunks of <= %d resourceSpans (plugin=%s)",
                 len(chunks), self.WEBHOOK_CHUNK_SIZE, self.instance_id,
             )
 
+        now = time.time()
         for url in list(self._webhook_urls):
+            # Skip URLs in 429 cooldown
+            resume_at = self._webhook_cooldowns.get(url, 0)
+            if now < resume_at:
+                logger.info(
+                    "Webhook %s in cooldown (%.0fs remaining), skipping delivery (plugin=%s)",
+                    url.split("?")[0], resume_at - now, self.instance_id,
+                )
+                continue
+
             for chunk in chunks:
                 self._webhook_executor.submit(self._send_webhook, url, chunk, inbound_headers)
 
@@ -646,6 +728,24 @@ class BaseDiscoveryPlugin(ABC):
                     resp_body = resp.text[:500]
                 except Exception:
                     pass
+
+                # 429 Too Many Requests — enter cooldown and stop retrying
+                if resp.status_code == 429:
+                    retry_after = resp.headers.get("Retry-After")
+                    if retry_after:
+                        try:
+                            cooldown = float(retry_after)
+                        except (ValueError, TypeError):
+                            cooldown = _WEBHOOK_429_COOLDOWN
+                    else:
+                        cooldown = _WEBHOOK_429_COOLDOWN
+                    self._webhook_cooldowns[url] = time.time() + cooldown
+                    logger.warning(
+                        "Webhook %s returned 429, pausing deliveries for %.0fs (plugin=%s): %s",
+                        masked_url, cooldown, self.instance_id, resp_body,
+                    )
+                    return
+
                 logger.warning(
                     "Webhook %s returned %d (attempt %d/%d, plugin=%s): %s",
                     masked_url,
