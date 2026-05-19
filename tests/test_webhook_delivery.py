@@ -66,10 +66,11 @@ def _mock_response(status_code=200, headers=None, text=""):
 # Debounce buffer tests
 # ---------------------------------------------------------------------------
 
+@patch("open_cite.core.validate_webhook_url", return_value=None)
 class TestWebhookDebounce:
 
     @patch("open_cite.core._WEBHOOK_FLUSH_INTERVAL", 0)
-    def test_immediate_delivery_when_interval_zero(self):
+    def test_immediate_delivery_when_interval_zero(self, _mock_validate):
         """With flush interval 0, payloads are delivered immediately."""
         plugin = _make_plugin()
         plugin.subscribe_webhook("http://example.com/traces")
@@ -84,7 +85,7 @@ class TestWebhookDebounce:
             assert len(args[0][0][0]["resourceSpans"]) == 2
 
     @patch("open_cite.core._WEBHOOK_FLUSH_INTERVAL", 5)
-    def test_payloads_buffered_when_debounce_enabled(self):
+    def test_payloads_buffered_when_debounce_enabled(self, _mock_validate):
         """With flush interval > 0, payloads are buffered, not delivered immediately."""
         plugin = _make_plugin()
         plugin.subscribe_webhook("http://example.com/traces")
@@ -102,7 +103,7 @@ class TestWebhookDebounce:
             plugin._webhook_flush_timer.cancel()
 
     @patch("open_cite.core._WEBHOOK_FLUSH_INTERVAL", 5)
-    def test_flush_merges_buffered_resource_spans(self):
+    def test_flush_merges_buffered_resource_spans(self, _mock_validate):
         """Flushing merges all buffered resourceSpans into a single delivery."""
         plugin = _make_plugin()
         plugin.subscribe_webhook("http://example.com/traces")
@@ -125,7 +126,7 @@ class TestWebhookDebounce:
         assert len(plugin._webhook_buffer) == 0
 
     @patch("open_cite.core._WEBHOOK_FLUSH_INTERVAL", 5)
-    def test_flush_uses_most_recent_headers(self):
+    def test_flush_uses_most_recent_headers(self, _mock_validate):
         """Flushing uses the most recent inbound_headers from the buffer."""
         plugin = _make_plugin()
         plugin.subscribe_webhook("http://example.com/traces")
@@ -143,7 +144,7 @@ class TestWebhookDebounce:
             assert args[0][1] == new_headers
 
     @patch("open_cite.core._WEBHOOK_FLUSH_INTERVAL", 5)
-    def test_flush_noop_when_buffer_empty(self):
+    def test_flush_noop_when_buffer_empty(self, _mock_validate):
         """Flushing an empty buffer does nothing."""
         plugin = _make_plugin()
         plugin.subscribe_webhook("http://example.com/traces")
@@ -153,7 +154,7 @@ class TestWebhookDebounce:
             mock_flush.assert_not_called()
 
     @patch("open_cite.core._WEBHOOK_FLUSH_INTERVAL", 5)
-    def test_only_one_timer_scheduled(self):
+    def test_only_one_timer_scheduled(self, _mock_validate):
         """Multiple _deliver_to_webhooks calls should not spawn multiple timers."""
         plugin = _make_plugin()
         plugin.subscribe_webhook("http://example.com/traces")
@@ -174,11 +175,12 @@ class TestWebhookDebounce:
 # 429 cooldown tests
 # ---------------------------------------------------------------------------
 
+@patch("open_cite.core.validate_webhook_url", return_value=None)
 class TestWebhook429Cooldown:
 
     @patch("open_cite.core._WEBHOOK_429_COOLDOWN", 30)
     @patch("open_cite.core._WEBHOOK_MAX_RETRIES", 3)
-    def test_429_enters_cooldown(self):
+    def test_429_enters_cooldown(self, _mock_validate):
         """A 429 response should put the URL into cooldown and stop retrying."""
         plugin = _make_plugin()
         url = "http://example.com/traces"
@@ -197,7 +199,7 @@ class TestWebhook429Cooldown:
         assert plugin._webhook_cooldowns[url] > time.time()
 
     @patch("open_cite.core._WEBHOOK_429_COOLDOWN", 30)
-    def test_429_respects_retry_after_header(self):
+    def test_429_respects_retry_after_header(self, _mock_validate):
         """The Retry-After header value should be used as cooldown duration."""
         plugin = _make_plugin()
         url = "http://example.com/traces"
@@ -214,7 +216,7 @@ class TestWebhook429Cooldown:
         assert plugin._webhook_cooldowns[url] >= before + 59
 
     @patch("open_cite.core._WEBHOOK_429_COOLDOWN", 30)
-    def test_429_invalid_retry_after_uses_default(self):
+    def test_429_invalid_retry_after_uses_default(self, _mock_validate):
         """An unparseable Retry-After header falls back to default cooldown."""
         plugin = _make_plugin()
         url = "http://example.com/traces"
@@ -231,7 +233,7 @@ class TestWebhook429Cooldown:
         assert plugin._webhook_cooldowns[url] >= before + 29
         assert plugin._webhook_cooldowns[url] < before + 35
 
-    def test_cooldown_skips_delivery(self):
+    def test_cooldown_skips_delivery(self, _mock_validate):
         """URLs in cooldown should be skipped during delivery."""
         plugin = _make_plugin()
         url = "http://example.com/traces"
@@ -244,7 +246,7 @@ class TestWebhook429Cooldown:
             plugin._flush_webhook_payloads([_make_payload(1)])
             mock_send.assert_not_called()
 
-    def test_delivery_resumes_after_cooldown(self):
+    def test_delivery_resumes_after_cooldown(self, _mock_validate):
         """URLs should receive deliveries again after cooldown expires."""
         plugin = _make_plugin()
         url = "http://example.com/traces"
@@ -257,7 +259,6 @@ class TestWebhook429Cooldown:
             plugin._flush_webhook_payloads([_make_payload(1)])
             assert mock_send.call_count == 1
 
-    @patch("open_cite.core.validate_webhook_url", return_value=None)
     def test_cooldown_does_not_affect_other_urls(self, _mock_validate):
         """Only the 429'd URL should be in cooldown, not others."""
         plugin = _make_plugin()
@@ -276,7 +277,7 @@ class TestWebhook429Cooldown:
             assert mock_send.call_args[0][0] == url_b
 
     @patch("open_cite.core._WEBHOOK_MAX_RETRIES", 3)
-    def test_non_429_errors_still_retry(self):
+    def test_non_429_errors_still_retry(self, _mock_validate):
         """Non-429 errors should still use the normal retry logic."""
         plugin = _make_plugin()
         url = "http://example.com/traces"

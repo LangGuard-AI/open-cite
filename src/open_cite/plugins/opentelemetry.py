@@ -1969,7 +1969,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         if not span_agents or not span_tools:
             return
 
-        is_info_level = logger.isEnabledFor(logging.INFO):
+        is_info_level = logger.isEnabledFor(logging.INFO)
         new_correlations = 0
         for tool_span_id, tool_name in span_tools.items():
             # Same-span: agent and tool detected on the same span
@@ -2019,7 +2019,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         if not span_agents or not span_models:
             return
 
-        is_info_level = logger.isEnabledFor(logging.INFO):
+        is_info_level = logger.isEnabledFor(logging.INFO)
         new_correlations = 0
         for model_span_id, model_name in span_models.items():
             # Same-span: agent and model on the same span — link directly
@@ -2080,7 +2080,7 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 agents_by_trace_parent.setdefault(
                     (trace_id, parent_id), []).append((sid, aname))
 
-        is_info_level = logger.isEnabledFor(logging.INFO):
+        is_info_level = logger.isEnabledFor(logging.INFO)
         new_handoffs = 0
         for handoff_span_id, handoff_info in span_handoffs.items():
             from_agent = handoff_info["from"]
