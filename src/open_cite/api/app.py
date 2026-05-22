@@ -445,11 +445,16 @@ def _otlp_ingest(data: dict, headers: dict):
     Used as the callback for both the ``POST /v1/traces`` Flask route and
     the gRPC ASGI handler.
     """
+    from open_cite.core import is_databricks_app_mode
     if _default_otel_plugin is None:
         raise RuntimeError("No embedded OTLP receiver configured")
     integration_id = headers.get("X-Integration-Id") or headers.get("x-integration-id")
     _default_otel_plugin._ingest_traces(data, integration_id=integration_id)
-    _default_otel_plugin._deliver_to_webhooks(data, inbound_headers=headers)
+    # In Databricks App mode the inbound trace is already persisted in the
+    # Databricks-native OTLP Delta table; re-firing the webhook would loop it
+    # back to the same destination. See is_databricks_app_mode() docstring.
+    if not is_databricks_app_mode():
+        _default_otel_plugin._deliver_to_webhooks(data, inbound_headers=headers)
 
 
 def _otlp_ingest_logs(data: dict, headers: dict):
@@ -576,9 +581,12 @@ def register_api_routes(app: Flask):
             else:
                 return jsonify({"error": f"Unsupported Content-Type: {content_type}"}), 415
 
+            from open_cite.core import is_databricks_app_mode
             integration_id = inbound_headers.get("x-integration-id") or inbound_headers.get("X-Integration-Id")
             _default_otel_plugin._ingest_traces(data, integration_id=integration_id)
-            _default_otel_plugin._deliver_to_webhooks(data, inbound_headers=inbound_headers)
+            # See _otlp_ingest above — skip webhook re-emit in Databricks App mode.
+            if not is_databricks_app_mode():
+                _default_otel_plugin._deliver_to_webhooks(data, inbound_headers=inbound_headers)
 
             num_spans = sum(
                 len(rs.get("scopeSpans", []))

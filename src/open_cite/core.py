@@ -24,6 +24,30 @@ import requests
 # ``x-opencite-signature: sha256=<hex>`` header.
 _WEBHOOK_SECRET: Optional[str] = os.getenv("OPENCITE_WEBHOOK_SECRET") or None
 
+
+def is_databricks_app_mode() -> bool:
+    """True when OpenCITE is embedded inside a LangGuard Databricks App.
+
+    In that deployment, native OTLP traces arriving at ``/v1/traces`` (or the
+    gRPC equivalent) come from the LangGuard app's trace poller forwarding
+    spans that are *already* persisted in the Databricks-native OTLP Delta
+    table. Re-firing the ``opentelemetry`` plugin's webhook would deliver the
+    same payload back to the same Delta table and create duplicate rows.
+
+    External plugins (Databricks usage poller, Azure, Splunk, …) still fire
+    webhooks: their data is not yet persisted and must flow through the
+    webhook path to land somewhere.
+
+    Logs received at ``/v1/logs`` are converted to synthetic traces and still
+    fire webhooks even in Databricks App mode — that's the only path by
+    which log data reaches persistence.
+
+    Set ``OPENCITE_DATABRICKS_APP_MODE=true`` in the embedded runtime to
+    enable this check (see ``scripts/start-databricks-app.sh``).
+    """
+    val = os.getenv("OPENCITE_DATABRICKS_APP_MODE", "").lower()
+    return val in ("true", "1", "yes")
+
 # Webhook delivery tuning (env-configurable)
 _WEBHOOK_CONNECT_TIMEOUT = float(os.getenv("OPENCITE_WEBHOOK_CONNECT_TIMEOUT", "5"))
 _WEBHOOK_READ_TIMEOUT = float(os.getenv("OPENCITE_WEBHOOK_READ_TIMEOUT", "15"))

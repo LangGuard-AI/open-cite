@@ -197,9 +197,15 @@ class OTLPRequestHandler(BaseHTTPRequestHandler):
                         )
                         return
 
+            from open_cite.core import is_databricks_app_mode
             integration_id = inbound_headers.get("x-integration-id") or inbound_headers.get("X-Integration-Id")
             plugin._ingest_traces(data, integration_id=integration_id)
-            plugin._deliver_to_webhooks(data, inbound_headers=inbound_headers)
+            # In Databricks App mode the inbound trace is already in the
+            # Databricks-native OTLP Delta table; re-firing the webhook would
+            # loop it back to the same destination. Logs (handled below) and
+            # external plugins still fire webhooks.
+            if not is_databricks_app_mode():
+                plugin._deliver_to_webhooks(data, inbound_headers=inbound_headers)
 
             num_spans = sum(len(rs.get("scopeSpans", [])) for rs in data.get("resourceSpans", []))
             logger.warning(f"[OTLP] Received trace with {num_spans} scope spans")
