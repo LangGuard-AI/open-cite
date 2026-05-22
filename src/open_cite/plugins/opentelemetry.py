@@ -1975,6 +1975,8 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         if not span_agents or not span_tools:
             return
 
+        is_info_level = logger.isEnabledFor(logging.INFO)
+        new_correlations = 0
         for tool_span_id, tool_name in span_tools.items():
             # Same-span: agent and tool detected on the same span
             if tool_span_id in span_agents:
@@ -1982,9 +1984,8 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 if agent_name != tool_name:
                     self._agent_add_tool(agent_name, tool_name, integration_id)
                     self._add_lineage(self._agent_id_for(agent_name, integration_id), "agent", self._tool_id_for(tool_name, integration_id), "tool", "uses", integration_id=integration_id)
-                    logger.info(
-                        f"Correlated agent '{agent_name}' -> tool '{tool_name}' via same span (integration_id: {integration_id})"
-                    )
+                    if is_info_level and tool_name not in self.discovered_agents[agent_name]["tools_used"]:
+                        new_correlations += 1
                 continue
 
             # Walk up the parent chain from this tool span to find an agent
@@ -1998,11 +1999,13 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                     if agent_name != tool_name:
                         self._agent_add_tool(agent_name, tool_name, integration_id)
                         self._add_lineage(self._agent_id_for(agent_name, integration_id), "agent", self._tool_id_for(tool_name, integration_id), "tool", "uses", integration_id=integration_id)
-                        logger.info(
-                            f"Correlated agent '{agent_name}' -> tool '{tool_name}' via span hierarchy (integration_id: {integration_id})"
-                        )
+                        if is_info_level and tool_name not in self.discovered_agents[agent_name]["tools_used"]:
+                            new_correlations += 1
                     break
                 current = parent
+
+        if new_correlations:
+            logger.info("Correlated %d new agent->tool relationships (integration_id: %s)", new_correlations, integration_id)
 
     def _correlate_agent_models(
         self,
@@ -2022,12 +2025,16 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
         if not span_agents or not span_models:
             return
 
+        is_info_level = logger.isEnabledFor(logging.INFO)
+        new_correlations = 0
         for model_span_id, model_name in span_models.items():
             # Same-span: agent and model on the same span — link directly
             if model_span_id in span_agents:
                 agent_name = span_agents[model_span_id]
                 self._agent_add_model(agent_name, model_name, integration_id)
                 self._add_lineage(self._agent_id_for(agent_name, integration_id), "agent", self._model_id_for(model_name, integration_id), "model", "uses", integration_id=integration_id)
+                if is_info_level and model_name not in self.discovered_agents[agent_name]["models_used"]:
+                    new_correlations += 1
                 continue
 
             # Walk up the parent chain from this model span to find an agent
@@ -2040,11 +2047,13 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                     agent_name = span_agents[parent]
                     self._agent_add_model(agent_name, model_name, integration_id)
                     self._add_lineage(self._agent_id_for(agent_name, integration_id), "agent", self._model_id_for(model_name, integration_id), "model", "uses", integration_id=integration_id)
-                    logger.info(
-                        f"Correlated agent '{agent_name}' -> model '{model_name}' via span hierarchy (integration_id: {integration_id})"
-                    )
+                    if is_info_level and model_name not in self.discovered_agents[agent_name]["models_used"]:
+                        new_correlations += 1
                     break
                 current = parent
+
+        if new_correlations:
+            logger.info("Correlated %d new agent->model relationships (integration_id: %s)", new_correlations, integration_id)
 
     def _correlate_agent_handoffs(
         self,
@@ -2077,19 +2086,21 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 agents_by_trace_parent.setdefault(
                     (trace_id, parent_id), []).append((sid, aname))
 
+        is_info_level = logger.isEnabledFor(logging.INFO)
+        new_handoffs = 0
         for handoff_span_id, handoff_info in span_handoffs.items():
             from_agent = handoff_info["from"]
             to_agent = handoff_info["to"]
 
             # ---- Fast path: explicit target ----
             if to_agent:
+                lineage_key = f"{self._agent_id_for(from_agent, integration_id)}:{self._agent_id_for(to_agent, integration_id)}:delegates_to"
                 self._add_lineage(
                     self._agent_id_for(from_agent, integration_id), "agent",
                     self._agent_id_for(to_agent, integration_id), "agent",
                     "delegates_to", integration_id=integration_id)
-                logger.info(
-                    f"Correlated handoff: agent '{from_agent}' -> agent '{to_agent}' via explicit attribute (integration_id: {integration_id})"
-                )
+                if is_info_level and lineage_key not in self.lineage:
+                    new_handoffs += 1
                 continue
 
             # ---- Hierarchy inference: find sibling agent spans ----
@@ -2110,13 +2121,16 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                 if aname == from_agent:
                     continue
 
+                lineage_key = f"{self._agent_id_for(from_agent, integration_id)}:{self._agent_id_for(aname, integration_id)}:delegates_to"
                 self._add_lineage(
                     self._agent_id_for(from_agent, integration_id), "agent",
                     self._agent_id_for(aname, integration_id), "agent",
                     "delegates_to", integration_id=integration_id)
-                logger.info(
-                    f"Correlated handoff: agent '{from_agent}' -> agent '{aname}' via span hierarchy (integration_id: {integration_id})"
-                )
+                if is_info_level and lineage_key not in self.lineage:
+                    new_handoffs += 1
+
+        if new_handoffs:
+            logger.info("Correlated %d new agent handoff relationships (integration_id: %s)", new_handoffs, integration_id)
 
     def _detect_downstream_system(
         self,
