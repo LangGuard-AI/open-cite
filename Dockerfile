@@ -25,10 +25,20 @@ RUN useradd --create-home --shell /bin/bash opencite
 
 WORKDIR /app
 
+# Install build tools needed for native packages (blis) on arm64, then clean up
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gcc g++ libc6-dev && \
+    rm -rf /var/lib/apt/lists/*
+
 # Install the wheel and gunicorn
 COPY --from=builder /build/dist/*.whl /tmp/
-RUN pip install --no-cache-dir --timeout=300 /tmp/*.whl gunicorn>=21.0.0 && \
+RUN pip install --no-cache-dir --timeout=600 --retries=3 /tmp/*.whl gunicorn>=21.0.0 && \
     rm /tmp/*.whl
+
+# Remove build tools to keep image slim
+RUN apt-get purge -y gcc g++ libc6-dev && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
 
 # Create data directory for persistence
 RUN mkdir -p /data && chown opencite:opencite /data
