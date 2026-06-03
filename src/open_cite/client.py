@@ -258,22 +258,16 @@ class OpenCiteClient:
             # List with filters (passed to plugins)
             tools = client.list_assets("mcp_tool", server_id="my-server")
         """
-        # For persisted types, serve from the in-memory cache (populated
-        # from DB on startup, refreshed after each save cycle).
-        if asset_type in _PERSISTED_ASSET_TYPES:
-            with self._cache_lock:
-                cached = self._asset_cache.get(asset_type)
-            if cached is not None:
-                # Apply any kwargs filters (e.g. server_id) in memory
-                if kwargs:
-                    return [
-                        item for item in cached
-                        if all(item.get(k) == v for k, v in kwargs.items() if v is not None)
-                    ]
-                return list(cached)
-
-        # Non-persisted types (or cache empty): aggregate from plugins
+        # Aggregate LIVE plugin discoveries FIRST. Persisted asset types used
+        # to be served straight from the in-memory cache, but that cache only
+        # refreshes on a persistence save cycle — so freshly-discovered assets
+        # (e.g. an agent/tool just seen on an inbound OTLP trace) were hidden
+        # behind a stale or empty cache list until the next save. Always reading
+        # the live plugins guarantees new discoveries surface immediately; the
+        # persisted cache is then merged in for anything the plugins no longer
+        # hold in memory (e.g. assets from a previous run).
         results = []
+        seen_ids = set()
         plugins = self.get_plugins_for_asset_type(asset_type)
 
         for plugin in plugins:
@@ -283,9 +277,25 @@ class OpenCiteClient:
                 for asset in assets:
                     if "discovery_source" not in asset:
                         asset["discovery_source"] = plugin.display_name
-                results.extend(assets)
+                    aid = asset.get("id")
+                    if aid is not None:
+                        seen_ids.add(aid)
+                    results.append(asset)
             except Exception as e:
                 logger.warning(f"Failed to list {asset_type} from plugin {plugin.instance_id}: {e}")
+
+        # Merge in persisted-cache entries the live plugins did not return.
+        if asset_type in _PERSISTED_ASSET_TYPES:
+            with self._cache_lock:
+                cached = self._asset_cache.get(asset_type) or []
+            for item in cached:
+                if item.get("id") in seen_ids:
+                    continue
+                if kwargs and not all(
+                    item.get(k) == v for k, v in kwargs.items() if v is not None
+                ):
+                    continue
+                results.append(item)
 
         return results
 
@@ -388,23 +398,31 @@ class OpenCiteClient:
         Returns:
             List of lineage relationships
         """
-        # Serve from cache if populated
-        with self._cache_lock:
-            cached = self._lineage_cache
-        if cached:
-            if source_id:
-                return [r for r in cached if r.get("source_id") == source_id]
-            return list(cached)
-
-        # Cache empty — aggregate from plugins
+        # Aggregate LIVE plugin lineage first so freshly-discovered
+        # relationships are not hidden behind a stale/empty persistence cache
+        # (mirrors list_assets). Merge in persisted-cache relationships after.
         results = []
+        seen = set()
         for plugin in self.plugins.values():
             if hasattr(plugin, 'list_lineage'):
                 try:
-                    relationships = plugin.list_lineage(source_id=source_id)
-                    results.extend(relationships)
+                    for r in plugin.list_lineage(source_id=source_id):
+                        seen.add((r.get("source_id"), r.get("target_id"),
+                                  r.get("relationship_type")))
+                        results.append(r)
                 except Exception as e:
                     logger.warning(f"Failed to get lineage from {plugin.instance_id}: {e}")
+
+        with self._cache_lock:
+            cached = self._lineage_cache or []
+        for r in cached:
+            if source_id and r.get("source_id") != source_id:
+                continue
+            key = (r.get("source_id"), r.get("target_id"), r.get("relationship_type"))
+            if key in seen:
+                continue
+            results.append(r)
+
         return results
 
     # =========================================================================
