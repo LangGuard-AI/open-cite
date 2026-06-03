@@ -197,9 +197,15 @@ class OTLPRequestHandler(BaseHTTPRequestHandler):
                         )
                         return
 
+            from open_cite.core import is_databricks_app_mode
             integration_id = inbound_headers.get("x-integration-id") or inbound_headers.get("X-Integration-Id")
             plugin._ingest_traces(data, integration_id=integration_id)
-            plugin._deliver_to_webhooks(data, inbound_headers=inbound_headers)
+            # In Databricks App mode the inbound trace is already in the
+            # Databricks-native OTLP Delta table; re-firing the webhook would
+            # loop it back to the same destination. Logs (handled below) and
+            # external plugins still fire webhooks.
+            if not is_databricks_app_mode():
+                plugin._deliver_to_webhooks(data, inbound_headers=inbound_headers)
 
             num_spans = sum(len(rs.get("scopeSpans", [])) for rs in data.get("resourceSpans", []))
             logger.warning(f"[OTLP] Received trace with {num_spans} scope spans")
@@ -1675,7 +1681,11 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                     })
 
             tools.append({
-                "id": tool_name,  # Use name as ID
+                # Deterministic UUID — MUST match the id the lineage graph uses
+                # for this tool (_add_lineage calls _tool_id_for). Using the raw
+                # name here caused agent→tool edges to be unresolvable by
+                # downstream consumers that key lineage endpoints by asset id.
+                "id": self._tool_id_for(tool_name),
                 "name": tool_name,
                 "type": "llm_client",  # Open-CITE schema compliance
                 "discovery_source": metadata.get("discovery_source", "opentelemetry"),
@@ -1747,6 +1757,10 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
 
             token_data = self.model_token_usage.get(model_name, {})
             models.append({
+                # Deterministic UUID — MUST match the id the lineage graph uses
+                # for this model (_add_lineage calls _model_id_for). Previously
+                # absent, so agent→model edges were unresolvable downstream.
+                "id": self._model_id_for(model_name),
                 "name": model_name,
                 "provider": provider,
                 "tools": list(data["tools"]),
