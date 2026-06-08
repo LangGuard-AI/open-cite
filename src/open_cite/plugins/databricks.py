@@ -354,6 +354,13 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
             or None
         )
         self._gateway_poll_interval = gateway_poll_interval
+        # Idle backoff ceiling (seconds). When a poll finds no new usage rows the
+        # interval doubles from _gateway_poll_interval up to this cap, so a quiet
+        # workspace lets the serverless SQL warehouse auto-stop instead of being
+        # pinned awake. Mirrors the webapp pollers' activity-based backoff.
+        self._gateway_poll_max_interval = int(
+            os.environ.get("OPENCITE_GATEWAY_POLL_MAX_INTERVAL_SEC", "1200")
+        )
         self._gateway_poll_stop = threading.Event()
         self._gateway_poll_thread: Optional[threading.Thread] = None
         self._last_gateway_event_time: Optional[datetime] = None
@@ -1065,8 +1072,14 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
 
     def _poll_ai_gateway_usage(self):
         """Background loop that polls the AI Gateway usage table for new rows."""
-        logger.info("AI Gateway usage polling thread started (interval=%ds)", self._gateway_poll_interval)
-        poll_interval = self._gateway_poll_interval
+        base_interval = max(self._gateway_poll_interval, 1)
+        max_interval = max(self._gateway_poll_max_interval, base_interval)
+        logger.info(
+            "AI Gateway usage polling thread started (base=%ds, max=%ds)",
+            base_interval,
+            max_interval,
+        )
+        current_interval = base_interval
 
         # Initial lookback: use plugin's lookback_days for first fetch
         if self._last_gateway_event_time is None:
@@ -1077,24 +1090,42 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
 
         while not self._gateway_poll_stop.is_set():
             try:
-                self._fetch_and_process_gateway_usage()
+                processed = self._fetch_and_process_gateway_usage()
             except Exception as e:
                 logger.warning(f"AI Gateway usage poll error: {e}")
+                processed = 0
 
-            # Sleep in small increments to allow fast shutdown
-            self._gateway_poll_stop.wait(timeout=poll_interval)
+            # Activity-based backoff — same strategy as the webapp pollers:
+            # new rows → reset to the base interval; nothing new (idle workspace
+            # or a transient/permission error) → double the interval up to the
+            # cap, so the serverless SQL warehouse can auto-stop. Resets the
+            # moment usage resumes; the high-water query backfills whatever
+            # accumulated during the backoff, so no rows are missed.
+            if processed:
+                current_interval = base_interval
+            else:
+                current_interval = min(current_interval * 2, max_interval)
+
+            # Wait on the stop event so shutdown stays responsive no matter how
+            # long the current backoff interval is.
+            self._gateway_poll_stop.wait(timeout=current_interval)
 
         logger.info("AI Gateway usage polling thread stopped")
 
-    def _fetch_and_process_gateway_usage(self):
-        """Execute a single poll: query new rows and convert to OTLP traces."""
+    def _fetch_and_process_gateway_usage(self) -> int:
+        """Execute a single poll: query new rows and convert to OTLP traces.
+
+        Returns the number of usage rows fetched this cycle (0 when the
+        warehouse is unavailable, the query fails, or there is nothing new) so
+        the polling loop can drive activity-based backoff.
+        """
         from databricks import sql
         from open_cite.plugins.databricks_otlp_converter import ai_gateway_usage_to_otlp
 
         wh_id = self._get_warehouse_id()
         if not wh_id:
             logger.debug("No SQL warehouse available for AI Gateway usage polling")
-            return
+            return 0
 
         http_path = f"/sql/1.0/warehouses/{wh_id}"
         table = self._ai_gateway_table
@@ -1118,10 +1149,10 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
                     rows = cursor.fetchall()
         except Exception as e:
             logger.warning(f"AI Gateway usage query failed: {e}")
-            return
+            return 0
 
         if not rows:
-            return
+            return 0
 
         logger.info(f"[AI Gateway] Fetched {len(rows)} new usage rows")
 
@@ -1164,6 +1195,7 @@ class DatabricksPlugin(BaseDiscoveryPlugin):
         logger.info(
             f"[AI Gateway] Forwarded {forwarded}/{len(rows)} rows as OTLP traces"
         )
+        return len(rows)
 
     def start(self):
         """Start the plugin — runs initial discovery in a background thread
