@@ -288,6 +288,11 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
     MAX_SESSION_CACHE = int(os.environ.get("OPENCITE_MAX_SESSION_CACHE", "1000"))
     MAX_CROSS_BATCH_SPANS = int(os.environ.get("OPENCITE_MAX_CROSS_BATCH_SPANS", "50000"))
     MAX_RECEIVER_RESTARTS = int(os.environ.get("OPENCITE_MAX_RECEIVER_RESTARTS", "5"))
+    # Per-asset trace list cap. Applies to discovered_tools[*]["traces"] and
+    # mcp_servers[*]["traces"] (plus the per-integration mirror). Raising it
+    # improves trace_count fidelity for high-volume assets at the cost of
+    # ~150 bytes per extra entry per asset per tenant.
+    MAX_ASSET_TRACES = int(os.environ.get("OPENCITE_MAX_ASSET_TRACES", "100"))
 
     @classmethod
     def plugin_metadata(cls):
@@ -1263,11 +1268,26 @@ class OpenTelemetryPlugin(BaseDiscoveryPlugin):
                             "Evicted cross-batch spans for integration=%s", _iid or "(default)"
                         )
 
-                # 4) Trim per-tool trace lists to most recent 100 entries
+                # 4) Trim per-tool trace lists to MAX_ASSET_TRACES entries
+                cap = self.MAX_ASSET_TRACES
                 for tool_data in self.discovered_tools.values():
                     traces_list = tool_data.get("traces")
-                    if traces_list and len(traces_list) > 100:
-                        del traces_list[:-100]
+                    if traces_list and len(traces_list) > cap:
+                        del traces_list[:-cap]
+
+                # 5) Trim MCP server trace lists (global + per-integration).
+                # Each MCP call appends a trace entry; without trimming both
+                # mcp_servers[id]["traces"] and the per-integration mirror
+                # grow without bound.
+                for server_data in self.mcp_servers.values():
+                    traces_list = server_data.get("traces")
+                    if traces_list and len(traces_list) > cap:
+                        del traces_list[:-cap]
+                for iid_map in self.mcp_server_integration_data.values():
+                    for int_entry in iid_map.values():
+                        traces_list = int_entry.get("traces")
+                        if traces_list and len(traces_list) > cap:
+                            del traces_list[:-cap]
 
                 logger.info(f"Ingested traces for integration_id '{integration_id}'. Total traces: {len(self.traces)}")
 

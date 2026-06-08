@@ -370,3 +370,80 @@ class TestToolTraceListTrim:
         )
 
         assert len(plugin.discovered_tools["my-tool"]["traces"]) == 100
+
+
+# ---------------------------------------------------------------------------
+# MCP server trace list trimming (global + per-integration)
+# ---------------------------------------------------------------------------
+
+class TestMcpServerTraceListTrim:
+    """MCP server trace lists are trimmed to the most recent 100 entries
+    on both the global dict and the per-integration mirror."""
+
+    def test_global_trim_to_100(self):
+        plugin = _make_plugin()
+        plugin.mcp_servers["srv-1"] = {
+            "traces": [{"trace_id": f"t{i}"} for i in range(150)],
+        }
+
+        plugin._ingest_traces(
+            _single_span_payload(trace_id="f" * 32, span_id="f" * 16, name="trigger"),
+        )
+
+        traces = plugin.mcp_servers["srv-1"]["traces"]
+        assert len(traces) == 100
+        assert traces[0]["trace_id"] == "t50"
+        assert traces[-1]["trace_id"] == "t149"
+
+    def test_per_integration_trim_to_100(self):
+        plugin = _make_plugin()
+        plugin.mcp_server_integration_data["srv-1"]["tenant-a"]["traces"] = [
+            {"trace_id": f"t{i}"} for i in range(150)
+        ]
+
+        plugin._ingest_traces(
+            _single_span_payload(trace_id="f" * 32, span_id="f" * 16, name="trigger"),
+        )
+
+        traces = plugin.mcp_server_integration_data["srv-1"]["tenant-a"]["traces"]
+        assert len(traces) == 100
+        assert traces[0]["trace_id"] == "t50"
+        assert traces[-1]["trace_id"] == "t149"
+
+    def test_no_trim_under_100(self):
+        plugin = _make_plugin()
+        plugin.mcp_servers["srv-1"] = {
+            "traces": [{"trace_id": f"t{i}"} for i in range(100)],
+        }
+        plugin.mcp_server_integration_data["srv-1"]["tenant-a"]["traces"] = [
+            {"trace_id": f"t{i}"} for i in range(100)
+        ]
+
+        plugin._ingest_traces(
+            _single_span_payload(trace_id="f" * 32, span_id="f" * 16, name="trigger"),
+        )
+
+        assert len(plugin.mcp_servers["srv-1"]["traces"]) == 100
+        assert len(plugin.mcp_server_integration_data["srv-1"]["tenant-a"]["traces"]) == 100
+
+    def test_configurable_cap_applies_to_tool_and_mcp_traces(self):
+        """MAX_ASSET_TRACES override is honored across both tool and MCP trace lists."""
+        plugin = _make_plugin(MAX_ASSET_TRACES=25)
+
+        plugin.discovered_tools["my-tool"]["traces"] = [
+            {"model": "gpt-4", "trace_id": f"t{i}"} for i in range(80)
+        ]
+        plugin.mcp_servers["srv-1"] = {
+            "traces": [{"trace_id": f"t{i}"} for i in range(80)],
+        }
+        plugin.mcp_server_integration_data["srv-1"]["tenant-a"]["traces"] = [
+            {"trace_id": f"t{i}"} for i in range(80)
+        ]
+
+        plugin._ingest_traces(
+            _single_span_payload(trace_id="f" * 32, span_id="f" * 16, name="trigger"),
+        )
+
+        assert len(plugin.discovered_tools["my-tool"]["traces"]) == 25
+        assert len(plugin.mcp_servers["srv-1"]["traces"]) == 25
+        assert len(plugin.mcp_server_integration_data["srv-1"]["tenant-a"]["traces"]) == 25
