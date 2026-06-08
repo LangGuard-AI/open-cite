@@ -192,8 +192,7 @@ class TestSessionEviction:
         """Directly populate the session cache with n entries for a given integration."""
         for i in range(n):
             sid = f"session-{integration_id}-{i}"
-            plugin._session_user_attrs[sid] = {
-                "_integration_id": integration_id,
+            plugin._session_user_attrs[(integration_id, sid)] = {
                 "user.email": f"user{i}@{integration_id}.com",
             }
 
@@ -222,12 +221,12 @@ class TestSessionEviction:
         )
 
         a_remaining = sum(
-            1 for v in plugin._session_user_attrs.values()
-            if v.get("_integration_id") == "tenant-a"
+            1 for k in plugin._session_user_attrs
+            if k[0] == "tenant-a"
         )
         b_remaining = sum(
-            1 for v in plugin._session_user_attrs.values()
-            if v.get("_integration_id") == "tenant-b"
+            1 for k in plugin._session_user_attrs
+            if k[0] == "tenant-b"
         )
         assert a_remaining > 0, "tenant-a sessions completely starved"
         assert b_remaining > 0, "tenant-b sessions completely starved"
