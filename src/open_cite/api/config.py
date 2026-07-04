@@ -34,7 +34,6 @@ class OpenCiteConfig:
     enable_otel: bool = field(default_factory=lambda: os.getenv("OPENCITE_ENABLE_OTEL", "true").lower() == "true")
     enable_mcp: bool = field(default_factory=lambda: os.getenv("OPENCITE_ENABLE_MCP", "true").lower() == "true")
     enable_databricks: bool = field(default_factory=lambda: os.getenv("OPENCITE_ENABLE_DATABRICKS", "false").lower() == "true")
-    enable_google_cloud: bool = field(default_factory=lambda: os.getenv("OPENCITE_ENABLE_GOOGLE_CLOUD", "false").lower() == "true")
 
     # Databricks settings (passed through to plugin)
     databricks_host: Optional[str] = field(default_factory=lambda: os.getenv("DATABRICKS_HOST"))
@@ -118,7 +117,11 @@ class OpenCiteConfig:
                 }
             })
 
-        if self.enable_google_cloud:
+        # Google Cloud is a production integration — no experimental enable flag.
+        # Auto-configure a startup instance whenever a GCP project is provided;
+        # multi-tenant deployments (e.g. LangGuard) instead create per-integration
+        # instances dynamically via the API and simply leave GCP_PROJECT_ID unset.
+        if self.gcp_project_id:
             plugins.append({
                 "name": "google_cloud",
                 "config": {

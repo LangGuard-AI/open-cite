@@ -6,6 +6,7 @@ including Vertex AI models, endpoints, and generative AI resources.
 """
 
 import logging
+import os
 import subprocess
 import socket
 import json
@@ -17,6 +18,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from open_cite.core import BaseDiscoveryPlugin
 
 logger = logging.getLogger(__name__)
+
+# Robustness: a mis-credentialed Google Cloud instance must fail FAST, not hang
+# OpenCITE's discovery API. Without explicit credentials, google.auth falls back
+# to probing the GCE metadata server, which blocks ~10-25s in a non-GCP
+# environment and — because discovery aggregates across all instances
+# synchronously — drags the whole discovery API down. Bound that probe so
+# verify_connection / list_assets error in ~1s instead. Set before any google
+# import; an explicit env value (e.g. from the container) still wins.
+os.environ.setdefault("GCE_METADATA_TIMEOUT", "1")
 
 
 class GoogleCloudPlugin(BaseDiscoveryPlugin):
@@ -48,10 +58,16 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
     def from_config(cls, config, instance_id=None, display_name=None, dependencies=None):
         credentials = config.get('credentials')
         service_account_key = config.get('service_account_key')
+        oauth_credentials = config.get('oauth_credentials')
 
         # Convert a JSON service account key string into a credentials object
         if not credentials and service_account_key:
             credentials = cls._credentials_from_key(service_account_key)
+
+        # Or build user OAuth credentials from a refresh token (the SaaS path,
+        # for orgs that disable service-account keys).
+        if not credentials and oauth_credentials:
+            credentials = cls._credentials_from_oauth(oauth_credentials)
 
         return cls(
             project_id=config.get('project_id'),
@@ -98,6 +114,46 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
             )
 
         return service_account.Credentials.from_service_account_info(key_info)
+
+    @staticmethod
+    def _credentials_from_oauth(oauth):
+        """
+        Build google.oauth2 user credentials from an OAuth refresh token.
+
+        Args:
+            oauth: dict with `refresh_token`, `client_id`, `client_secret`.
+
+        Returns:
+            google.oauth2.credentials.Credentials (auto-refreshed by the SDK).
+
+        Raises:
+            ValueError: If required fields are missing.
+            ImportError: If google-auth is not installed.
+        """
+        try:
+            from google.oauth2.credentials import Credentials
+        except ImportError:
+            raise ImportError(
+                "google-auth is required for OAuth authentication. "
+                "Install with: pip install google-auth"
+            )
+
+        refresh_token = oauth.get("refresh_token")
+        client_id = oauth.get("client_id")
+        client_secret = oauth.get("client_secret")
+        if not (refresh_token and client_id and client_secret):
+            raise ValueError(
+                "oauth_credentials requires refresh_token, client_id, and client_secret"
+            )
+
+        return Credentials(
+            token=None,
+            refresh_token=refresh_token,
+            client_id=client_id,
+            client_secret=client_secret,
+            token_uri="https://oauth2.googleapis.com/token",
+            scopes=["https://www.googleapis.com/auth/cloud-platform"],
+        )
 
     def __init__(
         self,
@@ -163,6 +219,23 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
     def get_identification_attributes(self) -> List[str]:
         return ["gcp.project_id", "gcp.location"]
 
+    def _require_credentials(self):
+        """Return the configured credentials, or fail fast.
+
+        Application Default Credentials are intentionally DISABLED: an OpenCITE
+        instance must be given explicit credentials — OAuth or a service-account
+        key. Falling back to ADC would probe the GCE metadata server, which
+        blocks ~6-25s off-GCE and, because discovery aggregates across all
+        instances synchronously, drags the whole discovery API down. Requiring
+        explicit credentials makes a mis-credentialed instance fail instantly.
+        """
+        if self.credentials is None:
+            raise RuntimeError(
+                "No credentials configured for this Google Cloud instance "
+                "(OAuth or a service-account key is required; ADC is disabled)."
+            )
+        return self.credentials
+
     def _get_aiplatform_client(self):
         """Get or create Vertex AI client (lazy initialization)."""
         if self._aiplatform_client is None:
@@ -173,7 +246,7 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
                 aiplatform.init(
                     project=self.project_id,
                     location=self.location,
-                    credentials=self.credentials,
+                    credentials=self._require_credentials(),
                 )
                 self._aiplatform_client = aiplatform
                 logger.info(f"Initialized Vertex AI client for project {self.project_id}")
@@ -202,7 +275,7 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
 
                 self._model_service_client = ModelServiceClient(
                     client_options=client_opts,
-                    credentials=self.credentials
+                    credentials=self._require_credentials()
                 )
                 logger.info(f"Initialized Model Service client for {self.location}")
             except ImportError:
@@ -227,7 +300,7 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
 
                 self._endpoint_service_client = EndpointServiceClient(
                     client_options=client_opts,
-                    credentials=self.credentials
+                    credentials=self._require_credentials()
                 )
                 logger.info(f"Initialized Endpoint Service client for {self.location}")
             except ImportError:

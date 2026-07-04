@@ -20,7 +20,6 @@ data:
   OPENCITE_ENABLE_OTEL: "true"
   OPENCITE_ENABLE_MCP: "true"
   OPENCITE_ENABLE_DATABRICKS: "false"
-  OPENCITE_ENABLE_GOOGLE_CLOUD: "false"
 
   # Auto-start discovery
   OPENCITE_AUTO_START: "true"
