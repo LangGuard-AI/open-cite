@@ -189,6 +189,11 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
         self._endpoints_cache: Dict[str, Dict[str, Any]] = {}
         self._deployments_cache: Dict[str, Dict[str, Any]] = {}
 
+        # Cloud Trace ingestion state: high-water mark for incremental pulls and
+        # the default lookback for the first (cold) pull.
+        self._last_trace_query_time = None
+        self.trace_lookback_days = 7
+
         # Lock for thread-safe operations
         import threading
         self._lock = threading.Lock()
@@ -1141,3 +1146,169 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
             self._list_deployments()
 
             logger.info("Google Cloud discovery refresh complete")
+
+        # Also pull agent activity from Cloud Trace (in a background thread so the
+        # refresh endpoint stays responsive). The refresh endpoint prefers
+        # refresh_discovery over refresh_traces, so fold the trace pull in here to
+        # ensure a single refresh both re-discovers assets AND ingests traces.
+        self.refresh_traces()
+
+    # =========================================================================
+    # Cloud Trace ingestion — pull Vertex/Agent Engine agent activity from Cloud
+    # Trace and forward it through the OTel pipeline so it lands in the trace
+    # explorer regardless of whether the call was allowed or blocked. Mirrors the
+    # Databricks plugin's discover_from_traces/refresh_traces + _forward_to_otel /
+    # _deliver_to_webhooks pattern.
+    # =========================================================================
+
+    def _get_trace_session(self):
+        """Authorized requests session for the Cloud Trace v1 REST API.
+
+        Uses the instance's explicit credentials (OAuth or SA key). The REST
+        list_traces response maps 1:1 onto our converter, avoiding the proto
+        shape differences of the google-cloud-trace SDK.
+        """
+        from google.auth.transport.requests import AuthorizedSession
+        return AuthorizedSession(self._require_credentials())
+
+    def _forward_to_otel(self, otlp: dict):
+        """Route an OTLP payload through the embedded OTel plugin so its
+        model/agent/tool detection sees Vertex-sourced spans (discovery). This
+        does NOT store traces — _deliver_to_webhooks does."""
+        try:
+            from open_cite.api import app as api_app
+            otel = getattr(api_app, "_default_otel_plugin", None)
+            if otel is not None:
+                # Tag detected models/agents/tools with THIS instance id so the
+                # webapp's per-integration discovery sync (?integration_id=
+                # langguard-<id>) picks them up instead of dropping them as
+                # integration_ids=None.
+                otel._ingest_traces(otlp, integration_id=self.instance_id)
+        except Exception as e:
+            logger.debug("Could not forward Cloud Trace OTLP to OTel plugin: %s", e)
+
+    def discover_from_traces(
+        self,
+        days: Optional[int] = None,
+        max_pages: int = 20,
+        max_traces: int = 500,
+    ) -> int:
+        """Pull recent traces from Cloud Trace, convert to OTLP, and forward them
+        for detection + storage. Returns the number of traces ingested.
+
+        Incremental: uses the high-water mark from the last successful pull when
+        ``days`` is not given, so repeated refreshes only fetch what's new.
+        """
+        from datetime import datetime, timezone, timedelta
+        from open_cite.plugins.google_cloud_otlp_converter import (
+            cloud_trace_to_otlp,
+            merge_otlp,
+        )
+
+        if not self.project_id:
+            logger.warning("Cloud Trace pull skipped: no project_id configured")
+            return 0
+
+        if days is None:
+            if self._last_trace_query_time:
+                elapsed = datetime.now(timezone.utc) - self._last_trace_query_time
+                days = max(1, int(elapsed.total_seconds() / 86400) + 1)
+            else:
+                days = self.trace_lookback_days
+
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=days)
+        base = f"https://cloudtrace.googleapis.com/v1/projects/{self.project_id}/traces"
+        params = {
+            "view": "COMPLETE",
+            "startTime": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "endTime": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "pageSize": 100,
+        }
+
+        try:
+            session = self._get_trace_session()
+        except Exception as e:
+            logger.warning("Cloud Trace pull skipped (no credentials): %s", e)
+            return 0
+
+        payloads: List[Dict[str, Any]] = []
+        page_token = None
+        pages = 0
+        while pages < max_pages and len(payloads) < max_traces:
+            if page_token:
+                params["pageToken"] = page_token
+            try:
+                resp = session.get(base, params=params, timeout=30)
+            except Exception as e:
+                logger.warning("Cloud Trace list request failed: %s", e)
+                break
+            if resp.status_code != 200:
+                logger.warning(
+                    "Cloud Trace list returned %s: %s",
+                    resp.status_code,
+                    resp.text[:200],
+                )
+                break
+            data = resp.json()
+            for t in data.get("traces", []):
+                otlp = cloud_trace_to_otlp(t, self.project_id)
+                if otlp:
+                    payloads.append(otlp)
+            page_token = data.get("nextPageToken")
+            pages += 1
+            if not page_token:
+                break
+
+        if not payloads:
+            logger.info(
+                "Cloud Trace: no agent traces in the last %sd for project %s",
+                days,
+                self.project_id,
+            )
+            self._last_trace_query_time = end
+            return 0
+
+        batched = merge_otlp(payloads)
+        span_count = sum(
+            len(ss.get("spans", []))
+            for rs in batched.get("resourceSpans", [])
+            for ss in rs.get("scopeSpans", [])
+        )
+        self._forward_to_otel(batched)
+        try:
+            self._deliver_to_webhooks(batched)
+        except Exception as e:
+            logger.warning("Cloud Trace deliver_to_webhooks failed: %s", e)
+
+        self._last_trace_query_time = end
+        logger.info(
+            "Cloud Trace: ingested %d traces (%d spans) for project %s",
+            len(payloads),
+            span_count,
+            self.project_id,
+        )
+        return len(payloads)
+
+    def _safe_discover_from_traces(self, days: Optional[int]):
+        try:
+            self.discover_from_traces(days=days)
+        except Exception as e:
+            logger.warning("Cloud Trace discovery failed: %s", e)
+
+    def refresh_traces(self, days: Optional[int] = None):
+        """On-demand Cloud Trace re-pull. Runs in a background thread so the
+        OpenCITE refresh endpoint returns immediately (matches the Databricks
+        plugin's contract; invoked by app.py's refresh handler)."""
+        import threading
+
+        logger.info(
+            "Refreshing Cloud Trace agent traces (lookback=%s) for %s",
+            days if days is not None else "auto",
+            self.instance_id,
+        )
+        threading.Thread(
+            target=self._safe_discover_from_traces,
+            args=(days,),
+            daemon=True,
+        ).start()
