@@ -104,9 +104,13 @@ def _is_infra_span(labels: Dict[str, Any]) -> bool:
     and are redundant with the agent's own tool-call spans, so surfacing them in
     the explorer only produces unattributed "Unknown" traces. Skip them: the
     gateway's Envoy HTTP load-balancer egress hops tag ``/component: HTTP load
-    balancer``; Model Armor guardrail spans tag ``service.name: modelarmor``."""
+    balancer``, the downstream Cloud Run MCP tool servers tag ``/component:
+    AppServer``, and Model Armor guardrail spans tag ``service.name: modelarmor``.
+    A span that carries an agent identity is always kept."""
+    if labels.get("gen_ai.agent.name") or labels.get("agent.name"):
+        return False
     return (
-        labels.get("/component") == "HTTP load balancer"
+        labels.get("/component") in ("HTTP load balancer", "AppServer")
         or labels.get("service.name") == "modelarmor"
     )
 
