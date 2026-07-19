@@ -51,7 +51,6 @@ def flask_app():
         "OPENCITE_ENABLE_OTEL": "false",
         "OPENCITE_ENABLE_MCP": "false",
         "OPENCITE_ENABLE_DATABRICKS": "false",
-        "OPENCITE_ENABLE_GOOGLE_CLOUD": "false",
         "OPENCITE_DB_PATH": os.path.join(_tmpdir, "test_instance.db"),
     }
     _saved_env = {k: os.environ.get(k) for k in _env_overrides}

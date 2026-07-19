@@ -35,7 +35,6 @@ os.environ["OPENCITE_AUTO_START"] = "false"
 os.environ["OPENCITE_ENABLE_OTEL"] = "true"
 os.environ["OPENCITE_ENABLE_MCP"] = "false"
 os.environ["OPENCITE_ENABLE_DATABRICKS"] = "false"
-os.environ["OPENCITE_ENABLE_GOOGLE_CLOUD"] = "false"
 os.environ["OPENCITE_DB_PATH"] = os.path.join(_tmpdir, "test_opencite.db")
 
 from open_cite.api.app import create_app

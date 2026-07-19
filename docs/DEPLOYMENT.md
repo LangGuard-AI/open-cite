@@ -287,7 +287,6 @@ python databricks_app.py
 | `OPENCITE_ENABLE_OTEL` | `true` | Enable OpenTelemetry plugin |
 | `OPENCITE_ENABLE_MCP` | `true` | Enable MCP discovery |
 | `OPENCITE_ENABLE_DATABRICKS` | `false` | Enable Databricks plugin |
-| `OPENCITE_ENABLE_GOOGLE_CLOUD` | `false` | Enable Google Cloud plugin |
 | `OPENCITE_AUTO_START` | `true` | Auto-configure plugins on startup |
 | `OPENCITE_LOG_LEVEL` | `INFO` | Log level (DEBUG, INFO, WARNING, ERROR) |
 | `OPENCITE_PERSISTENCE_ENABLED` | `false` | Enable SQLite persistence |

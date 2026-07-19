@@ -327,10 +327,9 @@ export DATABRICKS_TOKEN="dapi..."
 export DATABRICKS_WAREHOUSE_ID="..."
 export OPENCITE_ENABLE_DATABRICKS="true"
 
-# Google Cloud
+# Google Cloud (the plugin auto-configures when GCP_PROJECT_ID is set)
 export GCP_PROJECT_ID="your-project"
 export GCP_LOCATION="us-central1"
-export OPENCITE_ENABLE_GOOGLE_CLOUD="true"
 
 # AWS (uses standard AWS credential chain)
 export AWS_ACCESS_KEY_ID="AKIA..."

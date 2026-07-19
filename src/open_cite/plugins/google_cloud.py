@@ -6,6 +6,7 @@ including Vertex AI models, endpoints, and generative AI resources.
 """
 
 import logging
+import os
 import subprocess
 import socket
 import json
@@ -17,6 +18,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from open_cite.core import BaseDiscoveryPlugin
 
 logger = logging.getLogger(__name__)
+
+# Robustness: a mis-credentialed Google Cloud instance must fail FAST, not hang
+# OpenCITE's discovery API. Without explicit credentials, google.auth falls back
+# to probing the GCE metadata server, which blocks ~10-25s in a non-GCP
+# environment and — because discovery aggregates across all instances
+# synchronously — drags the whole discovery API down. Bound that probe so
+# verify_connection / list_assets error in ~1s instead. Set before any google
+# import; an explicit env value (e.g. from the container) still wins.
+os.environ.setdefault("GCE_METADATA_TIMEOUT", "1")
 
 
 class GoogleCloudPlugin(BaseDiscoveryPlugin):
@@ -48,10 +58,16 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
     def from_config(cls, config, instance_id=None, display_name=None, dependencies=None):
         credentials = config.get('credentials')
         service_account_key = config.get('service_account_key')
+        oauth_credentials = config.get('oauth_credentials')
 
         # Convert a JSON service account key string into a credentials object
         if not credentials and service_account_key:
             credentials = cls._credentials_from_key(service_account_key)
+
+        # Or build user OAuth credentials from a refresh token (the SaaS path,
+        # for orgs that disable service-account keys).
+        if not credentials and oauth_credentials:
+            credentials = cls._credentials_from_oauth(oauth_credentials)
 
         return cls(
             project_id=config.get('project_id'),
@@ -99,6 +115,46 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
 
         return service_account.Credentials.from_service_account_info(key_info)
 
+    @staticmethod
+    def _credentials_from_oauth(oauth):
+        """
+        Build google.oauth2 user credentials from an OAuth refresh token.
+
+        Args:
+            oauth: dict with `refresh_token`, `client_id`, `client_secret`.
+
+        Returns:
+            google.oauth2.credentials.Credentials (auto-refreshed by the SDK).
+
+        Raises:
+            ValueError: If required fields are missing.
+            ImportError: If google-auth is not installed.
+        """
+        try:
+            from google.oauth2.credentials import Credentials
+        except ImportError:
+            raise ImportError(
+                "google-auth is required for OAuth authentication. "
+                "Install with: pip install google-auth"
+            )
+
+        refresh_token = oauth.get("refresh_token")
+        client_id = oauth.get("client_id")
+        client_secret = oauth.get("client_secret")
+        if not (refresh_token and client_id and client_secret):
+            raise ValueError(
+                "oauth_credentials requires refresh_token, client_id, and client_secret"
+            )
+
+        return Credentials(
+            token=None,
+            refresh_token=refresh_token,
+            client_id=client_id,
+            client_secret=client_secret,
+            token_uri="https://oauth2.googleapis.com/token",
+            scopes=["https://www.googleapis.com/auth/cloud-platform"],
+        )
+
     def __init__(
         self,
         project_id: Optional[str] = None,
@@ -133,6 +189,11 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
         self._endpoints_cache: Dict[str, Dict[str, Any]] = {}
         self._deployments_cache: Dict[str, Dict[str, Any]] = {}
 
+        # Cloud Trace ingestion state: high-water mark for incremental pulls and
+        # the default lookback for the first (cold) pull.
+        self._last_trace_query_time = None
+        self.trace_lookback_days = 7
+
         # Lock for thread-safe operations
         import threading
         self._lock = threading.Lock()
@@ -163,6 +224,23 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
     def get_identification_attributes(self) -> List[str]:
         return ["gcp.project_id", "gcp.location"]
 
+    def _require_credentials(self):
+        """Return the configured credentials, or fail fast.
+
+        Application Default Credentials are intentionally DISABLED: an OpenCITE
+        instance must be given explicit credentials — OAuth or a service-account
+        key. Falling back to ADC would probe the GCE metadata server, which
+        blocks ~6-25s off-GCE and, because discovery aggregates across all
+        instances synchronously, drags the whole discovery API down. Requiring
+        explicit credentials makes a mis-credentialed instance fail instantly.
+        """
+        if self.credentials is None:
+            raise RuntimeError(
+                "No credentials configured for this Google Cloud instance "
+                "(OAuth or a service-account key is required; ADC is disabled)."
+            )
+        return self.credentials
+
     def _get_aiplatform_client(self):
         """Get or create Vertex AI client (lazy initialization)."""
         if self._aiplatform_client is None:
@@ -173,7 +251,7 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
                 aiplatform.init(
                     project=self.project_id,
                     location=self.location,
-                    credentials=self.credentials,
+                    credentials=self._require_credentials(),
                 )
                 self._aiplatform_client = aiplatform
                 logger.info(f"Initialized Vertex AI client for project {self.project_id}")
@@ -202,7 +280,7 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
 
                 self._model_service_client = ModelServiceClient(
                     client_options=client_opts,
-                    credentials=self.credentials
+                    credentials=self._require_credentials()
                 )
                 logger.info(f"Initialized Model Service client for {self.location}")
             except ImportError:
@@ -227,7 +305,7 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
 
                 self._endpoint_service_client = EndpointServiceClient(
                     client_options=client_opts,
-                    credentials=self.credentials
+                    credentials=self._require_credentials()
                 )
                 logger.info(f"Initialized Endpoint Service client for {self.location}")
             except ImportError:
@@ -1068,3 +1146,407 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
             self._list_deployments()
 
             logger.info("Google Cloud discovery refresh complete")
+
+        # Also pull agent activity from Cloud Trace (in a background thread so the
+        # refresh endpoint stays responsive). The refresh endpoint prefers
+        # refresh_discovery over refresh_traces, so fold the trace pull in here to
+        # ensure a single refresh both re-discovers assets AND ingests traces.
+        self.refresh_traces()
+        # …and the Agent Gateway's own enforcement log (which extension fired,
+        # ALLOWED vs DENIED per MCP/model callout) — no agent instrumentation needed.
+        self.refresh_gateway_requests()
+
+    # =========================================================================
+    # Cloud Trace ingestion — pull Vertex/Agent Engine agent activity from Cloud
+    # Trace and forward it through the OTel pipeline so it lands in the trace
+    # explorer regardless of whether the call was allowed or blocked. Mirrors the
+    # Databricks plugin's discover_from_traces/refresh_traces + _forward_to_otel /
+    # _deliver_to_webhooks pattern.
+    # =========================================================================
+
+    def _get_trace_session(self):
+        """Authorized requests session for the Cloud Trace v1 REST API.
+
+        Uses the instance's explicit credentials (OAuth or SA key). The REST
+        list_traces response maps 1:1 onto our converter, avoiding the proto
+        shape differences of the google-cloud-trace SDK.
+        """
+        from google.auth.transport.requests import AuthorizedSession
+        return AuthorizedSession(self._require_credentials())
+
+    def _forward_to_otel(self, otlp: dict):
+        """Route an OTLP payload through the embedded OTel plugin so its
+        model/agent/tool detection sees Vertex-sourced spans (discovery). This
+        does NOT store traces — _deliver_to_webhooks does."""
+        try:
+            from open_cite.api import app as api_app
+            otel = getattr(api_app, "_default_otel_plugin", None)
+            if otel is not None:
+                # Tag detected models/agents/tools with THIS instance id so the
+                # webapp's per-integration discovery sync (?integration_id=
+                # langguard-<id>) picks them up instead of dropping them as
+                # integration_ids=None.
+                otel._ingest_traces(otlp, integration_id=self.instance_id)
+        except Exception as e:
+            logger.debug("Could not forward Cloud Trace OTLP to OTel plugin: %s", e)
+
+    def discover_from_traces(
+        self,
+        days: Optional[int] = None,
+        max_pages: int = 20,
+        max_traces: int = 500,
+    ) -> int:
+        """Pull recent traces from Cloud Trace, convert to OTLP, and forward them
+        for detection + storage. Returns the number of traces ingested.
+
+        Incremental: uses the high-water mark from the last successful pull when
+        ``days`` is not given, so repeated refreshes only fetch what's new.
+        """
+        from datetime import datetime, timezone, timedelta
+        from open_cite.plugins.google_cloud_otlp_converter import (
+            cloud_trace_to_otlp,
+            merge_otlp,
+        )
+
+        if not self.project_id:
+            logger.warning("Cloud Trace pull skipped: no project_id configured")
+            return 0
+
+        if days is None:
+            if self._last_trace_query_time:
+                elapsed = datetime.now(timezone.utc) - self._last_trace_query_time
+                days = max(1, int(elapsed.total_seconds() / 86400) + 1)
+            else:
+                days = self.trace_lookback_days
+
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=days)
+        base = f"https://cloudtrace.googleapis.com/v1/projects/{self.project_id}/traces"
+        params = {
+            "view": "COMPLETE",
+            "startTime": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "endTime": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "pageSize": 100,
+        }
+
+        try:
+            session = self._get_trace_session()
+        except Exception as e:
+            logger.warning("Cloud Trace pull skipped (no credentials): %s", e)
+            return 0
+
+        payloads: List[Dict[str, Any]] = []
+        page_token = None
+        pages = 0
+        while pages < max_pages and len(payloads) < max_traces:
+            if page_token:
+                params["pageToken"] = page_token
+            try:
+                resp = session.get(base, params=params, timeout=30)
+            except Exception as e:
+                logger.warning("Cloud Trace list request failed: %s", e)
+                break
+            if resp.status_code != 200:
+                logger.warning(
+                    "Cloud Trace list returned %s: %s",
+                    resp.status_code,
+                    resp.text[:200],
+                )
+                break
+            data = resp.json()
+            for t in data.get("traces", []):
+                otlp = cloud_trace_to_otlp(t, self.project_id)
+                if otlp:
+                    payloads.append(otlp)
+            page_token = data.get("nextPageToken")
+            pages += 1
+            if not page_token:
+                break
+
+        if not payloads:
+            logger.info(
+                "Cloud Trace: no agent traces in the last %sd for project %s",
+                days,
+                self.project_id,
+            )
+            self._last_trace_query_time = end
+            return 0
+
+        batched = merge_otlp(payloads)
+        span_count = sum(
+            len(ss.get("spans", []))
+            for rs in batched.get("resourceSpans", [])
+            for ss in rs.get("scopeSpans", [])
+        )
+        self._forward_to_otel(batched)
+        try:
+            self._deliver_to_webhooks(batched)
+        except Exception as e:
+            logger.warning("Cloud Trace deliver_to_webhooks failed: %s", e)
+
+        self._last_trace_query_time = end
+        logger.info(
+            "Cloud Trace: ingested %d traces (%d spans) for project %s",
+            len(payloads),
+            span_count,
+            self.project_id,
+        )
+        return len(payloads)
+
+    def _safe_discover_from_traces(self, days: Optional[int]):
+        try:
+            self.discover_from_traces(days=days)
+        except Exception as e:
+            logger.warning("Cloud Trace discovery failed: %s", e)
+
+    def refresh_traces(self, days: Optional[int] = None):
+        """On-demand Cloud Trace re-pull. Runs in a background thread so the
+        OpenCITE refresh endpoint returns immediately (matches the Databricks
+        plugin's contract; invoked by app.py's refresh handler)."""
+        import threading
+
+        logger.info(
+            "Refreshing Cloud Trace agent traces (lookback=%s) for %s",
+            days if days is not None else "auto",
+            self.instance_id,
+        )
+        threading.Thread(
+            target=self._safe_discover_from_traces,
+            args=(days,),
+            daemon=True,
+        ).start()
+
+    # =========================================================================
+    # Gateway enforcement ingestion — pull the Agent Gateway's own per-callout
+    # record from Cloud Logging (networkservices gateway_requests) and surface it
+    # as traces. This is the GATEWAY's view (which extension fired, ALLOWED vs
+    # DENIED, which MCP server / model path) — complementary to the agent-exported
+    # Cloud Trace spans above, and it needs no agent-side instrumentation.
+    # =========================================================================
+
+    @staticmethod
+    def _hex_id(seed: str, width: int) -> str:
+        import hashlib
+        return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:width]
+
+    @staticmethod
+    def _rfc3339_to_nanos(ts: str) -> int:
+        from datetime import datetime, timezone
+        if not ts:
+            return 0
+        try:
+            s = ts.replace("Z", "+00:00")
+            # Trim fractional seconds to microseconds for fromisoformat.
+            if "." in s:
+                head, tail = s.split(".", 1)
+                frac = "".join(ch for ch in tail if ch.isdigit())[:6].ljust(6, "0")
+                off = tail[len(frac):] if len(tail) > 6 else ""
+                # recover timezone offset if present after the fraction
+                for marker in ("+", "-"):
+                    if marker in tail:
+                        off = marker + tail.split(marker, 1)[1]
+                        break
+                s = f"{head}.{frac}{off or '+00:00'}"
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1_000_000_000)
+        except Exception:
+            return 0
+
+    def _gateway_entry_to_span(self, entry: dict):
+        """Convert one gateway_requests log entry into an OTLP span dict, or None
+        if the LangGuard extension did not participate in the call."""
+        jp = entry.get("jsonPayload") or {}
+        exts = jp.get("serviceExtensionInfo") or []
+        lg = next(
+            (x for x in exts if "langguard" in (x.get("resource") or "")),
+            None,
+        )
+        if not lg:
+            return None  # not a LangGuard-governed callout
+
+        http = entry.get("httpRequest") or {}
+        url = http.get("requestUrl") or ""
+        status_code = http.get("status")
+
+        # Classify the call from its path.
+        if ":generateContent" in url or ":streamGenerateContent" in url:
+            kind, op = "model", "generateContent"
+        elif "/sessions" in url:
+            return None  # agent session-management is not governed; skip noise
+        elif url.endswith("/mcp") or "/mcp" in url:
+            kind, op = "tool", "mcp_call"
+        else:
+            kind, op = "other", "request"
+
+        server = ""
+        try:
+            server = url.split("//", 1)[1].split("/", 1)[0] if "//" in url else ""
+        except Exception:
+            server = ""
+
+        # Verdict: DENIED if the LangGuard authz policy denied, or the request 403'd.
+        authz = jp.get("authzPolicyInfo") or {}
+        policies = authz.get("policies") or []
+        lg_policy = next((p for p in policies if "langguard" in (p.get("name") or "")), None)
+        denied = (
+            (lg_policy or {}).get("result") == "DENIED"
+            or authz.get("result") == "DENIED"
+            or lg.get("grpcStatus") not in (None, "OK")
+            or (isinstance(status_code, int) and status_code in (401, 403))
+        )
+
+        ts = entry.get("timestamp") or entry.get("receiveTimestamp") or ""
+        start_ns = self._rfc3339_to_nanos(ts)
+        seed = entry.get("insertId") or f"{ts}|{url}"
+        span = {
+            "traceId": self._hex_id("t|" + seed, 32),
+            "spanId": self._hex_id("s|" + seed, 16),
+            "name": f"gateway {kind} {server or op}".strip(),
+            "kind": 3,  # CLIENT
+            "startTimeUnixNano": str(start_ns),
+            "endTimeUnixNano": str(start_ns),
+            "attributes": [
+                {"key": "gen_ai.system", "value": {"stringValue": "vertex_ai"}},
+                {"key": "gen_ai.operation.name", "value": {"stringValue": op}},
+                {"key": "langguard.extension", "value": {"stringValue": (lg.get("resource") or "").split("/")[-1]}},
+                {"key": "langguard.result", "value": {"stringValue": "DENIED" if denied else "ALLOWED"}},
+                {"key": "langguard.enforced", "value": {"boolValue": bool(denied)}},
+                {"key": "server.address", "value": {"stringValue": server}},
+                {"key": "url.full", "value": {"stringValue": url}},
+                {"key": "gateway.backend", "value": {"stringValue": lg.get("backendTargetName") or ""}},
+            ],
+            "status": {"code": 2, "message": "blocked by LangGuard policy"} if denied else {"code": 1},
+        }
+        if isinstance(status_code, int):
+            span["attributes"].append(
+                {"key": "http.response.status_code", "value": {"intValue": status_code}}
+            )
+        return span
+
+    def discover_from_gateway_requests(
+        self,
+        days: Optional[int] = None,
+        max_pages: int = 20,
+        max_entries: int = 1000,
+    ) -> int:
+        """Pull recent Agent Gateway callouts from Cloud Logging, keep the ones the
+        LangGuard extension governed, convert to OTLP, and deliver. Returns the
+        number of governed callouts ingested."""
+        from datetime import datetime, timezone, timedelta
+
+        if not self.project_id:
+            logger.warning("Gateway-requests pull skipped: no project_id configured")
+            return 0
+
+        lookback = days if days is not None else max(1, getattr(self, "trace_lookback_days", 1))
+        start = datetime.now(timezone.utc) - timedelta(days=lookback)
+        log_name = f"projects/{self.project_id}/logs/networkservices.googleapis.com%2Fgateway_requests"
+        body = {
+            "resourceNames": [f"projects/{self.project_id}"],
+            "filter": f'logName="{log_name}" AND timestamp>="{start.strftime("%Y-%m-%dT%H:%M:%SZ")}"',
+            "orderBy": "timestamp desc",
+            "pageSize": 200,
+        }
+
+        try:
+            session = self._get_trace_session()  # same AuthorizedSession (needs logging.viewer)
+        except Exception as e:
+            logger.warning("Gateway-requests pull skipped (no credentials): %s", e)
+            return 0
+
+        spans: List[Dict[str, Any]] = []
+        page_token = None
+        pages = 0
+        while pages < max_pages and len(spans) < max_entries:
+            if page_token:
+                body["pageToken"] = page_token
+            try:
+                resp = session.post(
+                    "https://logging.googleapis.com/v2/entries:list", json=body, timeout=30
+                )
+            except Exception as e:
+                logger.warning("Cloud Logging list request failed: %s", e)
+                break
+            if resp.status_code != 200:
+                logger.warning(
+                    "Cloud Logging list returned %s: %s", resp.status_code, resp.text[:200]
+                )
+                break
+            data = resp.json()
+            for entry in data.get("entries", []):
+                span = self._gateway_entry_to_span(entry)
+                if span:
+                    spans.append(span)
+            page_token = data.get("nextPageToken")
+            pages += 1
+            if not page_token:
+                break
+
+        if not spans:
+            logger.info(
+                "Gateway requests: no LangGuard-governed callouts in the last %sd for %s",
+                lookback,
+                self.project_id,
+            )
+            return 0
+
+        otlp = {
+            "resourceSpans": [
+                {
+                    "resource": {
+                        "attributes": [
+                            {"key": "service.name", "value": {"stringValue": "agent-gateway"}},
+                            {"key": "gen_ai.system", "value": {"stringValue": "vertex_ai"}},
+                            {"key": "gen_ai.provider.name", "value": {"stringValue": "vertex_ai"}},
+                            {"key": "gen_ai.agent.name", "value": {"stringValue": "agent-gateway"}},
+                        ]
+                    },
+                    "scopeSpans": [
+                        {"scope": {"name": "langguard.gateway"}, "spans": spans}
+                    ],
+                }
+            ]
+        }
+        self._forward_to_otel(otlp)
+        try:
+            self._deliver_to_webhooks(otlp)
+        except Exception as e:
+            logger.warning("Gateway-requests deliver_to_webhooks failed: %s", e)
+        denied = sum(
+            1
+            for s in spans
+            if any(
+                a.get("key") == "langguard.enforced" and a.get("value", {}).get("boolValue")
+                for a in s.get("attributes", [])
+            )
+        )
+        logger.info(
+            "Gateway requests: ingested %d governed callouts (%d blocked) for %s",
+            len(spans),
+            denied,
+            self.project_id,
+        )
+        return len(spans)
+
+    def _safe_discover_from_gateway_requests(self, days: Optional[int]):
+        try:
+            self.discover_from_gateway_requests(days=days)
+        except Exception as e:
+            logger.warning("Gateway-requests discovery failed: %s", e)
+
+    def refresh_gateway_requests(self, days: Optional[int] = None):
+        """On-demand gateway-requests re-pull (background thread)."""
+        import threading
+
+        logger.info(
+            "Refreshing Agent Gateway enforcement logs (lookback=%s) for %s",
+            days if days is not None else "auto",
+            self.instance_id,
+        )
+        threading.Thread(
+            target=self._safe_discover_from_gateway_requests,
+            args=(days,),
+            daemon=True,
+        ).start()
