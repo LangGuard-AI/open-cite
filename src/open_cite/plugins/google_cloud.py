@@ -1152,6 +1152,9 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
         # refresh_discovery over refresh_traces, so fold the trace pull in here to
         # ensure a single refresh both re-discovers assets AND ingests traces.
         self.refresh_traces()
+        # …and the Agent Gateway's own enforcement log (which extension fired,
+        # ALLOWED vs DENIED per MCP/model callout) — no agent instrumentation needed.
+        self.refresh_gateway_requests()
 
     # =========================================================================
     # Cloud Trace ingestion — pull Vertex/Agent Engine agent activity from Cloud
@@ -1309,6 +1312,241 @@ class GoogleCloudPlugin(BaseDiscoveryPlugin):
         )
         threading.Thread(
             target=self._safe_discover_from_traces,
+            args=(days,),
+            daemon=True,
+        ).start()
+
+    # =========================================================================
+    # Gateway enforcement ingestion — pull the Agent Gateway's own per-callout
+    # record from Cloud Logging (networkservices gateway_requests) and surface it
+    # as traces. This is the GATEWAY's view (which extension fired, ALLOWED vs
+    # DENIED, which MCP server / model path) — complementary to the agent-exported
+    # Cloud Trace spans above, and it needs no agent-side instrumentation.
+    # =========================================================================
+
+    @staticmethod
+    def _hex_id(seed: str, width: int) -> str:
+        import hashlib
+        return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:width]
+
+    @staticmethod
+    def _rfc3339_to_nanos(ts: str) -> int:
+        from datetime import datetime, timezone
+        if not ts:
+            return 0
+        try:
+            s = ts.replace("Z", "+00:00")
+            # Trim fractional seconds to microseconds for fromisoformat.
+            if "." in s:
+                head, tail = s.split(".", 1)
+                frac = "".join(ch for ch in tail if ch.isdigit())[:6].ljust(6, "0")
+                off = tail[len(frac):] if len(tail) > 6 else ""
+                # recover timezone offset if present after the fraction
+                for marker in ("+", "-"):
+                    if marker in tail:
+                        off = marker + tail.split(marker, 1)[1]
+                        break
+                s = f"{head}.{frac}{off or '+00:00'}"
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1_000_000_000)
+        except Exception:
+            return 0
+
+    def _gateway_entry_to_span(self, entry: dict):
+        """Convert one gateway_requests log entry into an OTLP span dict, or None
+        if the LangGuard extension did not participate in the call."""
+        jp = entry.get("jsonPayload") or {}
+        exts = jp.get("serviceExtensionInfo") or []
+        lg = next(
+            (x for x in exts if "langguard" in (x.get("resource") or "")),
+            None,
+        )
+        if not lg:
+            return None  # not a LangGuard-governed callout
+
+        http = entry.get("httpRequest") or {}
+        url = http.get("requestUrl") or ""
+        status_code = http.get("status")
+
+        # Classify the call from its path.
+        if ":generateContent" in url or ":streamGenerateContent" in url:
+            kind, op = "model", "generateContent"
+        elif "/sessions" in url:
+            return None  # agent session-management is not governed; skip noise
+        elif url.endswith("/mcp") or "/mcp" in url:
+            kind, op = "tool", "mcp_call"
+        else:
+            kind, op = "other", "request"
+
+        server = ""
+        try:
+            server = url.split("//", 1)[1].split("/", 1)[0] if "//" in url else ""
+        except Exception:
+            server = ""
+
+        # Verdict: DENIED if the LangGuard authz policy denied, or the request 403'd.
+        authz = jp.get("authzPolicyInfo") or {}
+        policies = authz.get("policies") or []
+        lg_policy = next((p for p in policies if "langguard" in (p.get("name") or "")), None)
+        denied = (
+            (lg_policy or {}).get("result") == "DENIED"
+            or authz.get("result") == "DENIED"
+            or lg.get("grpcStatus") not in (None, "OK")
+            or (isinstance(status_code, int) and status_code in (401, 403))
+        )
+
+        ts = entry.get("timestamp") or entry.get("receiveTimestamp") or ""
+        start_ns = self._rfc3339_to_nanos(ts)
+        seed = entry.get("insertId") or f"{ts}|{url}"
+        span = {
+            "traceId": self._hex_id("t|" + seed, 32),
+            "spanId": self._hex_id("s|" + seed, 16),
+            "name": f"gateway {kind} {server or op}".strip(),
+            "kind": 3,  # CLIENT
+            "startTimeUnixNano": str(start_ns),
+            "endTimeUnixNano": str(start_ns),
+            "attributes": [
+                {"key": "gen_ai.system", "value": {"stringValue": "vertex_ai"}},
+                {"key": "gen_ai.operation.name", "value": {"stringValue": op}},
+                {"key": "langguard.extension", "value": {"stringValue": (lg.get("resource") or "").split("/")[-1]}},
+                {"key": "langguard.result", "value": {"stringValue": "DENIED" if denied else "ALLOWED"}},
+                {"key": "langguard.enforced", "value": {"boolValue": bool(denied)}},
+                {"key": "server.address", "value": {"stringValue": server}},
+                {"key": "url.full", "value": {"stringValue": url}},
+                {"key": "gateway.backend", "value": {"stringValue": lg.get("backendTargetName") or ""}},
+            ],
+            "status": {"code": 2, "message": "blocked by LangGuard policy"} if denied else {"code": 1},
+        }
+        if isinstance(status_code, int):
+            span["attributes"].append(
+                {"key": "http.response.status_code", "value": {"intValue": status_code}}
+            )
+        return span
+
+    def discover_from_gateway_requests(
+        self,
+        days: Optional[int] = None,
+        max_pages: int = 20,
+        max_entries: int = 1000,
+    ) -> int:
+        """Pull recent Agent Gateway callouts from Cloud Logging, keep the ones the
+        LangGuard extension governed, convert to OTLP, and deliver. Returns the
+        number of governed callouts ingested."""
+        from datetime import datetime, timezone, timedelta
+
+        if not self.project_id:
+            logger.warning("Gateway-requests pull skipped: no project_id configured")
+            return 0
+
+        lookback = days if days is not None else max(1, getattr(self, "trace_lookback_days", 1))
+        start = datetime.now(timezone.utc) - timedelta(days=lookback)
+        log_name = f"projects/{self.project_id}/logs/networkservices.googleapis.com%2Fgateway_requests"
+        body = {
+            "resourceNames": [f"projects/{self.project_id}"],
+            "filter": f'logName="{log_name}" AND timestamp>="{start.strftime("%Y-%m-%dT%H:%M:%SZ")}"',
+            "orderBy": "timestamp desc",
+            "pageSize": 200,
+        }
+
+        try:
+            session = self._get_trace_session()  # same AuthorizedSession (needs logging.viewer)
+        except Exception as e:
+            logger.warning("Gateway-requests pull skipped (no credentials): %s", e)
+            return 0
+
+        spans: List[Dict[str, Any]] = []
+        page_token = None
+        pages = 0
+        while pages < max_pages and len(spans) < max_entries:
+            if page_token:
+                body["pageToken"] = page_token
+            try:
+                resp = session.post(
+                    "https://logging.googleapis.com/v2/entries:list", json=body, timeout=30
+                )
+            except Exception as e:
+                logger.warning("Cloud Logging list request failed: %s", e)
+                break
+            if resp.status_code != 200:
+                logger.warning(
+                    "Cloud Logging list returned %s: %s", resp.status_code, resp.text[:200]
+                )
+                break
+            data = resp.json()
+            for entry in data.get("entries", []):
+                span = self._gateway_entry_to_span(entry)
+                if span:
+                    spans.append(span)
+            page_token = data.get("nextPageToken")
+            pages += 1
+            if not page_token:
+                break
+
+        if not spans:
+            logger.info(
+                "Gateway requests: no LangGuard-governed callouts in the last %sd for %s",
+                lookback,
+                self.project_id,
+            )
+            return 0
+
+        otlp = {
+            "resourceSpans": [
+                {
+                    "resource": {
+                        "attributes": [
+                            {"key": "service.name", "value": {"stringValue": "agent-gateway"}},
+                            {"key": "gen_ai.system", "value": {"stringValue": "vertex_ai"}},
+                            {"key": "gen_ai.provider.name", "value": {"stringValue": "vertex_ai"}},
+                            {"key": "gen_ai.agent.name", "value": {"stringValue": "agent-gateway"}},
+                        ]
+                    },
+                    "scopeSpans": [
+                        {"scope": {"name": "langguard.gateway"}, "spans": spans}
+                    ],
+                }
+            ]
+        }
+        self._forward_to_otel(otlp)
+        try:
+            self._deliver_to_webhooks(otlp)
+        except Exception as e:
+            logger.warning("Gateway-requests deliver_to_webhooks failed: %s", e)
+        denied = sum(
+            1
+            for s in spans
+            if any(
+                a.get("key") == "langguard.enforced" and a.get("value", {}).get("boolValue")
+                for a in s.get("attributes", [])
+            )
+        )
+        logger.info(
+            "Gateway requests: ingested %d governed callouts (%d blocked) for %s",
+            len(spans),
+            denied,
+            self.project_id,
+        )
+        return len(spans)
+
+    def _safe_discover_from_gateway_requests(self, days: Optional[int]):
+        try:
+            self.discover_from_gateway_requests(days=days)
+        except Exception as e:
+            logger.warning("Gateway-requests discovery failed: %s", e)
+
+    def refresh_gateway_requests(self, days: Optional[int] = None):
+        """On-demand gateway-requests re-pull (background thread)."""
+        import threading
+
+        logger.info(
+            "Refreshing Agent Gateway enforcement logs (lookback=%s) for %s",
+            days if days is not None else "auto",
+            self.instance_id,
+        )
+        threading.Thread(
+            target=self._safe_discover_from_gateway_requests,
             args=(days,),
             daemon=True,
         ).start()
