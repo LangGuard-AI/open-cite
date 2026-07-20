@@ -181,9 +181,21 @@ jobs:
           set -euo pipefail
           VERSION="${{ steps.ver.outputs.version }}"
           docker buildx imagetools inspect "${IMAGE_NAME}:${VERSION}"
-          for arch in amd64 arm64; do
-            docker buildx imagetools inspect --raw "${IMAGE_NAME}:${VERSION}" \
-              | grep -q "\"architecture\":\"${arch}\"" \
-              || { echo "manifest is missing linux/${arch}"; exit 1; }
-          done
+          # Parse the index rather than grepping it: the registry returns
+          # pretty-printed JSON ("architecture": "amd64"), so a substring match
+          # on "architecture":"amd64" fails against a perfectly good manifest.
+          docker buildx imagetools inspect --raw "${IMAGE_NAME}:${VERSION}" > /tmp/index.json
+          python3 - <<'PYEOF'
+          import json, sys
+          index = json.load(open("/tmp/index.json"))
+          found = {
+              f'{m.get("platform", {}).get("os")}/{m.get("platform", {}).get("architecture")}'
+              for m in index.get("manifests", [])
+          }
+          print("  platforms in manifest:", ", ".join(sorted(found)))
+          missing = [p for p in ("linux/amd64", "linux/arm64") if p not in found]
+          if missing:
+              print("ERROR: manifest is missing", ", ".join(missing))
+              sys.exit(1)
+          PYEOF
           echo "Published ${IMAGE_NAME}:${VERSION} (linux/amd64 + linux/arm64)"
