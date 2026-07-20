@@ -1,0 +1,186 @@
+# Publishes the multi-arch OpenCITE image to PUBLIC GHCR
+# (ghcr.io/langguard-ai/opencite), consumed by the webapp k8s manifests,
+# docker-compose, and both terraform stacks.
+#
+# WHY THIS EXISTS: there was no image-publish workflow, so releases were built
+# by hand on a developer box. That meant emulated arm64 builds, which is how a
+# bad dependency resolution (thinc 9.x -> blis 1.0.x, neither with aarch64
+# wheels) turned into a 3-hour BLIS compile that then failed outright.
+#
+# Two things keep that from happening again:
+#   1. NATIVE runners per architecture (ubuntu-24.04 + ubuntu-24.04-arm) --
+#      no QEMU, so a source build costs minutes rather than hours.
+#   2. A guard that FAILS the build if pip resolves any sdist for the packages
+#      that must come from wheels, so a bad resolution is caught in seconds
+#      instead of after a multi-hour compile.
+#
+# Each arch is built and pushed by digest, then a merge job assembles the
+# manifest list and applies the human-readable tags.
+name: OpenCITE Image (publish)
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build (e.g. v0.2.12)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ghcr.io/langguard-ai/opencite
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - name: Resolve tag / version
+        id: ver
+        run: |
+          TAG="${{ inputs.tag || github.event.release.tag_name }}"
+          if [ -z "$TAG" ]; then echo "no tag resolved"; exit 1; fi
+          echo "tag=$TAG"            >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}"    >> "$GITHUB_OUTPUT"
+          echo "Building $TAG -> image tag ${TAG#v}"
+
+      - name: Checkout the tagged commit
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ steps.ver.outputs.tag }}
+
+      # Fail fast on a bad resolution instead of burning a long source build.
+      # These must all come from wheels on both arches; an sdist here means the
+      # constraints have drifted (see the thinc/blis pins in pyproject.toml).
+      - name: Guard — no source builds for the wheel-only packages
+        run: |
+          set -euo pipefail
+          # A venv, because Ubuntu's system python is externally-managed and
+          # pip refuses to touch it (PEP 668) even for a dry run.
+          python3 -m venv /tmp/guard
+          /tmp/guard/bin/pip install --quiet --upgrade pip
+          /tmp/guard/bin/pip install --dry-run --ignore-installed --no-cache-dir \
+            --report /tmp/resolve.json . > /dev/null
+          python3 - <<'PY'
+          import json, sys
+          must_be_wheels = {"thinc", "blis", "spacy", "numpy"}
+          report = json.load(open("/tmp/resolve.json"))
+          bad = []
+          for item in report.get("install", []):
+              name = item["metadata"]["name"].lower()
+              url = item.get("download_info", {}).get("url", "")
+              if name in must_be_wheels and not url.endswith(".whl"):
+                  bad.append(f'{name}=={item["metadata"]["version"]}')
+              if name in must_be_wheels:
+                  kind = "wheel" if url.endswith(".whl") else "SDIST"
+                  print(f'  {name:<10} {item["metadata"]["version"]:<10} {kind}')
+          if bad:
+              print("\nERROR: these resolved to sdists and would be compiled from source:")
+              for b in bad:
+                  print("  -", b)
+              print("Tighten the constraints in pyproject.toml.")
+              sys.exit(1)
+          print("\nAll wheel-only packages resolved to wheels.")
+          PY
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${{ steps.build.outputs.digest }}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Publish manifest list
+    runs-on: ubuntu-24.04
+    needs: [build]
+    steps:
+      - name: Resolve version
+        id: ver
+        run: |
+          TAG="${{ inputs.tag || github.event.release.tag_name }}"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download digests
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # GHCR tags are unprefixed (0.2.11, 0.2.10, ...), so strip the leading v.
+      - name: Create and push manifest list
+        working-directory: /tmp/digests
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          docker buildx imagetools create \
+            -t "${IMAGE_NAME}:${VERSION}" \
+            -t "${IMAGE_NAME}:latest" \
+            $(printf "${IMAGE_NAME}@sha256:%s " *)
+
+      - name: Verify both architectures are present
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          docker buildx imagetools inspect "${IMAGE_NAME}:${VERSION}"
+          for arch in amd64 arm64; do
+            docker buildx imagetools inspect --raw "${IMAGE_NAME}:${VERSION}" \
+              | grep -q "\"architecture\":\"${arch}\"" \
+              || { echo "manifest is missing linux/${arch}"; exit 1; }
+          done
+          echo "Published ${IMAGE_NAME}:${VERSION} (linux/amd64 + linux/arm64)"
