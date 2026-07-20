@@ -124,7 +124,10 @@ jobs:
       - name: Export digest
         run: |
           mkdir -p /tmp/digests
-          touch "/tmp/digests/${{ steps.build.outputs.digest }}"
+          # Strip the sha256: prefix -- artifact filenames cannot contain a
+          # colon, and the merge job re-adds it via "@sha256:%s".
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
