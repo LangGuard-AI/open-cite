@@ -597,8 +597,40 @@ class BaseDiscoveryPlugin(ABC):
                 self._webhook_flush_timer.daemon = True
                 self._webhook_flush_timer.start()
 
+    # Headers that determine the downstream tenant + auth scope. Buffered
+    # payloads may only be merged into one webhook delivery when ALL of these
+    # match; otherwise spans from different tenants would be forwarded under a
+    # single tenant's headers, cross-contaminating their data. Mirrors the
+    # auth/tenant headers otel-ingest forwards (see forwarder setAuthHeaders).
+    _TENANT_SCOPE_HEADERS = (
+        "x-tenant-id",
+        "authorization",
+        "x-integration-id",
+        "x-tenant-slug",
+    )
+
+    @staticmethod
+    def _tenant_scope_key(headers: Optional[Dict[str, str]]) -> tuple:
+        """Case-insensitive tuple of the tenant/auth-identifying header values.
+
+        Two buffered payloads may be merged into a single webhook delivery only
+        if this key matches. HTTP header names are case-insensitive and the
+        inbound set preserves the original casing, so we normalise here.
+        """
+        if not headers:
+            return tuple(None for _ in BaseDiscoveryPlugin._TENANT_SCOPE_HEADERS)
+        lowered = {k.lower(): v for k, v in headers.items()}
+        return tuple(lowered.get(h) for h in BaseDiscoveryPlugin._TENANT_SCOPE_HEADERS)
+
     def _flush_webhook_buffer(self):
-        """Drain the debounce buffer and deliver accumulated payloads."""
+        """Drain the debounce buffer and deliver accumulated payloads.
+
+        Payloads are grouped by tenant/auth scope before merging, so a debounce
+        window that happens to span more than one tenant never combines their
+        spans into a single delivery (which would forward every buffered
+        tenant's data under whichever tenant's headers came last). Each scope
+        group is flushed independently with its own headers.
+        """
         with self._webhook_buffer_lock:
             entries = list(self._webhook_buffer)
             self._webhook_buffer.clear()
@@ -607,20 +639,31 @@ class BaseDiscoveryPlugin(ABC):
         if not entries:
             return
 
-        # Merge all buffered resourceSpans into a single list.
-        # Use the most recent inbound_headers (they typically carry the
-        # same auth/tenant context within a burst).
-        merged_resource_spans: list = []
-        last_headers = None
+        # Group buffered entries by tenant/auth scope, preserving arrival order
+        # (dict keeps insertion order on py3.7+). Only same-scope entries merge;
+        # each group keeps the most recent non-empty headers within that scope.
+        groups: Dict[tuple, dict] = {}
         for entry in entries:
-            rs = entry["payload"].get("resourceSpans", [])
-            merged_resource_spans.extend(rs)
+            key = self._tenant_scope_key(entry["inbound_headers"])
+            group = groups.get(key)
+            if group is None:
+                group = {"resource_spans": [], "headers": entry["inbound_headers"]}
+                groups[key] = group
+            group["resource_spans"].extend(entry["payload"].get("resourceSpans", []))
             if entry["inbound_headers"]:
-                last_headers = entry["inbound_headers"]
+                group["headers"] = entry["inbound_headers"]
 
-        if merged_resource_spans:
-            self._flush_webhook_payloads(
-                [{"resourceSpans": merged_resource_spans}], last_headers)
+        if len(groups) > 1:
+            logger.info(
+                "Webhook flush spans %d distinct tenant scopes; "
+                "delivering each separately (plugin=%s)",
+                len(groups), self.instance_id,
+            )
+
+        for group in groups.values():
+            if group["resource_spans"]:
+                self._flush_webhook_payloads(
+                    [{"resourceSpans": group["resource_spans"]}], group["headers"])
 
     def _flush_webhook_payloads(
         self,

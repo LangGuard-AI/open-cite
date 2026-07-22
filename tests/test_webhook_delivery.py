@@ -126,22 +126,77 @@ class TestWebhookDebounce:
         assert len(plugin._webhook_buffer) == 0
 
     @patch("open_cite.core._WEBHOOK_FLUSH_INTERVAL", 5)
-    def test_flush_uses_most_recent_headers(self, _mock_validate):
-        """Flushing uses the most recent inbound_headers from the buffer."""
+    def test_flush_uses_most_recent_headers_within_scope(self, _mock_validate):
+        """Within one tenant scope, the most recent inbound_headers win on merge."""
         plugin = _make_plugin()
         plugin.subscribe_webhook("http://example.com/traces")
 
-        old_headers = {"Authorization": "Bearer old"}
-        new_headers = {"Authorization": "Bearer new"}
+        # Same tenant/auth scope, differing only in a non-scope header (OTEL-HOST).
+        old_headers = {"x-tenant-id": "t1", "Authorization": "Bearer k1", "OTEL-HOST": "host-a"}
+        new_headers = {"x-tenant-id": "t1", "Authorization": "Bearer k1", "OTEL-HOST": "host-b"}
         plugin._webhook_buffer = [
-            {"payload": _make_payload(1), "inbound_headers": old_headers},
-            {"payload": _make_payload(1), "inbound_headers": new_headers},
+            {"payload": _make_payload(1, span_prefix="a"), "inbound_headers": old_headers},
+            {"payload": _make_payload(1, span_prefix="b"), "inbound_headers": new_headers},
         ]
 
         with patch.object(plugin, "_flush_webhook_payloads") as mock_flush:
             plugin._flush_webhook_buffer()
+            # Same scope → single merged delivery with the most recent headers.
+            mock_flush.assert_called_once()
             args = mock_flush.call_args
+            assert len(args[0][0][0]["resourceSpans"]) == 2
             assert args[0][1] == new_headers
+
+    @patch("open_cite.core._WEBHOOK_FLUSH_INTERVAL", 5)
+    def test_flush_does_not_merge_across_tenants(self, _mock_validate):
+        """Regression: a debounce window spanning two tenants must NOT merge them.
+
+        Merging would forward one tenant's spans under the other tenant's
+        headers (x-tenant-id), writing tenant B's traces into tenant A's DB.
+        """
+        plugin = _make_plugin()
+        plugin.subscribe_webhook("http://example.com/traces")
+
+        headers_a = {"x-tenant-id": "tenant-a", "Authorization": "Bearer a"}
+        headers_b = {"x-tenant-id": "tenant-b", "Authorization": "Bearer b"}
+        plugin._webhook_buffer = [
+            {"payload": _make_payload(2, span_prefix="a"), "inbound_headers": headers_a},
+            {"payload": _make_payload(3, span_prefix="b"), "inbound_headers": headers_b},
+            {"payload": _make_payload(1, span_prefix="a2"), "inbound_headers": headers_a},
+        ]
+
+        with patch.object(plugin, "_flush_webhook_payloads") as mock_flush:
+            plugin._flush_webhook_buffer()
+
+            # One delivery per tenant scope — never a single merged batch.
+            assert mock_flush.call_count == 2
+            by_tenant = {
+                call[0][1]["x-tenant-id"]: len(call[0][0][0]["resourceSpans"])
+                for call in mock_flush.call_args_list
+            }
+            # tenant-a: 2 + 1 spans merged within its own scope; tenant-b: 3.
+            assert by_tenant == {"tenant-a": 3, "tenant-b": 3}
+            # Each delivery carries its OWN headers (no cross-contamination).
+            for call in mock_flush.call_args_list:
+                sent_headers = call[0][1]
+                assert sent_headers in (headers_a, headers_b)
+
+    @patch("open_cite.core._WEBHOOK_FLUSH_INTERVAL", 5)
+    def test_flush_scope_key_is_case_insensitive(self, _mock_validate):
+        """Header casing must not fragment a single tenant into separate scopes."""
+        plugin = _make_plugin()
+        plugin.subscribe_webhook("http://example.com/traces")
+
+        plugin._webhook_buffer = [
+            {"payload": _make_payload(1, span_prefix="a"), "inbound_headers": {"X-Tenant-Id": "t1"}},
+            {"payload": _make_payload(1, span_prefix="b"), "inbound_headers": {"x-tenant-id": "t1"}},
+        ]
+
+        with patch.object(plugin, "_flush_webhook_payloads") as mock_flush:
+            plugin._flush_webhook_buffer()
+            # Same tenant despite differing casing → one merged delivery.
+            mock_flush.assert_called_once()
+            assert len(mock_flush.call_args[0][0][0]["resourceSpans"]) == 2
 
     @patch("open_cite.core._WEBHOOK_FLUSH_INTERVAL", 5)
     def test_flush_noop_when_buffer_empty(self, _mock_validate):
